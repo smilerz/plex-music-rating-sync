@@ -1,4 +1,4 @@
-PlexAPI>=4.5.2
+PlexAPI>=4.16.1
 fuzzywuzzy
 pypiwin32
 numpy
