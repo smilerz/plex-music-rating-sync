@@ -6,7 +6,7 @@ import plexapi.audio
 from plexapi.exceptions import BadRequest, NotFound
 from plexapi.myplex import MyPlexAccount
 import time
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Any
 
 from sync_items import AudioTag, Playlist
 
@@ -48,11 +48,74 @@ class MediaPlayer(abc.ABC):
         return NotImplementedError
 
     @abc.abstractmethod
+    def _create_native_playlist(self, title: str, tracks: List[AudioTag]) -> Optional[Any]:
+        """Create a native playlist in the player
+        :return: Native playlist object or None if dry run
+        """
+        pass
+
+    @abc.abstractmethod
+    def _get_native_playlists(self):
+        """Get all native playlists from player"""
+        pass
+
+    @abc.abstractmethod
+    def _find_native_playlist(self, title: str):
+        """Find native playlist by title"""
+        pass
+
+    def sync_playlist(self, playlist: Playlist, updates: List[tuple]):
+        """Sync playlist changes to native format
+        :param playlist: Playlist to update
+        :param updates: List of (track, present) tuples indicating changes
+        """
+        if not self.dry_run and playlist._native_playlist:
+            for track, present in updates:
+                self.update_playlist(playlist._native_playlist, track, present)
+
     def create_playlist(self, title: str, tracks: List[AudioTag]) -> Optional[Playlist]:
         """Create a new playlist with the given tracks
-        :return: Created playlist or None if dry run
-        :rtype: Optional[Playlist]
+        :return: Created Playlist or None if dry run
         """
+        if self.dry_run:
+            return None
+
+        native_pl = self._create_native_playlist(title, tracks)
+        if native_pl:
+            return Playlist(title, native_playlist=native_pl, player=self)
+        return None
+
+    def read_playlists(self) -> List[Playlist]:
+        """Read all playlists from the player
+        :return: List of Playlist objects
+        """
+        playlists = []
+        native_pls = self._get_native_playlists()
+
+        for native_pl in native_pls:
+            playlist = self._convert_native_playlist(native_pl)
+            if playlist:
+                playlists.append(playlist)
+
+        return playlists
+
+    def find_playlist(self, **kwargs) -> Optional[Playlist]:
+        """Find playlist by title
+        :return: Matching Playlist or None
+        """
+        title = kwargs.get("title")
+        if not title:
+            return None
+
+        native_pl = self._find_native_playlist(title)
+        if native_pl:
+            return self._convert_native_playlist(native_pl)
+        return None
+
+    @abc.abstractmethod
+    def _convert_native_playlist(self, native_playlist) -> Optional[Playlist]:
+        """Convert native playlist to Playlist object"""
+        pass
 
     @staticmethod
     def get_5star_rating(rating):
@@ -65,27 +128,11 @@ class MediaPlayer(abc.ABC):
         return None if rating is None else max(0, rating) / self.rating_maximum
 
     @abc.abstractmethod
-    def read_playlists(self):
-        """
-
-        :return: a list of all playlists that exist, including automatically generated playlists
-        :rtype: list<Playlist>
-        """
-
-    @abc.abstractmethod
     def read_track_metadata(self, track) -> AudioTag:
         """
 
         :param track: The track for which to read the metadata.
         :return: The metadata stored in an audio tag instance.
-        """
-
-    @abc.abstractmethod
-    def find_playlist(self, **kwargs) -> Optional[Playlist]:
-        """Find a playlist by name
-        :param kwargs: Search parameters (title=str)
-        :return: Matching playlist or None
-        :rtype: Optional[Playlist]
         """
 
     @abc.abstractmethod
@@ -106,16 +153,14 @@ class MediaPlayer(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def update_playlist(self, playlist, track, present: bool):
-        """Updates the playlist, unless in dry run
-        :param playlist:
-                The playlist native to this player that shall be updated
-        :param track:
-                The track to update
-        :param present:
+    def update_playlist(self, native_playlist, track, present: bool):
+        """Updates the native playlist by adding or removing a track
+        :param native_playlist: Native playlist object
+        :param track: Track to add/remove
+        :param present: True to add, False to remove
         """
+        pass
 
-    @abc.abstractmethod
     def update_rating(self, track, rating):
         """Updates the rating of the track, unless in dry run"""
 
@@ -156,21 +201,30 @@ class MediaMonkey(MediaPlayer):
             self.logger.error("No scripting interface to MediaMonkey can be found. Exiting...")
             exit(1)
 
-    def create_playlist(self, title: str, tracks: List[AudioTag]) -> Optional[Playlist]:
-        self.logger.info(f"Creating playlist {title}")
-        if not self.dry_run and tracks:
-            playlist = self.sdb.PlaylistByTitle("").CreateChildPlaylist(title)
-            for track in tracks:
-                song = self.sdb.Database.QuerySongs("ID=" + str(track.ID))
-                playlist.AddTrack(song.Item)
-            return Playlist(title)
-        return None
-
-    def find_playlist(self, **kwargs) -> Optional[Playlist]:
-        title = kwargs.get("title")
-        if not title:
+    def _create_native_playlist(self, title: str, tracks: List[AudioTag]) -> Optional[Any]:
+        if not tracks:
             return None
+        playlist = self.sdb.PlaylistByTitle("").CreateChildPlaylist(title)
+        for track in tracks:
+            song = self.sdb.Database.QuerySongs("ID=" + str(track.ID))
+            playlist.AddTrack(song.Item)
+        return playlist
 
+    def _get_native_playlists(self):
+        root = self.sdb.PlaylistByTitle("")
+        playlists = []
+
+        def get_playlists(parent):
+            for i in range(len(parent.ChildPlaylists)):
+                pl = parent.ChildPlaylists[i]
+                playlists.append(pl)
+                if len(pl.ChildPlaylists):
+                    get_playlists(pl)
+
+        get_playlists(root)
+        return playlists
+
+    def _find_native_playlist(self, title: str):
         playlists = []
         root = self.sdb.PlaylistByTitle("")
 
@@ -178,43 +232,20 @@ class MediaMonkey(MediaPlayer):
             for i in range(len(parent.ChildPlaylists)):
                 pl = parent.ChildPlaylists[i]
                 if pl.Title.lower() == title.lower():
-                    playlist = Playlist(pl.Title)
-                    playlist.is_auto_playlist = pl.isAutoplaylist
-                    playlists.append(playlist)
+                    playlists.append(pl)
                 if len(pl.ChildPlaylists):
                     find_in_playlists(pl)
 
         find_in_playlists(root)
         return playlists[0] if playlists else None
 
-    def read_child_playlists(self, parent_playlist):
-        """
-        :rtype: list<Playlist>
-        """
-        playlists = []
-        for i in range(len(parent_playlist.ChildPlaylists)):
-            _playlist = parent_playlist.ChildPlaylists[i]
-            playlist = Playlist(_playlist.Title, parent_name=parent_playlist.Title)
-            playlists.append(playlist)
-            playlist.is_auto_playlist = _playlist.isAutoplaylist
-            if playlist.is_auto_playlist:
-                self.logger.debug("Skipping auto playlist {}".format(playlist.name))
-                continue
-
-            for j in range(_playlist.Tracks.Count):
-                playlist.tracks.append(self.read_track_metadata(_playlist.Tracks[j]))
-
-            if len(_playlist.ChildPlaylists):
-                playlists.extend(self.read_child_playlists(_playlist))
-
-        return playlists
-
-    def read_playlists(self):
-        self.logger.info("Reading playlists from the {} player".format(self.name()))
-        root_playlist = self.sdb.PlaylistByTitle("")
-        playlists = self.read_child_playlists(root_playlist)
-        self.logger.info("Found {} playlists".format(len(playlists)))
-        return playlists
+    def _convert_native_playlist(self, native_playlist) -> Optional[Playlist]:
+        playlist = Playlist(native_playlist.Title, parent_name=native_playlist.Title, native_playlist=native_playlist, player=self)
+        playlist.is_auto_playlist = native_playlist.isAutoplaylist
+        if not playlist.is_auto_playlist:
+            for j in range(native_playlist.Tracks.Count):
+                playlist.tracks.append(self.read_track_metadata(native_playlist.Tracks[j]))
+        return playlist
 
     def read_track_metadata(self, track) -> AudioTag:
         tag = AudioTag(
@@ -257,15 +288,14 @@ class MediaMonkey(MediaPlayer):
         self.logger.info(f"Found {counter} tracks for query {query}.")
         return tags
 
-    def update_playlist(self, playlist, track, present):
-        self.logger.debug("{} {} to playlist {}".format("Adding" if present else "Removing", self.format(track), playlist.name))
+    def update_playlist(self, native_playlist, track, present: bool):
+        self.logger.debug("{} {} to playlist {}".format("Adding" if present else "Removing", self.format(track), native_playlist.Title))
         if not self.dry_run:
-            pl = self.sdb.PlaylistByTitle(playlist.name)
             song = self.sdb.Database.QuerySongs("ID=" + str(track.ID))
             if present:
-                pl.AddTrack(song.Item)
+                native_playlist.AddTrack(song.Item)
             else:
-                pl.RemoveTrack(song.Item)
+                native_playlist.RemoveTrack(song.Item)
 
     def update_rating(self, track, rating):
         self.logger.debug('Updating rating of track "{}" to {} stars'.format(self.format(track), self.get_5star_rating(rating)))
@@ -362,26 +392,45 @@ class PlexPlayer(MediaPlayer):
         tag.ID = track.key
         return tag
 
-    def create_playlist(self, title: str, tracks: List[AudioTag]) -> Optional[Playlist]:
-        self.logger.info(f"Creating playlist {title}")
-        if self.dry_run:
-            return None
+    def _create_native_playlist(self, title: str, tracks: List[AudioTag]) -> Optional[Any]:
         if not tracks:
-            self.logger.warning(f"Cannot create empty playlist {title}")
             return None
-
-        # Convert AudioTags to Plex tracks
         plex_tracks = []
         for track in tracks:
-            matches = self.music_library.searchTracks(title=track.title)
-            if matches:
-                plex_tracks.append(matches[0])
+            # If track is already a Plex track object, use it directly
+            if hasattr(track, "type") and track.type == "track":
+                plex_tracks.append(track)
+            else:
+                # Search using TrackPair's find_best_match
+                from sync_pair import TrackPair
+
+                pair = TrackPair(None, self, track)
+                match, score = pair.find_best_match(candidates=self.music_library.searchTracks(title=track.title))
+                if match:
+                    plex_tracks.append(match)
+                else:
+                    self.logger.warning(f"Could not find match for track: {track}")
 
         if plex_tracks:
-            # Create playlist and return converted version
-            self.plex_api_connection.createPlaylist(title=title, items=plex_tracks)
-            return self.find_playlist(title=title)
+            return self.plex_api_connection.createPlaylist(title=title, items=plex_tracks)
         return None
+
+    def _get_native_playlists(self):
+        return [pl for pl in self.plex_api_connection.playlists() if pl.playlistType == "audio"]
+
+    def _find_native_playlist(self, title: str):
+        try:
+            return self.plex_api_connection.playlist(title)
+        except NotFound:
+            return None
+
+    def _convert_native_playlist(self, native_playlist) -> Optional[Playlist]:
+        playlist = Playlist(native_playlist.title, native_playlist=native_playlist, player=self)
+        playlist.is_auto_playlist = native_playlist.smart
+        if not playlist.is_auto_playlist:
+            for item in native_playlist.items():
+                playlist.tracks.append(self.read_track_metadata(item))
+        return playlist
 
     def read_playlists(self):
         """
@@ -420,7 +469,7 @@ class PlexPlayer(MediaPlayer):
         try:
             plex_pl = self.plex_api_connection.playlist(title)
             # Convert to standard Playlist
-            playlist = Playlist(plex_pl.title)
+            playlist = Playlist(plex_pl.title, native_playlist=plex_pl, player=self)
             playlist.is_auto_playlist = plex_pl.smart
             if not playlist.is_auto_playlist:
                 for item in plex_pl.items():
@@ -453,25 +502,28 @@ class PlexPlayer(MediaPlayer):
             raise KeyError(f"Invalid search mode {key}.")
         return matches
 
-    def update_playlist(self, playlist, track, present):
-        """Updates the playlist by adding or removing tracks
-        :type playlist: Union[plexapi.playlist.Playlist, sync_items.Playlist]
-        :type track: plexapi.audio.Track
+    def update_playlist(self, native_playlist, track, present: bool):
+        """Update Plex native playlist
+        :type native_playlist: plexapi.playlist.Playlist
+        :type track: Union[plexapi.audio.Track, AudioTag]
         :type present: bool
         """
-        if present:
-            self.logger.debug("Adding {} to playlist {}".format(self.format(track), playlist.title if hasattr(playlist, "title") else playlist.name))
-            if not self.dry_run:
-                # Get actual Plex playlist if we were passed internal Playlist
-                if not hasattr(playlist, "addItems"):
-                    playlist = self.plex_api_connection.playlist(playlist.name)
-                playlist.addItems(track)
-        else:
-            self.logger.debug("Removing {} from playlist {}".format(self.format(track), playlist.title if hasattr(playlist, "title") else playlist.name))
-            if not self.dry_run:
-                if not hasattr(playlist, "removeItem"):
-                    playlist = self.plex_api_connection.playlist(playlist.name)
-                playlist.removeItem(track)
+        if not self.dry_run:
+            if hasattr(track, "type") and track.type == "track":
+                plex_track = track
+            else:
+                matches = self.music_library.searchTracks(title=track.title)
+                if not matches:
+                    self.logger.warning(f"Could not find match for track: {track}")
+                    return
+                plex_track = matches[0]
+
+            self.logger.debug("{} {} to playlist {}".format("Adding" if present else "Removing", self.format(plex_track), native_playlist.title))
+
+            if present:
+                native_playlist.addItems(plex_track)
+            else:
+                native_playlist.removeItem(plex_track)
 
     def update_rating(self, track, rating):
         self.logger.debug('Updating rating of track "{}" to {} stars'.format(self.format(track), self.get_5star_rating(rating)))

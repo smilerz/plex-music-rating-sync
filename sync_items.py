@@ -1,3 +1,4 @@
+import logging
 from typing import List
 
 
@@ -15,17 +16,41 @@ class AudioTag(object):
 
 
 class Playlist(object):
-    def __init__(self, name, parent_name=""):
+    def __init__(self, name, parent_name="", native_playlist=None, player=None):
         """
         Initializes the playlist with a name
-        :type name: str
-        :type parent_name: str
+        :param name: Playlist name
+        :param parent_name: Optional parent playlist name
+        :param native_playlist: Native player playlist object
+        :param player: Reference to the MediaPlayer instance
         """
         if parent_name != "":
             parent_name += "."
         self.name = parent_name + name
         self.tracks: List[AudioTag] = []
         self.is_auto_playlist = False
+        self._native_playlist = native_playlist
+        self._player = player
+        self._pending_changes = False
+        self.logger = logging.getLogger("PlexSync.Playlist")
+
+    def add_tracks(self, tracks):
+        """Add multiple tracks to the playlist"""
+        if not isinstance(tracks, (list, tuple)):
+            tracks = [tracks]
+        for track in tracks:
+            self.add_track(track)
+
+    def remove_tracks(self, tracks):
+        """Remove multiple tracks from the playlist"""
+        if not isinstance(tracks, (list, tuple)):
+            tracks = [tracks]
+        for track in tracks:
+            self.remove_track(track)
+
+    def has_pending_changes(self):
+        """Check if playlist has changes that need syncing"""
+        return self._pending_changes
 
     def __eq__(self, other):
         if not isinstance(other, type(self)):
@@ -51,13 +76,19 @@ class Playlist(object):
         :raises TypeError: If track cannot be converted to AudioTag
         """
         track = self._normalize_track(track)
-        return any(t.title.lower() == track.title.lower() and t.artist.lower() == track.artist.lower() for t in self.tracks)
+        exists = any(t.title.lower() == track.title.lower() and t.artist.lower() == track.artist.lower() for t in self.tracks)
+        if not exists:
+            self.logger.warning(f"Track not found in playlist {self.name}: {track}")
+        return exists
 
     def missing_tracks(self, other) -> List[AudioTag]:
         """Get list of tracks that exist in other playlist but not in this one"""
         if not isinstance(other, type(self)):
             return []
-        return [t for t in other.tracks if not self.has_track(t)]
+        missing = [t for t in other.tracks if not self.has_track(t)]
+        if missing:
+            self.logger.info(f"Found {len(missing)} missing tracks in playlist {self.name}")
+        return missing
 
     @property
     def num_tracks(self):
@@ -70,9 +101,9 @@ class Playlist(object):
         """Add a track to the playlist
         :param track: AudioTag object
         """
-        if not isinstance(track, AudioTag):
-            raise TypeError("Track must be an AudioTag object")
-        self.tracks.append(track)
+        self.tracks.append(self._normalize_track(track))
+        self._pending_changes = True
 
     def remove_track(self, track: AudioTag):
-        self.tracks.remove(track)
+        self.tracks.remove(self._normalize_track(track))
+        self._pending_changes = True
