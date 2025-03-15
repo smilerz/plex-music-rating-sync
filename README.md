@@ -31,8 +31,24 @@ This project aims to provide a simple sync tool that synchronizes the track rati
 1. Clone this repository
    `git clone git@github.com:patzm/plex-music-rating-sync.git`
 2. `cd plex-music-rating-sync`
-3. Install all requirements
-   `pip3.6 install -r requirements.txt`
+3. Install the package and its dependencies:
+   ```bash
+   pip install .
+   ```
+
+Optional installations:
+- For development tools (linting, type checking):
+  ```bash
+  pip install ".[dev]"
+  ```
+- For improved fuzzy string matching performance:
+  ```bash
+  pip install ".[fuzzy]"
+  ```
+- Install all optional dependencies:
+  ```bash
+  pip install ".[*]"
+  ```
 
 ## Configuration
 Create a `config.ini` file based on the template `config.ini.template`:
@@ -40,7 +56,7 @@ Create a `config.ini` file based on the template `config.ini.template`:
 - `server`: The name of your Plex Media Server
 - `user`: Your Plex username  
 - `source`: Source player ("plex" or "mediamonkey") [default: mediamonkey]
-- `destination`: Destination player ("plex" or "mediamonkey") [default: plex]
+- `destination`: Destination player ("plex" or "mediamonkey") [default: plex] 
 - `sync`: Items to sync between players, one or more of [tracks, playlists] [default: tracks]
 - `token`: Your Plex API token (see [Finding a token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/))
 
@@ -51,7 +67,7 @@ Usage description:
 ```
 usage: sync_ratings.py [-h] [--dry] [--source SOURCE] [--destination DESTINATION]
                       [--sync [SYNC ...]] [--log LOG] [--passwd PASSWD]
-                      --server SERVER --username USERNAME [--token TOKEN]
+--server SERVER --username USERNAME [--token TOKEN]
 
 Synchronizes ID3 music ratings with a Plex media-server
 
@@ -75,7 +91,6 @@ Using the `--dry` flag in combination with `--log DEBUG` is recommended to see w
 
 ## Current issues
 * the [PlexAPI](https://pypi.org/project/PlexAPI/) seems to be only working for the administrator of the PMS.
-* playlist synchronization from Plex to local player not implemented
 
 ## Potential next features
 With the current state I have completed all functionality I desired to have.
@@ -86,10 +101,10 @@ Just open a [new issue](https://github.com/patzm/plex-music-rating-sync/issues/n
 These are a few ideas I have for features that would make sense:
 
 * setup routine
-* bi-directional sync
 * parallelization
 * better user-interaction with nicer dialogs
 * iTunes synchronization?
+* filesystem synchronization?
 
 ## References
 [PlexAPI](https://pypi.org/project/PlexAPI/) simplifies talking to a _PMS_. 

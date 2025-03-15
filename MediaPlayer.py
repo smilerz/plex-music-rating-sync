@@ -1,12 +1,13 @@
 import abc
-import logging
 import getpass
-import plexapi.playlist
+import logging
+import time
+from typing import Any, List, Optional, Union
+
 import plexapi.audio
+import plexapi.playlist
 from plexapi.exceptions import BadRequest, NotFound
 from plexapi.myplex import MyPlexAccount
-import time
-from typing import List, Optional, Union, Any
 
 from sync_items import AudioTag, Playlist
 
@@ -460,7 +461,7 @@ class PlexPlayer(MediaPlayer):
             return playlists
 
         except Exception as e:
-            self.logger.error(f"Failed to read playlists: {str(e)}")
+            self.logger.error(f"Failed to read playlists: {e!s}")
             return []
 
     def find_playlist(self, **kwargs) -> Optional[Playlist]:

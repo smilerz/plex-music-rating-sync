@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-from typing import Optional
-
-import configargparse
 import locale
 import logging
 import sys
+from typing import Optional
 
-from sync_pair import TrackPair, SyncState, PlaylistPair
+import configargparse
+
 from MediaPlayer import MediaMonkey, MediaPlayer, PlexPlayer
+from sync_pair import PlaylistPair, SyncState, TrackPair
 
 
 class InfoFilter(logging.Filter):
