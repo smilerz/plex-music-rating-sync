@@ -34,29 +34,40 @@ This project aims to provide a simple sync tool that synchronizes the track rati
 3. Install all requirements
    `pip3.6 install -r requirements.txt`
 
+## Configuration
+Create a `config.ini` file based on the template `config.ini.template`:
+
+- `server`: The name of your Plex Media Server
+- `user`: Your Plex username  
+- `source`: Source player ("plex" or "mediamonkey") [default: mediamonkey]
+- `destination`: Destination player ("plex" or "mediamonkey") [default: plex]
+- `sync`: Items to sync between players, one or more of [tracks, playlists] [default: tracks]
+- `token`: Your Plex API token (see [Finding a token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/))
+
 ## How to run
 The main file is `sync_ratings.py`.
 Usage description:
 *Note: default values of command line arguments can be provided by editing config.ini*
 ```
-usage: sync_ratings.py [-h] [--dry] [--reverse] [--log LOG] [--passwd PASSWD] [--token TOKEN]
-                       [--sync ITEM] [--player PLAYER] --server SERVER --username USERNAME
+usage: sync_ratings.py [-h] [--dry] [--source SOURCE] [--destination DESTINATION]
+                      [--sync [SYNC ...]] [--log LOG] [--passwd PASSWD]
+                      --server SERVER --username USERNAME [--token TOKEN]
 
 Synchronizes ID3 music ratings with a Plex media-server
 
 required arguments:
-  --server SERVER      The name of the plex media server
-  --username USERNAME  The plex username
+  --server SERVER        The name of the plex media server
+  --username USERNAME    The plex username
   
 optional arguments:
-  -h, --help           show this help message and exit
-  --dry                Does not apply any changes
-  --reverse            Reverses ratings synchronization from Plex to local player 
-  --sync               Selects which items to sync: one or more of: tracks, playlists [default is tracks]
+  -h, --help            show this help message and exit
+  --dry                 Does not apply any changes
+  --source SOURCE       Source player (plex or mediamonkey) [default: mediamonkey]
+  --destination DEST    Destination player (plex or mediamonkey) [default: plex]
+  --sync SYNC          Selects which items to sync: one or more of [tracks, playlists] [default: tracks]
   --log LOG            Sets the logging level
   --passwd PASSWD      The password for the plex user. NOT RECOMMENDED TO USE!
-  --token TOKEN        Plex API token.  See https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/ for information on how to find your token
-  --player PLAYER      Media player to synchronize with Plex [default is MediaMonkey]
+  --token TOKEN        Plex API token. See Plex documentation for details
 ```
 Start the synchronization:
 `./sync_ratings.py --server <server_name> --username <my@email.com|user_name>`

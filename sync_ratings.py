@@ -24,28 +24,33 @@ class PlexSync:
         self.setup_logging()
         self.source_player: Optional[MediaPlayer] = None
         self.destination_player: Optional[MediaPlayer] = None
-        if self.options.reverse:
+
+        # Create players based on source/destination settings
+        if self.options.source.lower() == "plex":
             self.source_player = PlexPlayer()
-            self.destination_player = self.get_player()
+        elif self.options.source.lower() == "mediamonkey":
+            self.source_player = MediaMonkey()
         else:
-            self.source_player = self.get_player()
+            self.logger.error(f"Invalid source player: {self.options.source}")
+            self.logger.error("Supported players: plex, mediamonkey")
+            exit(1)
+
+        if self.options.destination.lower() == "plex":
             self.destination_player = PlexPlayer()
+        elif self.options.destination.lower() == "mediamonkey":
+            self.destination_player = MediaMonkey()
+        else:
+            self.logger.error(f"Invalid destination player: {self.options.destination}")
+            self.logger.error("Supported players: plex, mediamonkey")
+            exit(1)
+
         self.source_player.dry_run = self.destination_player.dry_run = self.options.dry
         self.conflicts = []
         self.updates = []
 
     def get_player(self):
-        """
-        :rtype: MediaPlayer
-        """
-        _player = self.options.player.lower()
-        supported_players = {MediaMonkey.name()}
-        if _player == MediaMonkey.name().lower():
-            return MediaMonkey()
-        else:
-            self.logger.error("Valid players: {}".format(", ".join(supported_players)))
-            self.logger.error("Unsupported player selected: {}".format(self.options.player))
-            exit(1)
+        """Removed as no longer needed"""
+        pass
 
     def setup_logging(self):
         self.logger.setLevel(logging.DEBUG)
@@ -88,10 +93,11 @@ class PlexSync:
             self.logger.addHandler(ch_std)
 
     def sync(self):
-        if self.options.reverse:
+        # Connect players appropriately based on which is Plex
+        if isinstance(self.source_player, PlexPlayer):
             self.source_player.connect(server=self.options.server, username=self.options.username, password=self.options.passwd, token=self.options.token)
             self.destination_player.connect()
-        else:
+        elif isinstance(self.destination_player, PlexPlayer):
             self.destination_player.connect(server=self.options.server, username=self.options.username, password=self.options.passwd, token=self.options.token)
             self.source_player.connect()
 
@@ -193,11 +199,11 @@ class PlexSync:
 def parse_args():
     parser = configargparse.ArgumentParser(default_config_files=["./config.ini"], description="Synchronizes ID3 music ratings with a Plex media-server")
     parser.add_argument("--dry", action="store_true", help="Does not apply any changes")
-    parser.add_argument("--reverse", action="store_true", help="Syncs ratings from Plex to local player")
+    parser.add_argument("--source", type=str, default="mediamonkey", help="Source player (plex or mediamonkey)")
+    parser.add_argument("--destination", type=str, default="plex", help="Destination player (plex or mediamonkey)")
     parser.add_argument("--sync", nargs="*", default=["tracks"], help="Selects which items to sync: one or more of [tracks, playlists]")
     parser.add_argument("--log", default="info", help="Sets the logging level")
     parser.add_argument("--passwd", type=str, help="The password for the plex user. NOT RECOMMENDED TO USE!")
-    parser.add_argument("--player", default="MediaMonkey", type=str, help="Media player to synchronize with Plex")
     parser.add_argument("--server", type=str, required=True, help="The name of the plex media server")
     parser.add_argument("--username", type=str, required=True, help="The plex username")
     parser.add_argument(

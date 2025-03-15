@@ -15,7 +15,6 @@ from sync_items import AudioTag, Playlist
 class MediaPlayer(abc.ABC):
     album_empty_alias = ""
     dry_run = False
-    reverse = False
     rating_maximum = 5
 
     @staticmethod
@@ -119,7 +118,7 @@ class MediaPlayer(abc.ABC):
 
     @staticmethod
     def get_5star_rating(rating):
-        return rating * 5
+        return rating * 5 if rating else None
 
     def get_native_rating(self, normed_rating):
         return normed_rating * self.rating_maximum
