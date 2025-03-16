@@ -3,16 +3,32 @@ from typing import List
 
 
 class AudioTag(object):
-    def __init__(self, artist="", album="", title="", file_path=None):
+    def __init__(self, artist="", album="", title="", **kwargs):
+        self.ID = None
         self.album = album
         self.artist = artist
         self.title = title
-        self.rating = 0
-        self.genre = ""
-        self.file_path = file_path
+        self.rating = kwargs.get("rating", 0)
+        self.genre = kwargs.get("genre", "")
+        self.file_path = kwargs.get("file_path", None)
+        self.track = kwargs.get("rating", 0)
 
     def __str__(self):
         return " - ".join([self.artist, self.album, self.title])
+
+    @staticmethod
+    def get_fields():
+        """Get list of fields that should be cached"""
+        return ["ID", "album", "artist", "title", "rating", "genre", "file_path", "track"]
+
+    def to_dict(self):
+        """Convert to dictionary for caching"""
+        return {field: getattr(self, field) for field in self.get_fields()}
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        """Create AudioTag from cached dictionary"""
+        return cls(**data)
 
 
 class Playlist(object):

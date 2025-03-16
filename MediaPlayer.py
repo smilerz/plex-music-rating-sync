@@ -2,14 +2,15 @@ import abc
 import getpass
 import logging
 import time
-from typing import Any, List, Optional, Union
+from typing import TYPE_CHECKING, Any, List, Optional, Union
 
-import plexapi.audio
-import plexapi.playlist
 from plexapi.exceptions import BadRequest, NotFound
 from plexapi.myplex import MyPlexAccount
 
 from sync_items import AudioTag, Playlist
+
+if TYPE_CHECKING:
+    from cache_manager import CacheManager
 
 
 # TODO add better error handling
@@ -18,11 +19,20 @@ class MediaPlayer(abc.ABC):
     dry_run = False
     rating_maximum = 5
 
+    def __init__(self):
+        self.dry_run = False
+        self.rating_maximum = 5
+
+    def set_cache_manager(self, cache_manager: "CacheManager") -> None:
+        """Set the cache manager for this player"""
+        self.cache_manager = cache_manager
+
     @staticmethod
     @abc.abstractmethod
-    def name():
+    def name() -> str:
         """
-        The name of this media player
+        The name of this media player. Must return a consistent string value
+        suitable for use as a DataFrame index.
         :return: name of this media player
         :rtype: str
         """
@@ -115,7 +125,6 @@ class MediaPlayer(abc.ABC):
     @abc.abstractmethod
     def _convert_native_playlist(self, native_playlist) -> Optional[Playlist]:
         """Convert native playlist to Playlist object"""
-        pass
 
     @staticmethod
     def get_5star_rating(rating):
@@ -128,28 +137,39 @@ class MediaPlayer(abc.ABC):
         return None if rating is None else max(0, rating) / self.rating_maximum
 
     @abc.abstractmethod
-    def read_track_metadata(self, track) -> AudioTag:
-        """
+    def _read_track_metadata(self, track) -> AudioTag:
+        """Internal method to read full metadata directly from the player.
+        This reads all track information including artist, album, title, rating etc.
 
-        :param track: The track for which to read the metadata.
-        :return: The metadata stored in an audio tag instance.
+        Args:
+            track: Native track object
+        Returns:
+            AudioTag containing all track metadata
         """
 
     @abc.abstractmethod
-    def search_tracks(self, key: str, value: Union[bool, str]) -> List[AudioTag]:
-        """Search the MediaMonkey music library for tracks matching the artist and track title.
+    def get_track_id(self, track) -> str:
+        """Get unique ID for a track"""
 
-        :param key: The search mode. Valid modes are:
+    def search_tracks(self, key: str, value: Union[bool, str], rating_only: bool = False) -> List[AudioTag]:
+        """Search for tracks in the media library.
+        Args:
+            key: The search mode. Valid modes are:
+                * rating  -- Search for tracks that have a rating
+                * title  -- Search by track title
+                * id     -- Search by track id
+                * query  -- MediaMonkey query string, free form
+            value: The value to search for
+            rating_only: If True, only fetch rating info for better performance
 
-                * *rating*  -- Search for tracks that have a rating.
-                * *title*   -- Search by track title.
-                * *query*   -- MediaMonkey query string, free form.
-
-        :param value: The value to search for.
-
-        :return: a list of matching tracks
-        :rtype: list<sync_items.AudioTag>
+        Returns:
+            List of matching AudioTag objects
         """
+        return self._search_tracks(key, value, rating_only)
+
+    @abc.abstractmethod
+    def _search_tracks(self, key: str, value: Union[bool, str], rating_only: bool = False) -> List[AudioTag]:
+        """Internal track search implementation"""
         pass
 
     @abc.abstractmethod
@@ -161,16 +181,23 @@ class MediaPlayer(abc.ABC):
         """
         pass
 
+    @abc.abstractmethod
     def update_rating(self, track, rating):
-        """Updates the rating of the track, unless in dry run"""
+        """Updates the rating of the track, unless in dry run
+
+        Args:
+            track: The track to update
+            rating: New normalized rating value between 0-1
+        """
+        pass
 
     def __hash__(self):
-        return hash(self.name().lower())
+        return hash(self.name())
 
     def __eq__(self, other):
         if not isinstance(other, type(self)):
             return NotImplementedError
-        return other.name().lower() == self.name().lower()
+        return other.name() == self.name()
 
 
 class MediaMonkey(MediaPlayer):
@@ -180,6 +207,11 @@ class MediaMonkey(MediaPlayer):
         super(MediaMonkey, self).__init__()
         self.logger = logging.getLogger("PlexSync.MediaMonkey")
         self.sdb = None
+        self.cache_manager = None
+
+    def set_cache_manager(self, cache_manager: "CacheManager") -> None:
+        """Set the cache manager for this player"""
+        self.cache_manager = cache_manager
 
     @staticmethod
     def name():
@@ -244,25 +276,41 @@ class MediaMonkey(MediaPlayer):
         playlist.is_auto_playlist = native_playlist.isAutoplaylist
         if not playlist.is_auto_playlist:
             for j in range(native_playlist.Tracks.Count):
-                playlist.tracks.append(self.read_track_metadata(native_playlist.Tracks[j]))
+                playlist.tracks.append(self._read_track_metadata(native_playlist.Tracks[j]))
         return playlist
 
-    def read_track_metadata(self, track) -> AudioTag:
-        tag = AudioTag(
+    def get_track_id(self, track) -> str:
+        return str(track.ID)
+
+    def _read_track_metadata(self, track) -> AudioTag:
+        """Read track metadata, using cache if available"""
+        if self.cache_manager:
+            cached = self.cache_manager.get_metadata(self.name(), self.get_track_id(track))
+            if cached:
+                return cached
+
+        # Get metadata
+        metadata = AudioTag(
             artist=track.Artist.Name,
             album=track.Album.Name,
             title=track.Title,
             file_path=track.Path,
+            rating=self.get_normed_rating(track.Rating),
+            ID=track.ID,
+            track=track.TrackOrder,
         )
-        tag.rating = self.get_normed_rating(track.Rating)
-        tag.ID = track.ID
-        tag.track = track.TrackOrder
-        return tag
 
-    def search_tracks(self, key: str, value: Union[bool, str]) -> List[AudioTag]:
-        # TODO: implement caching of results to avoid repeated queries
+        # Cache the result if we have a cache manager
+        if self.cache_manager:
+            self.cache_manager.set_metadata(self.name(), metadata.ID, metadata)
+
+        return metadata
+
+    def _search_tracks(self, key: str, value: Union[bool, str], rating_only: bool = False) -> List[AudioTag]:
         if not value:
             raise ValueError("value can not be empty.")
+
+        # Build query based on search key
         if key == "title":
             title = value.replace('"', r'""')
             query = f'SongTitle = "{title}"'
@@ -270,23 +318,47 @@ class MediaMonkey(MediaPlayer):
             if value is True:
                 value = "> 0"
             query = f"Rating {value}"
-            self.logger.info("Reading tracks from the {} player".format(self.name()))
+            self.logger.info(f"Reading tracks from {self.name()}")
+        elif key == "id":
+            query = f"ID = {value}"
         elif key == "query":
             query = value
         else:
             raise KeyError(f"Invalid search mode {key}.")
+
         self.logger.debug(f"Executing query [{query}] against {self.name()}")
 
         it = self.sdb.Database.QuerySongs(query)
         tags = []
         counter = 0
+
         while not it.EOF:
-            tags.append(self.read_track_metadata(it.Item))
+            if rating_only:
+                tags.append(AudioTag(ID=value, rating=self.get_normed_rating(it.Item.Rating)))
+            else:
+                tags.append(self._read_track_metadata(it.Item))
             counter += 1
             it.Next()
 
-        self.logger.info(f"Found {counter} tracks for query {query}.")
+        self.logger.info(f"Found {counter} tracks for query {query}")
         return tags
+
+    def search_tracks(self, key: str, value: Union[bool, str], rating_only: bool = False) -> List[AudioTag]:
+        # Check cache first for id searches
+        if key == "id" and self.cache_manager:
+            cached = self.cache_manager.get_metadata(self.name(), value)
+            if cached:
+                return [cached]
+
+        # Do native search
+        results = super().search_tracks(key, value, rating_only)
+
+        # Cache results if available
+        if self.cache_manager and not rating_only:
+            for track in results:
+                self.cache_manager.set_metadata(self.name(), track.ID, track)
+
+        return results
 
     def update_playlist(self, native_playlist, track, present: bool):
         self.logger.debug("{} {} to playlist {}".format("Adding" if present else "Removing", self.format(track), native_playlist.Title))
@@ -370,7 +442,7 @@ class PlexPlayer(MediaPlayer):
             self.logger.error("No music library found")
             exit(1)
         elif len(music_libraries) == 1:
-            self.music_library = list(music_libraries.values())[0]
+            self.music_library = next(iter(music_libraries.values()))
             self.logger.debug("Found 1 music library")
         else:
             print("Found multiple music libraries:")
@@ -380,17 +452,19 @@ class PlexPlayer(MediaPlayer):
             choice = input("Select the library to sync with: ")
             self.music_library = music_libraries[int(choice)]
 
-    def read_track_metadata(self, track: plexapi.audio.Track) -> AudioTag:
-        tag = AudioTag(
+    def get_track_id(self, track) -> str:
+        return str(track.key)
+
+    def _read_track_metadata(self, track) -> AudioTag:
+        return AudioTag(
+            ID=track.key,
             artist=track.grandparentTitle,
             album=track.parentTitle,
             title=track.title,
             file_path=track.locations[0],
+            rating=self.get_normed_rating(track.userRating),
+            track=track.index,
         )
-        tag.rating = self.get_normed_rating(track.userRating)
-        tag.track = track.index
-        tag.ID = track.key
-        return tag
 
     def _create_native_playlist(self, title: str, tracks: List[AudioTag]) -> Optional[Any]:
         if not tracks:
@@ -429,7 +503,7 @@ class PlexPlayer(MediaPlayer):
         playlist.is_auto_playlist = native_playlist.smart
         if not playlist.is_auto_playlist:
             for item in native_playlist.items():
-                playlist.tracks.append(self.read_track_metadata(item))
+                playlist.tracks.append(self._read_track_metadata(item))
         return playlist
 
     def read_playlists(self):
@@ -453,7 +527,7 @@ class PlexPlayer(MediaPlayer):
 
                 if not playlist.is_auto_playlist:
                     for item in plex_playlist.items():
-                        playlist.tracks.append(self.read_track_metadata(item))
+                        playlist.tracks.append(self._read_track_metadata(item))
 
                 playlists.append(playlist)
 
@@ -473,15 +547,16 @@ class PlexPlayer(MediaPlayer):
             playlist.is_auto_playlist = plex_pl.smart
             if not playlist.is_auto_playlist:
                 for item in plex_pl.items():
-                    playlist.tracks.append(self.read_track_metadata(item))
+                    playlist.tracks.append(self._read_track_metadata(item))
             return playlist
         except NotFound:
             self.logger.debug(f"Playlist {title} not found")
             return None
 
-    def search_tracks(self, key: str, value: Union[bool, str]) -> List[AudioTag]:
+    def _search_tracks(self, key: str, value: Union[bool, str], rating_only: bool = False) -> List[AudioTag]:
         if not value:
             raise ValueError("value can not be empty.")
+
         if key == "title":
             matches = self.music_library.searchTracks(title=value)
             n_matches = len(matches)
@@ -491,16 +566,25 @@ class PlexPlayer(MediaPlayer):
             if value is True:
                 value = "0"
             matches = self.music_library.searchTracks(**{"track.userRating!": value})
-            tags = []
-            counter = 0
-            for x in matches:
-                tags.append(self.read_track_metadata(x))
-                counter += 1
-            self.logger.info("Found {} tracks with a rating > 0 that need syncing".format(counter))
-            matches = tags
+        elif key == "id":
+            matches = [track for track in self.music_library.searchTracks() if str(track.key) == value]
         else:
             raise KeyError(f"Invalid search mode {key}.")
-        return matches
+
+        tags = []
+        counter = 0
+        for match in matches:
+            if rating_only and len(matches) == 1:
+                tags.append(AudioTag(ID=value, rating=self.get_normed_rating(match.userRating)))
+            else:
+                # Get full metadata
+                tags.append(self._read_track_metadata(match))
+            counter += 1
+
+        if key == "rating":
+            self.logger.info(f"Found {counter} tracks with a rating > 0 that need syncing")
+
+        return tags
 
     def update_playlist(self, native_playlist, track, present: bool):
         """Update Plex native playlist
@@ -531,5 +615,5 @@ class PlexPlayer(MediaPlayer):
             try:
                 track.edit(**{"userRating.value": self.get_native_rating(rating)})
             except AttributeError:
-                song = [s for s in self.music_library.searchTracks(title=track.title) if s.key == track.ID][0]
+                song = next(s for s in self.music_library.searchTracks(title=track.title) if s.key == track.ID)
                 song.edit(**{"userRating.value": self.get_native_rating(rating)})

@@ -45,10 +45,6 @@ Optional installations:
   ```bash
   pip install ".[fuzzy]"
   ```
-- Install all optional dependencies:
-  ```bash
-  pip install ".[*]"
-  ```
 
 ## Configuration
 Create a `config.ini` file based on the template `config.ini.template`:
@@ -84,10 +80,35 @@ optional arguments:
   --log LOG            Sets the logging level
   --passwd PASSWD      The password for the plex user. NOT RECOMMENDED TO USE!
   --token TOKEN        Plex API token. See Plex documentation for details
+  --cache-mode MODE    Cache mode for optimization [default: metadata]
+                      - metadata: In-memory metadata caching only
+                      - matches: Both metadata and persistent match caching
+                      - matches-only: Persistent match caching only
+                      - disabled: No caching
+  --clear-cache       Clear existing cache files before starting
 ```
+
 Start the synchronization:
 `./sync_ratings.py --server <server_name> --username <my@email.com|user_name>`
 Using the `--dry` flag in combination with `--log DEBUG` is recommended to see what changes will be made.
+
+
+## Cache Modes
+The sync tool supports different caching strategies to optimize performance:
+
+| Mode | Caches Metadata | Caches Matches | Persists Between Runs |
+|------|----------------|----------------|---------------------|
+| metadata | ✅ Yes | ❌ No | ❌ No |
+| matches | ✅ Yes | ✅ Yes | ✅ Yes |
+| matches-only | ❌ No | ✅ Yes | ✅ Yes |
+| disabled | ❌ No | ❌ No | ❌ No |
+
+- **metadata**: Caches track metadata in memory for faster lookups during sync
+- **matches**: Caches both metadata and track matches, saves matches between runs
+- **matches-only**: Only caches track matches persistently, no metadata caching
+- **disabled**: No caching, all operations performed directly
+
+Cache files are stored in the application directory and can be cleared using `--clear-cache`.
 
 ## Current issues
 * the [PlexAPI](https://pypi.org/project/PlexAPI/) seems to be only working for the administrator of the PMS.

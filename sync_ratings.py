@@ -2,10 +2,10 @@
 import locale
 import logging
 import sys
-from typing import Optional
 
 import configargparse
 
+from cache_manager import CacheManager
 from MediaPlayer import MediaMonkey, MediaPlayer, PlexPlayer
 from sync_pair import PlaylistPair, SyncState, TrackPair
 
@@ -18,33 +18,46 @@ class InfoFilter(logging.Filter):
 class PlexSync:
     log_levels = {"CRITICAL": logging.CRITICAL, "ERROR": logging.ERROR, "WARNING": logging.WARNING, "INFO": logging.INFO, "DEBUG": logging.DEBUG}
 
+    def _create_player(self, player_type: str) -> MediaPlayer:
+        """Create and configure a media player instance
+
+        Args:
+            player_type: Type of player to create ('plex' or 'mediamonkey')
+
+        Returns:
+            Configured MediaPlayer instance
+
+        Raises:
+            ValueError: If player_type is invalid
+        """
+        player_type = player_type.lower()
+        player_map = {"plex": PlexPlayer, "mediamonkey": MediaMonkey}
+
+        if player_type not in player_map:
+            self.logger.error(f"Invalid player type: {player_type}")
+            self.logger.error(f"Supported players: {', '.join(player_map.keys())}")
+            raise ValueError(f"Invalid player type: {player_type}")
+
+        player = player_map[player_type]()
+        player.set_cache_manager(self.cache_manager)
+        return player
+
     def __init__(self, options):
         self.logger = logging.getLogger("PlexSync")
         self.options = options
         self.setup_logging()
-        self.source_player: Optional[MediaPlayer] = None
-        self.destination_player: Optional[MediaPlayer] = None
 
-        # Create players based on source/destination settings
-        if self.options.source.lower() == "plex":
-            self.source_player = PlexPlayer()
-        elif self.options.source.lower() == "mediamonkey":
-            self.source_player = MediaMonkey()
-        else:
-            self.logger.error(f"Invalid source player: {self.options.source}")
-            self.logger.error("Supported players: plex, mediamonkey")
+        # Initialize cache manager
+        self.cache_manager = CacheManager(options.cache_mode)
+
+        # Create players using helper method
+        try:
+            self.source_player = self._create_player(self.options.source)
+            self.destination_player = self._create_player(self.options.destination)
+            self.source_player.dry_run = self.destination_player.dry_run = self.options.dry
+        except ValueError:
             exit(1)
 
-        if self.options.destination.lower() == "plex":
-            self.destination_player = PlexPlayer()
-        elif self.options.destination.lower() == "mediamonkey":
-            self.destination_player = MediaMonkey()
-        else:
-            self.logger.error(f"Invalid destination player: {self.options.destination}")
-            self.logger.error("Supported players: plex, mediamonkey")
-            exit(1)
-
-        self.source_player.dry_run = self.destination_player.dry_run = self.options.dry
         self.conflicts = []
         self.updates = []
 
@@ -93,6 +106,10 @@ class PlexSync:
             self.logger.addHandler(ch_std)
 
     def sync(self):
+        # Handle cache clearing if requested
+        if self.options.clear_cache:
+            self.cache_manager.invalidate()
+
         # Connect players appropriately based on which is Plex
         if isinstance(self.source_player, PlexPlayer):
             self.source_player.connect(server=self.options.server, username=self.options.username, password=self.options.passwd, token=self.options.token)
@@ -211,7 +228,14 @@ def parse_args():
         type=str,
         help="Plex API token.  See https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/ for information on how to find your token",
     )
-
+    parser.add_argument(
+        "--cache-mode",
+        type=str,
+        choices=["metadata", "matches", "matches-only", "disabled"],
+        default="metadata",
+        help="Cache mode: metadata (in-memory only), matches (both), matches-only (persistent matches), disabled",
+    )
+    parser.add_argument("--clear-cache", action="store_true", help="Clear existing cache files before starting")
     return parser.parse_args()
 
 
@@ -219,4 +243,7 @@ if __name__ == "__main__":
     locale.setlocale(locale.LC_ALL, "")
     args = parse_args()
     sync_agent = PlexSync(args)
+    if args.clear_cache:
+        sync_agent.cache_manager.invalidate()
     sync_agent.sync()
+    sync_agent.cache_manager.cleanup()  # Clean up metadata cache at end
