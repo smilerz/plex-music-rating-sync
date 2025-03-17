@@ -104,4 +104,4 @@ ENV/
 \.idea/
 .vscode/
 config.ini
-.pickle
+*.pkl

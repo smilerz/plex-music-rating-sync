@@ -2,6 +2,8 @@
 import locale
 import logging
 import sys
+import time
+from datetime import timedelta
 
 import configargparse
 
@@ -42,13 +44,12 @@ class PlexSync:
         player.set_cache_manager(self.cache_manager)
         return player
 
-    def __init__(self, options):
+    def __init__(self, options) -> None:
         self.logger = logging.getLogger("PlexSync")
         self.options = options
         self.setup_logging()
 
-        # Initialize cache manager
-        self.cache_manager = CacheManager(options.cache_mode)
+        self.cache_manager = CacheManager(options.cache_mode, self.logger)
 
         # Create players using helper method
         try:
@@ -60,12 +61,22 @@ class PlexSync:
 
         self.conflicts = []
         self.updates = []
+        self.start_time = time.time()
+        self.stats = {
+            "tracks_processed": 0,
+            "tracks_matched": 0,
+            "tracks_updated": 0,
+            "tracks_conflicts": 0,
+            "playlists_processed": 0,
+            "playlists_matched": 0,
+            "playlists_updated": 0,
+        }
 
-    def get_player(self):
+    def get_player(self) -> None:
         """Removed as no longer needed"""
         pass
 
-    def setup_logging(self):
+    def setup_logging(self) -> None:
         self.logger.setLevel(logging.DEBUG)
 
         # Set up the two formatters
@@ -99,13 +110,13 @@ class PlexSync:
                 level = self.options.log
 
         if level < 0:
-            print("Valid logging levels specified by either key or value:{}".format("\n\t".join("{}: {}".format(key, value) for key, value in self.log_levels.items())))
-            raise RuntimeError("Invalid logging level selected: {}".format(level))
+            print("Valid logging levels specified by either key or value:\n\t" + "\n\t".join(f"{key}: {value}" for key, value in self.log_levels.items()))
+            raise RuntimeError(f"Invalid logging level selected: {level}")
         else:
             ch_std.setLevel(level)
             self.logger.addHandler(ch_std)
 
-    def sync(self):
+    def sync(self) -> None:
         # Handle cache clearing if requested
         if self.options.clear_cache:
             self.cache_manager.invalidate()
@@ -120,17 +131,18 @@ class PlexSync:
 
         for sync_item in self.options.sync:
             if sync_item.lower() == "tracks":
-                self.logger.info("Starting to sync track ratings from {} to {}".format(self.source_player.name(), self.destination_player.name()))
+                self.logger.info(f"Starting to sync track ratings from {self.source_player.name()} to {self.destination_player.name()}")
                 self.sync_tracks()
             elif sync_item.lower() == "playlists":
-                self.logger.info("Starting to sync playlists from {} to {}".format(self.source_player.name(), self.destination_player.name()))
+                self.logger.info(f"Starting to sync playlists from {self.source_player.name()} to {self.destination_player.name()}")
                 self.sync_playlists()
             else:
-                raise ValueError("Invalid sync item selected: {}".format(sync_item))
+                raise ValueError(f"Invalid sync item selected: {sync_item}")
 
-    def sync_tracks(self):
+    def sync_tracks(self) -> None:
         tracks = self.source_player.search_tracks(key="rating", value=True)
-        self.logger.info("Attempting to match {} tracks".format(len(tracks)))
+        self.stats["tracks_processed"] = len(tracks)
+        self.logger.info(f"Attempting to match {len(tracks)} tracks")
         sync_pairs = [TrackPair(self.source_player, self.destination_player, track) for track in tracks]
 
         self.logger.info("Matching source tracks with destination player")
@@ -138,31 +150,35 @@ class PlexSync:
         for pair in sync_pairs:
             if pair.match():
                 matched += 1
-        self.logger.info("Matched {}/{} tracks".format(matched, len(sync_pairs)))
+        self.logger.info(f"Matched {matched}/{len(sync_pairs)} tracks")
 
         if self.options.dry:
             self.logger.info("Running a DRY RUN. No changes will be propagated!")
         pairs_need_update = [pair for pair in sync_pairs if pair.sync_state is SyncState.NEEDS_UPDATE]
-        self.logger.info("Synchronizing {} matching tracks without conflicts".format(len(pairs_need_update)))
+        self.logger.info(f"Synchronizing {len(pairs_need_update)} matching tracks without conflicts")
         for pair in pairs_need_update:
             pair.sync()
 
         pairs_conflicting = [pair for pair in sync_pairs if pair.sync_state is SyncState.CONFLICTING]
-        self.logger.info("{} pairs have conflicting ratings".format(len(pairs_conflicting)))
+        self.logger.info(f"{len(pairs_conflicting)} pairs have conflicting ratings")
+
+        self.stats["tracks_matched"] = matched
+        self.stats["tracks_updated"] = len(pairs_need_update)
+        self.stats["tracks_conflicts"] = len(pairs_conflicting)
 
         choose = True
         while choose:
             choose = False
             if len(pairs_conflicting) > 0:
                 prompt = {
-                    "1": "Keep all ratings from {} and update {}".format(pair.source_player.name(), pair.destination_player.name()),
-                    "2": "Keep all ratings from {} and update {}".format(pair.destination_player.name(), pair.source_player.name()),
+                    "1": f"Keep all ratings from {pair.source_player.name()} and update {pair.destination_player.name()}",
+                    "2": f"Keep all ratings from {pair.destination_player.name()} and update {pair.source_player.name()}",
                     "3": "Choose rating for each track",
                     "4": "Display all conflicts",
                     "5": "Don't resolve conflicts",
                 }
                 for key in prompt:
-                    print("\t[{}]: {}".format(key, prompt[key]))
+                    print(f"\t[{key}]: {prompt[key]}")
                 choice = input("Select how to resolve conflicting rating: ")
                 if choice == "1":
                     for pair in pairs_conflicting:
@@ -188,32 +204,54 @@ class PlexSync:
                 elif choice == "4":
                     for pair in pairs_conflicting:
                         print(
-                            "Conflict: {} (Source - {}: {} | Destination - {}: {})".format(
-                                pair.source, pair.source_player.name(), pair.rating_source, pair.destination_player.name(), pair.rating_destination
-                            )
+                            f"Conflict: {pair.source} (Source - {pair.source_player.name()}: {pair.rating_source} | Destination - {pair.destination_player.name()}: {pair.rating_destination})"
                         )
                     choose = True
                 elif choice != "5":
-                    print("{} is not a valid choice, please try again.".format(choice))
+                    print(f"{choice} is not a valid choice, please try again.")
                     choose = True
 
-    def sync_playlists(self):
+    def sync_playlists(self) -> None:
         playlists = self.source_player.read_playlists()
         playlist_pairs = [PlaylistPair(self.source_player, self.destination_player, pl) for pl in playlists if not pl.is_auto_playlist]
+        self.stats["playlists_processed"] = len(playlist_pairs)
 
         if self.options.dry:
             self.logger.info("Running a DRY RUN. No changes will be propagated!")
 
-        self.logger.info("Matching local playlists with remote player")
+        self.logger.info(f"Matching {self.source_player.name()} playlists with {self.destination_player.name()}")
         for pair in playlist_pairs:
             pair.match()
 
-        self.logger.info("Synchronizing {} matching playlists".format(len(playlist_pairs)))
+        self.logger.info(f"Synchronizing {len(playlist_pairs)} matching playlists")
         for pair in playlist_pairs:
             pair.sync()
 
+    def print_summary(self) -> None:
+        elapsed = time.time() - self.start_time
+        elapsed_time = str(timedelta(seconds=int(elapsed)))
 
-def parse_args():
+        print("\nSync Summary:")
+        print("-" * 50)
+        print(f"Total time: {elapsed_time}")
+
+        if "tracks" in self.options.sync:
+            print("Tracks:")
+            print(f"- Processed: {self.stats['tracks_processed']}")
+            print(f"- Matched: {self.stats['tracks_matched']}")
+            print(f"- Updated: {self.stats['tracks_updated']}")
+            print(f"- Conflicts: {self.stats['tracks_conflicts']}")
+
+        if "playlists" in self.options.sync:
+            print("Playlists:")
+            print(f"- Processed: {self.stats['playlists_processed']}")
+
+        if self.options.dry:
+            print("\nThis was a DRY RUN - no changes were actually made.")
+        print("-" * 50)
+
+
+def parse_args() -> configargparse.Namespace:
     parser = configargparse.ArgumentParser(default_config_files=["./config.ini"], description="Synchronizes ID3 music ratings with a Plex media-server")
     parser.add_argument("--dry", action="store_true", help="Does not apply any changes")
     parser.add_argument("--source", type=str, default="mediamonkey", help="Source player (plex or mediamonkey)")
@@ -246,4 +284,5 @@ if __name__ == "__main__":
     if args.clear_cache:
         sync_agent.cache_manager.invalidate()
     sync_agent.sync()
+    sync_agent.print_summary()
     sync_agent.cache_manager.cleanup()  # Clean up metadata cache at end

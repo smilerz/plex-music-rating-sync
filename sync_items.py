@@ -4,7 +4,7 @@ from typing import List
 
 class AudioTag(object):
     def __init__(self, artist="", album="", title="", **kwargs):
-        self.ID = None
+        self.ID = kwargs.get("ID", None)
         self.album = album
         self.artist = artist
         self.title = title
@@ -17,18 +17,18 @@ class AudioTag(object):
         return " - ".join([self.artist, self.album, self.title])
 
     @staticmethod
-    def get_fields():
+    def get_fields() -> List[str]:
         """Get list of fields that should be cached"""
         return ["ID", "album", "artist", "title", "rating", "genre", "file_path", "track"]
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
         """Convert to dictionary for caching"""
         return {field: getattr(self, field) for field in self.get_fields()}
 
     @classmethod
-    def from_dict(cls, data: dict):
+    def from_dict(self, data: dict) -> "AudioTag":
         """Create AudioTag from cached dictionary"""
-        return cls(**data)
+        return self(**data)
 
 
 class Playlist(object):
@@ -111,7 +111,7 @@ class Playlist(object):
         return len(self.tracks)
 
     def __str__(self):
-        return "{}: {} tracks".format(self.name, self.num_tracks)
+        return f"{self.name}: {self.num_tracks} tracks"
 
     def add_track(self, track: AudioTag):
         """Add a track to the playlist

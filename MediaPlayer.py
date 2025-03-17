@@ -4,110 +4,150 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, List, Optional, Union
 
+if TYPE_CHECKING:
+    from cache_manager import CacheManager
+
+import plexapi.audio
+import plexapi.playlist
 from plexapi.exceptions import BadRequest, NotFound
 from plexapi.myplex import MyPlexAccount
 
 from sync_items import AudioTag, Playlist
 
-if TYPE_CHECKING:
-    from cache_manager import CacheManager
 
-
-# TODO add better error handling
 class MediaPlayer(abc.ABC):
     album_empty_alias = ""
     dry_run = False
     rating_maximum = 5
 
-    def __init__(self):
-        self.dry_run = False
-        self.rating_maximum = 5
-
     def set_cache_manager(self, cache_manager: "CacheManager") -> None:
-        """Set the cache manager for this player"""
         self.cache_manager = cache_manager
+        self.logger.debug(f"Cache manager for {self.name()} set to: {cache_manager.__class__.__name__}")
 
     @staticmethod
     @abc.abstractmethod
     def name() -> str:
         """
-        The name of this media player. Must return a consistent string value
-        suitable for use as a DataFrame index.
+        The name of this media player
         :return: name of this media player
         :rtype: str
         """
         return ""
 
-    @staticmethod
-    @abc.abstractclassmethod
-    def format(track):
-        # TODO maybe makes more sense to create a track class and make utility functions for __str__, artist, album, title, etc
-        # but having to know what player you are working with up front wasn't workable
-        """
-        Returns a formatted representation of a track in the format of
-        artist name - album name - track title
-        """
-        return NotImplementedError
-
-    def album_empty(self, album):
+    def album_empty(self, album: str) -> bool:
         if not isinstance(album, str):
             return False
         return album == self.album_empty_alias
 
-    def connect(self, *args, **kwargs):
-        return NotImplementedError
+    def connect(self, *args, **kwargs) -> None:
+        return NotImplemented
 
     @abc.abstractmethod
     def _create_native_playlist(self, title: str, tracks: List[AudioTag]) -> Optional[Any]:
         """Create a native playlist in the player
         :return: Native playlist object or None if dry run
         """
-        pass
 
     @abc.abstractmethod
     def _get_native_playlists(self):
         """Get all native playlists from player"""
-        pass
 
     @abc.abstractmethod
     def _find_native_playlist(self, title: str):
         """Find native playlist by title"""
-        pass
+
+    @abc.abstractmethod
+    def _search_native_tracks(self, key: str, value: Union[bool, str]) -> List[Any]:
+        """Search for tracks in the native player format
+
+        :param key: Search mode (rating, title, etc)
+        :param value: Search value
+        :return: List of native track objects
+        """
+
+    @abc.abstractmethod
+    def _add_track_to_playlist(self, native_playlist: Any, native_track: Any) -> None:
+        """Add a track to a native playlist"""
+
+    @abc.abstractmethod
+    def _remove_track_from_playlist(self, native_playlist: Any, native_track: Any) -> None:
+        """Remove a track from a native playlist"""
+
+    def search_tracks(self, key: str, value: Union[bool, str]) -> List[AudioTag]:
+        """Search tracks and convert to AudioTag format
+
+        :param key: Search mode (rating, title, etc)
+        :param value: Search value
+        :return: List of AudioTag objects
+        """
+        self.logger.debug(f"Searching tracks with {key}={value}")
+        if not value:
+            self.logger.error("Search value cannot be empty")
+            raise ValueError("value can not be empty.")
+
+        native_tracks = self._search_native_tracks(key, value)
+
+        tags = []
+        counter = 0
+        for track in native_tracks:
+            tag = self.read_track_metadata(track)
+            tags.append(tag)
+            counter += 1
+            print(f"\rIdentifying metadata for {counter} tracks", end="", flush=True)
+
+        self.logger.info(f"Found {counter} tracks for {key}={value}")
+        return tags
 
     def sync_playlist(self, playlist: Playlist, updates: List[tuple]):
         """Sync playlist changes to native format
         :param playlist: Playlist to update
         :param updates: List of (track, present) tuples indicating changes
         """
-        if not self.dry_run and playlist._native_playlist:
+        if not updates:
+            self.logger.debug("No updates to sync")
+            return
+
+        if self.dry_run:
+            self.logger.info(f"DRY RUN: Would sync {len(updates)} changes to playlist '{playlist.name}'")
+            return
+
+        if playlist._native_playlist:
+            self.logger.info(f"Syncing {len(updates)} changes to playlist '{playlist.name}'")
             for track, present in updates:
                 self.update_playlist(playlist._native_playlist, track, present)
+            self.logger.debug("Playlist sync completed")
 
     def create_playlist(self, title: str, tracks: List[AudioTag]) -> Optional[Playlist]:
         """Create a new playlist with the given tracks
         :return: Created Playlist or None if dry run
         """
         if self.dry_run:
+            self.logger.info(f"DRY RUN: Would create playlist '{title}' with {len(tracks)} tracks")
             return None
 
+        self.logger.info(f"Creating playlist '{title}' with {len(tracks)} tracks")
         native_pl = self._create_native_playlist(title, tracks)
         if native_pl:
+            self.logger.debug(f"Successfully created playlist '{title}'")
             return Playlist(title, native_playlist=native_pl, player=self)
+        self.logger.error(f"Failed to create playlist '{title}'")
         return None
 
     def read_playlists(self) -> List[Playlist]:
         """Read all playlists from the player
         :return: List of Playlist objects
         """
-        playlists = []
+        self.logger.info(f"Reading all playlists from {self.name()}")
         native_pls = self._get_native_playlists()
+        self.logger.debug(f"Found {len(native_pls)} native playlists")
 
+        playlists = []
         for native_pl in native_pls:
             playlist = self._convert_native_playlist(native_pl)
             if playlist:
                 playlists.append(playlist)
 
-        return playlists
+                return playlists
 
     def find_playlist(self, **kwargs) -> Optional[Playlist]:
         """Find playlist by title
@@ -115,11 +155,16 @@ class MediaPlayer(abc.ABC):
         """
         title = kwargs.get("title")
         if not title:
+            self.logger.warning("Find playlist called without title")
             return None
 
+        self.logger.debug(f"Searching for playlist '{title}'")
         native_pl = self._find_native_playlist(title)
         if native_pl:
+            self.logger.debug(f"Found playlist '{title}'")
             return self._convert_native_playlist(native_pl)
+
+        self.logger.info(f"Playlist '{title}' not found")
         return None
 
     @abc.abstractmethod
@@ -127,77 +172,64 @@ class MediaPlayer(abc.ABC):
         """Convert native playlist to Playlist object"""
 
     @staticmethod
-    def get_5star_rating(rating):
-        return rating * 5 if rating else None
+    def get_5star_rating(rating: float) -> float:
+        return rating * 5
 
-    def get_native_rating(self, normed_rating):
+    def get_native_rating(self, normed_rating: float) -> float:
         return normed_rating * self.rating_maximum
 
-    def get_normed_rating(self, rating: Optional[float]):
+    def get_normed_rating(self, rating: Optional[float]) -> float:
         return None if rating is None else max(0, rating) / self.rating_maximum
 
     @abc.abstractmethod
-    def _read_track_metadata(self, track) -> AudioTag:
-        """Internal method to read full metadata directly from the player.
-        This reads all track information including artist, album, title, rating etc.
+    def read_track_metadata(self, track) -> AudioTag:
+        """
+        Reads the metadata of a track.
 
-        Args:
-            track: Native track object
-        Returns:
-            AudioTag containing all track metadata
+        :param track: The track for which to read the metadata.
+        :return: The metadata stored in an audio tag instance.
         """
 
     @abc.abstractmethod
-    def get_track_id(self, track) -> str:
-        """Get unique ID for a track"""
+    def update_rating(self, track: Any, rating: float) -> None:
+        """Updates the rating of the track, unless in dry run"""
 
-    def search_tracks(self, key: str, value: Union[bool, str], rating_only: bool = False) -> List[AudioTag]:
-        """Search for tracks in the media library.
-        Args:
-            key: The search mode. Valid modes are:
-                * rating  -- Search for tracks that have a rating
-                * title  -- Search by track title
-                * id     -- Search by track id
-                * query  -- MediaMonkey query string, free form
-            value: The value to search for
-            rating_only: If True, only fetch rating info for better performance
+    def __hash__(self):
+        return hash(self.name().lower())
 
-        Returns:
-            List of matching AudioTag objects
-        """
-        return self._search_tracks(key, value, rating_only)
+    def __eq__(self, other):
+        if not isinstance(other, type(self)):
+            return NotImplementedError
+        return other.name().lower() == self.name().lower()
 
-    @abc.abstractmethod
-    def _search_tracks(self, key: str, value: Union[bool, str], rating_only: bool = False) -> List[AudioTag]:
-        """Internal track search implementation"""
-        pass
-
-    @abc.abstractmethod
     def update_playlist(self, native_playlist, track, present: bool):
         """Updates the native playlist by adding or removing a track
         :param native_playlist: Native playlist object
         :param track: Track to add/remove
         :param present: True to add, False to remove
         """
-        pass
+        if self.dry_run:
+            self.logger.info(f"DRY RUN: Would {'add' if present else 'remove'} track from playlist")
+            return
 
-    @abc.abstractmethod
-    def update_rating(self, track, rating):
-        """Updates the rating of the track, unless in dry run
+        matches = self._search_native_tracks("id", track.ID)
+        if not matches:
+            self.logger.warning(f"Could not find native track for: {track}")
+            return
+        native_track = matches[0]
 
-        Args:
-            track: The track to update
-            rating: New normalized rating value between 0-1
-        """
-        pass
+        pl_name = native_playlist.title if hasattr(native_playlist, "title") else native_playlist.Title
+        self.logger.info(f"{'Adding' if present else 'Removing'} track '{track}' {'to' if present else 'from'} playlist '{pl_name}'")
 
-    def __hash__(self):
-        return hash(self.name())
-
-    def __eq__(self, other):
-        if not isinstance(other, type(self)):
-            return NotImplementedError
-        return other.name() == self.name()
+        try:
+            if present:
+                self._add_track_to_playlist(native_playlist, native_track)
+            else:
+                self._remove_track_from_playlist(native_playlist, native_track)
+            self.logger.debug(f"Successfully {'added' if present else 'removed'} track")
+        except Exception as e:
+            self.logger.error(f"Failed to {'add' if present else 'remove'} track: {e!s}")
+            raise
 
 
 class MediaMonkey(MediaPlayer):
@@ -207,31 +239,21 @@ class MediaMonkey(MediaPlayer):
         super(MediaMonkey, self).__init__()
         self.logger = logging.getLogger("PlexSync.MediaMonkey")
         self.sdb = None
-        self.cache_manager = None
 
-    def set_cache_manager(self, cache_manager: "CacheManager") -> None:
-        """Set the cache manager for this player"""
-        self.cache_manager = cache_manager
-
-    @staticmethod
-    def name():
+    @classmethod
+    def name(self) -> str:
         return "MediaMonkey"
 
-    @staticmethod
-    def format(track):
-        # TODO maybe makes more sense to create a track class and make utility functions for __str__, artist, album, title, etc
-        return " - ".join([track.artist, track.album, track.title])
-
-    def connect(self, *args):
-        self.logger.info("Connecting to local player {}".format(self.name()))
+    def connect(self, *args) -> None:
         import win32com.client
 
         try:
             self.sdb = win32com.client.Dispatch("SongsDB.SDBApplication")
             self.sdb.ShutdownAfterDisconnect = False
-        except Exception:
-            self.logger.error("No scripting interface to MediaMonkey can be found. Exiting...")
-            exit(1)
+            self.logger.info("Successfully connected to MediaMonkey")
+        except Exception as e:
+            self.logger.error(f"Failed to connect to MediaMonkey: {e!s}")
+            raise
 
     def _create_native_playlist(self, title: str, tracks: List[AudioTag]) -> Optional[Any]:
         if not tracks:
@@ -246,6 +268,7 @@ class MediaMonkey(MediaPlayer):
         root = self.sdb.PlaylistByTitle("")
         playlists = []
 
+        # TODO: fix playlist naming
         def get_playlists(parent):
             for i in range(len(parent.ChildPlaylists)):
                 pl = parent.ChildPlaylists[i]
@@ -276,21 +299,16 @@ class MediaMonkey(MediaPlayer):
         playlist.is_auto_playlist = native_playlist.isAutoplaylist
         if not playlist.is_auto_playlist:
             for j in range(native_playlist.Tracks.Count):
-                playlist.tracks.append(self._read_track_metadata(native_playlist.Tracks[j]))
+                playlist.tracks.append(track := self.read_track_metadata(native_playlist.Tracks[j]))
+                self.logger.debug(f"Added track {track} to playlist")
         return playlist
 
-    def get_track_id(self, track) -> str:
-        return str(track.ID)
+    def read_track_metadata(self, track: Any) -> AudioTag:
+        cached = self.cache_manager.get_metadata(self.name(), track.ID)
+        if cached is not None:
+            return cached
 
-    def _read_track_metadata(self, track) -> AudioTag:
-        """Read track metadata, using cache if available"""
-        if self.cache_manager:
-            cached = self.cache_manager.get_metadata(self.name(), self.get_track_id(track))
-            if cached:
-                return cached
-
-        # Get metadata
-        metadata = AudioTag(
+        tag = AudioTag(
             artist=track.Artist.Name,
             album=track.Album.Name,
             title=track.Title,
@@ -299,18 +317,11 @@ class MediaMonkey(MediaPlayer):
             ID=track.ID,
             track=track.TrackOrder,
         )
+        self.cache_manager.set_metadata(self.name(), tag.ID, tag)
 
-        # Cache the result if we have a cache manager
-        if self.cache_manager:
-            self.cache_manager.set_metadata(self.name(), metadata.ID, metadata)
+        return tag
 
-        return metadata
-
-    def _search_tracks(self, key: str, value: Union[bool, str], rating_only: bool = False) -> List[AudioTag]:
-        if not value:
-            raise ValueError("value can not be empty.")
-
-        # Build query based on search key
+    def _search_native_tracks(self, key: str, value: Union[bool, str]) -> List[Any]:
         if key == "title":
             title = value.replace('"', r'""')
             query = f'SongTitle = "{title}"'
@@ -318,63 +329,45 @@ class MediaMonkey(MediaPlayer):
             if value is True:
                 value = "> 0"
             query = f"Rating {value}"
-            self.logger.info(f"Reading tracks from {self.name()}")
-        elif key == "id":
-            query = f"ID = {value}"
         elif key == "query":
             query = value
+        elif key == "id":
+            query = f"ID = {value}"
         else:
             raise KeyError(f"Invalid search mode {key}.")
 
         self.logger.debug(f"Executing query [{query}] against {self.name()}")
-
         it = self.sdb.Database.QuerySongs(query)
-        tags = []
-        counter = 0
 
+        results = []
+        counter = 1
         while not it.EOF:
-            if rating_only:
-                tags.append(AudioTag(ID=value, rating=self.get_normed_rating(it.Item.Rating)))
-            else:
-                tags.append(self._read_track_metadata(it.Item))
-            counter += 1
+            print(f"\rReading track {counter} from {self.name()}", end="", flush=True)
+            results.append(it.Item)
             it.Next()
-
-        self.logger.info(f"Found {counter} tracks for query {query}")
-        return tags
-
-    def search_tracks(self, key: str, value: Union[bool, str], rating_only: bool = False) -> List[AudioTag]:
-        # Check cache first for id searches
-        if key == "id" and self.cache_manager:
-            cached = self.cache_manager.get_metadata(self.name(), value)
-            if cached:
-                return [cached]
-
-        # Do native search
-        results = super().search_tracks(key, value, rating_only)
-
-        # Cache results if available
-        if self.cache_manager and not rating_only:
-            for track in results:
-                self.cache_manager.set_metadata(self.name(), track.ID, track)
-
+            counter += 1
         return results
 
-    def update_playlist(self, native_playlist, track, present: bool):
-        self.logger.debug("{} {} to playlist {}".format("Adding" if present else "Removing", self.format(track), native_playlist.Title))
-        if not self.dry_run:
-            song = self.sdb.Database.QuerySongs("ID=" + str(track.ID))
-            if present:
-                native_playlist.AddTrack(song.Item)
-            else:
-                native_playlist.RemoveTrack(song.Item)
+    def update_rating(self, track, rating: float) -> None:
+        if self.dry_run:
+            self.logger.info(f"DRY RUN: Would update rating for {track} to {rating}")
+            return
 
-    def update_rating(self, track, rating):
-        self.logger.debug('Updating rating of track "{}" to {} stars'.format(self.format(track), self.get_5star_rating(rating)))
-        if not self.dry_run:
+        self.logger.debug(f"Updating rating for {track} to {rating}")
+        try:
             song = self.sdb.Database.QuerySongs("ID=" + str(track.ID))
             song.Item.Rating = self.get_native_rating(rating)
             song.Item.UpdateDB()
+            self.logger.info(f"Successfully updated rating for {track}")
+        except Exception as e:
+            self.logger.error(f"Failed to update rating: {e!s}")
+            raise
+
+    def _add_track_to_playlist(self, native_playlist: Any, native_track: Any) -> None:
+        native_playlist.AddTrack(native_track)
+
+    def _remove_track_from_playlist(self, native_playlist: Any, native_track: Any) -> None:
+        native_playlist.RemoveTrack(native_track)
 
 
 class PlexPlayer(MediaPlayer):
@@ -391,19 +384,19 @@ class PlexPlayer(MediaPlayer):
         self.music_library = None
 
     @staticmethod
-    def name():
+    def name() -> str:
         return "PlexPlayer"
 
     @staticmethod
-    def format(track):
+    def format(track) -> str:
         # TODO maybe makes more sense to create a track class and make utility functions for __str__, artist, album, title, etc
         try:
             return " - ".join([track.artist().title, track.album().title, track.title])
         except TypeError:
             return " - ".join([track.artist, track.album, track.title])
 
-    def connect(self, server, username, password="", token=""):
-        self.logger.info(f"Connecting to the Plex Server {server} with username {username}.")
+    def connect(self, server: str, username: str, password: str = "", token: str = "") -> None:
+        self.logger.info(f"Connecting to Plex server {server} as {username}")
         connection_attempts_left = self.maximum_connection_attempts
         while connection_attempts_left > 0:
             time.sleep(1)  # important. Otherwise, the above print statement can be flushed after
@@ -420,13 +413,13 @@ class PlexPlayer(MediaPlayer):
                 password = ""
                 connection_attempts_left -= 1
             except BadRequest as error:
-                self.logger.warning("Failed to connect: {}".format(error))
+                self.logger.warning(f"Failed to connect: {error}")
                 connection_attempts_left -= 1
         if connection_attempts_left == 0 or self.account is None:
-            self.logger.error("Exiting after {} failed attempts ...".format(self.maximum_connection_attempts))
+            self.logger.error(f"Exiting after {self.maximum_connection_attempts} failed attempts ...")
             exit(1)
 
-        self.logger.info("Connecting to remote player {} on the server {}".format(self.name(), server))
+        self.logger.info(f"Connecting to remote player {self.name()} on the server {server}")
         try:
             self.plex_api_connection = self.account.resource(server).connect(timeout=5)
             self.logger.info("Successfully connected")
@@ -447,22 +440,24 @@ class PlexPlayer(MediaPlayer):
         else:
             print("Found multiple music libraries:")
             for key, library in music_libraries.items():
-                print("\t[{}]: {}".format(key, library.title))
+                print(f"\t[{key}]: {library.title}")
 
-            choice = input("Select the library to sync with: ")
-            self.music_library = music_libraries[int(choice)]
+            while True:
+                try:
+                    choice = input("Select the library to sync with: ")
+                    self.music_library = music_libraries[int(choice)]
+                    break
+                except (ValueError, KeyError):
+                    print("Invalid choice. Please enter a valid number corresponding to the library.")
 
-    def get_track_id(self, track) -> str:
-        return str(track.key)
-
-    def _read_track_metadata(self, track) -> AudioTag:
+    def read_track_metadata(self, track: plexapi.audio.Track) -> AudioTag:
         return AudioTag(
-            ID=track.key,
             artist=track.grandparentTitle,
             album=track.parentTitle,
             title=track.title,
             file_path=track.locations[0],
             rating=self.get_normed_rating(track.userRating),
+            ID=track.key.split("/")[-1] if "/" in track.key else track.key,
             track=track.index,
         )
 
@@ -471,22 +466,20 @@ class PlexPlayer(MediaPlayer):
             return None
         plex_tracks = []
         for track in tracks:
-            # If track is already a Plex track object, use it directly
-            if hasattr(track, "type") and track.type == "track":
-                plex_tracks.append(track)
-            else:
-                # Search using TrackPair's find_best_match
-                from sync_pair import TrackPair
-
-                pair = TrackPair(None, self, track)
-                match, score = pair.find_best_match(candidates=self.music_library.searchTracks(title=track.title))
-                if match:
-                    plex_tracks.append(match)
+            self.logger.debug(f"Searching for track ID: {track.ID}")
+            try:
+                matches = self._search_native_tracks("id", track.ID)
+                if matches:
+                    plex_tracks.append(matches[0])
+                    self.logger.debug(f"Found track: {matches[0].title}")
                 else:
-                    self.logger.warning(f"Could not find match for track: {track}")
+                    self.logger.warning(f"No match found for track ID: {track.ID}")
+            except Exception as e:
+                self.logger.error(f"Failed to search for track {track.ID}: {e!s}")
 
         if plex_tracks:
             return self.plex_api_connection.createPlaylist(title=title, items=plex_tracks)
+        self.logger.warning("No tracks found to create playlist")
         return None
 
     def _get_native_playlists(self):
@@ -503,17 +496,17 @@ class PlexPlayer(MediaPlayer):
         playlist.is_auto_playlist = native_playlist.smart
         if not playlist.is_auto_playlist:
             for item in native_playlist.items():
-                playlist.tracks.append(self._read_track_metadata(item))
+                playlist.tracks.append(self.read_track_metadata(item))
         return playlist
 
-    def read_playlists(self):
+    def read_playlists(self) -> List[Playlist]:
         """
         Read all playlists from the Plex server and convert them to internal Playlist objects.
 
         :return: List of Playlist objects
         :rtype: list<Playlist>
         """
-        self.logger.info("Reading playlists from the {} player".format(self.name()))
+        self.logger.info(f"Reading playlists from the {self.name()} player")
         playlists = []
 
         try:
@@ -527,11 +520,11 @@ class PlexPlayer(MediaPlayer):
 
                 if not playlist.is_auto_playlist:
                     for item in plex_playlist.items():
-                        playlist.tracks.append(self._read_track_metadata(item))
+                        playlist.tracks.append(self.read_track_metadata(item))
 
                 playlists.append(playlist)
 
-            self.logger.info("Found {} playlists".format(len(playlists)))
+            self.logger.info(f"Found {len(playlists)} playlists")
             return playlists
 
         except Exception as e:
@@ -547,73 +540,53 @@ class PlexPlayer(MediaPlayer):
             playlist.is_auto_playlist = plex_pl.smart
             if not playlist.is_auto_playlist:
                 for item in plex_pl.items():
-                    playlist.tracks.append(self._read_track_metadata(item))
+                    playlist.tracks.append(self.read_track_metadata(item))
             return playlist
         except NotFound:
             self.logger.debug(f"Playlist {title} not found")
             return None
 
-    def _search_tracks(self, key: str, value: Union[bool, str], rating_only: bool = False) -> List[AudioTag]:
-        if not value:
-            raise ValueError("value can not be empty.")
-
+    def _search_native_tracks(self, key: str, value: Union[bool, str]) -> List[Any]:
         if key == "title":
             matches = self.music_library.searchTracks(title=value)
             n_matches = len(matches)
             s_matches = f"match{'es' if n_matches > 1 else ''}"
             self.logger.debug(f"Found {n_matches} {s_matches} for query title={value}")
+            return matches
+
         elif key == "rating":
             if value is True:
                 value = "0"
             matches = self.music_library.searchTracks(**{"track.userRating!": value})
+            return matches
+
         elif key == "id":
-            matches = [track for track in self.music_library.searchTracks() if str(track.key) == value]
-        else:
-            raise KeyError(f"Invalid search mode {key}.")
+            return [self.music_library.fetchItem(int(value))]
 
-        tags = []
-        counter = 0
-        for match in matches:
-            if rating_only and len(matches) == 1:
-                tags.append(AudioTag(ID=value, rating=self.get_normed_rating(match.userRating)))
-            else:
-                # Get full metadata
-                tags.append(self._read_track_metadata(match))
-            counter += 1
+        raise KeyError(f"Invalid search mode {key}.")
 
-        if key == "rating":
-            self.logger.info(f"Found {counter} tracks with a rating > 0 that need syncing")
+    def update_rating(self, track: Any, rating: float) -> None:
+        if self.dry_run:
+            self.logger.info(f"DRY RUN: Would update rating for {track} to {rating}")
+            return
 
-        return tags
-
-    def update_playlist(self, native_playlist, track, present: bool):
-        """Update Plex native playlist
-        :type native_playlist: plexapi.playlist.Playlist
-        :type track: Union[plexapi.audio.Track, AudioTag]
-        :type present: bool
-        """
-        if not self.dry_run:
-            if hasattr(track, "type") and track.type == "track":
-                plex_track = track
-            else:
-                matches = self.music_library.searchTracks(title=track.title)
-                if not matches:
-                    self.logger.warning(f"Could not find match for track: {track}")
-                    return
-                plex_track = matches[0]
-
-            self.logger.debug("{} {} to playlist {}".format("Adding" if present else "Removing", self.format(plex_track), native_playlist.title))
-
-            if present:
-                native_playlist.addItems(plex_track)
-            else:
-                native_playlist.removeItem(plex_track)
-
-    def update_rating(self, track, rating):
-        self.logger.debug('Updating rating of track "{}" to {} stars'.format(self.format(track), self.get_5star_rating(rating)))
-        if not self.dry_run:
+        self.logger.debug(f"Updating rating for {track} to {rating}")
+        try:
+            track.edit(**{"userRating.value": self.get_native_rating(rating)})
+            self.logger.info(f"Successfully updated rating for {track}")
+        except Exception as e:
+            self.logger.error(f"Failed to update rating: {e!s}")
             try:
-                track.edit(**{"userRating.value": self.get_native_rating(rating)})
-            except AttributeError:
+                # Fallback to searching by title/ID
                 song = next(s for s in self.music_library.searchTracks(title=track.title) if s.key == track.ID)
                 song.edit(**{"userRating.value": self.get_native_rating(rating)})
+                self.logger.info("Successfully updated rating using fallback method")
+            except Exception as e2:
+                self.logger.error(f"Failed to update rating using fallback: {e2!s}")
+                raise
+
+    def _add_track_to_playlist(self, native_playlist: Any, native_track: Any) -> None:
+        native_playlist.addItems(native_track)
+
+    def _remove_track_from_playlist(self, native_playlist: Any, native_track: Any) -> None:
+        native_playlist.removeItem(native_track)
