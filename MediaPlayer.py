@@ -5,7 +5,7 @@ import time
 from typing import TYPE_CHECKING, Any, List, Optional, Union
 
 if TYPE_CHECKING:
-    from cache_manager import CacheManager
+    pass
 
 import plexapi.audio
 import plexapi.playlist
@@ -20,9 +20,13 @@ class MediaPlayer(abc.ABC):
     dry_run = False
     rating_maximum = 5
 
-    def set_cache_manager(self, cache_manager: "CacheManager") -> None:
+    def __init__(self, cache_manager=None, stats_manager=None):
         self.cache_manager = cache_manager
-        self.logger.debug(f"Cache manager for {self.name()} set to: {cache_manager.__class__.__name__}")
+        self.stats_manager = stats_manager
+        if cache_manager:
+            self.logger.debug(f"Cache manager for {self.name()} set to: {cache_manager.__class__.__name__}")
+        if stats_manager:
+            self.logger.debug(f"Stats manager for {self.name()} set to: {stats_manager.__class__.__name__}")
 
     @staticmethod
     @abc.abstractmethod
@@ -235,10 +239,10 @@ class MediaPlayer(abc.ABC):
 class MediaMonkey(MediaPlayer):
     rating_maximum = 100
 
-    def __init__(self):
-        super(MediaMonkey, self).__init__()
+    def __init__(self, cache_manager=None, stats_manager=None):
         self.logger = logging.getLogger("PlexSync.MediaMonkey")
         self.sdb = None
+        super().__init__(cache_manager, stats_manager)
 
     @classmethod
     def name(self) -> str:
@@ -371,17 +375,16 @@ class MediaMonkey(MediaPlayer):
 
 
 class PlexPlayer(MediaPlayer):
-    # TODO logging needs to be updated to reflect whether Plex is source or destination
     maximum_connection_attempts = 3
     rating_maximum = 10
     album_empty_alias = "[Unknown Album]"
 
-    def __init__(self):
-        super(PlexPlayer, self).__init__()
+    def __init__(self, cache_manager=None, stats_manager=None):
         self.logger = logging.getLogger("PlexSync.PlexPlayer")
         self.account = None
         self.plex_api_connection = None
         self.music_library = None
+        super().__init__(cache_manager, stats_manager)
 
     @staticmethod
     def name() -> str:
@@ -389,7 +392,6 @@ class PlexPlayer(MediaPlayer):
 
     @staticmethod
     def format(track) -> str:
-        # TODO maybe makes more sense to create a track class and make utility functions for __str__, artist, album, title, etc
         try:
             return " - ".join([track.artist().title, track.album().title, track.title])
         except TypeError:
@@ -399,7 +401,7 @@ class PlexPlayer(MediaPlayer):
         self.logger.info(f"Connecting to Plex server {server} as {username}")
         connection_attempts_left = self.maximum_connection_attempts
         while connection_attempts_left > 0:
-            time.sleep(1)  # important. Otherwise, the above print statement can be flushed after
+            time.sleep(0.5)  # important. Otherwise, the above print statement can be flushed after
             if (not password) & (not token):
                 password = getpass.getpass()
             try:
@@ -578,7 +580,7 @@ class PlexPlayer(MediaPlayer):
             self.logger.error(f"Failed to update rating: {e!s}")
             try:
                 # Fallback to searching by title/ID
-                song = next(s for s in self.music_library.searchTracks(title=track.title) if s.key == track.ID)
+                song = self._search_native_tracks("id", track.ID)[0]
                 song.edit(**{"userRating.value": self.get_native_rating(rating)})
                 self.logger.info("Successfully updated rating using fallback method")
             except Exception as e2:

@@ -20,14 +20,14 @@ class CacheManager:
     METADATA_CACHE_FILE = "metadata_cache.pkl"
     SAVE_THRESHOLD = 100
 
-    def __init__(self, mode: str, logger: logging.Logger) -> None:
+    def __init__(self, mode: str) -> None:
         """Initialize cache manager
 
         Args:
             mode: Cache mode to use
             logger: Logger instance to use for messages
         """
-        self.logger = logger
+        self.logger = logging.getLogger("PlexSync.CacheManager")
         self.mode = mode
         self.metadata_cache: Optional[pd.DataFrame] = None
         self.match_cache: Optional[pd.DataFrame] = None

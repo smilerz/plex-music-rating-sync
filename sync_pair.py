@@ -58,14 +58,10 @@ class TrackPair(SyncPair):
     rating_destination = 0.0
 
     def __init__(self, source_player, destination_player, source_track: AudioTag) -> None:
-        # """
-        # TODO: this is no longer true - not sure if it matters
-        # :type local_player: MediaPlayer.MediaPlayer
-        # :type remote_player: MediaPlayer.PlexPlayer
-        # """
         super(TrackPair, self).__init__(source_player, destination_player)
         self.logger = logging.getLogger("PlexSync.TrackPair")
         self.source = source_track
+        self.stats_manager = source_player.stats_manager
 
     def albums_similarity(self, destination=None) -> int:
         """
@@ -106,6 +102,9 @@ class TrackPair(SyncPair):
             cached_id = self.source_player.cache_manager.get_match(self.source.ID, source_name=self.source_player.name(), dest_name=self.destination_player.name())
             if cached_id:
                 candidates = self.destination_player.search_tracks(key="id", value=cached_id)
+                if candidates:
+                    self.stats_manager.increment("cache_hits")
+                    return candidates[0], 100  # Cache hit implies perfect match
 
         # Search for candidates if not provided
         if candidates is None:
@@ -116,6 +115,7 @@ class TrackPair(SyncPair):
                 raise e
 
         if not candidates:
+            self.stats_manager.increment("no_matches")
             self.logger.warning(f"No candidates found for {self.source}")
             return None, 0
 
@@ -124,9 +124,17 @@ class TrackPair(SyncPair):
         ranks = scores.argsort()
         best_score = scores[ranks[-1]]
 
+        # Track match quality
         if best_score < match_threshold:
+            self.stats_manager.increment("no_matches")
             self.logger.debug(f"Best candidate score too low: {best_score} < {match_threshold}")
             return None, best_score
+        elif best_score == 100:
+            self.stats_manager.increment("perfect_matches")
+        elif best_score >= 80:
+            self.stats_manager.increment("good_matches")
+        else:
+            self.stats_manager.increment("poor_matches")
 
         best_match = candidates[ranks[-1]]
 
@@ -160,6 +168,7 @@ class TrackPair(SyncPair):
             return score
 
         self.destination = best_match
+        self.stats_manager.increment("tracks_matched")
 
         # Compare ratings
         self.rating_source = self.source.rating
@@ -246,9 +255,9 @@ class TrackPair(SyncPair):
         if self.rating_destination <= 0.0 or force:
             # Propagate the rating of the source track to the destination track
             self.destination_player.update_rating(self.destination, self.rating_source)
-        else:
-            return False
-        return True
+            self.stats_manager.increment("tracks_updated")
+            return True
+        return False
 
 
 class PlaylistPair(SyncPair):
@@ -265,6 +274,7 @@ class PlaylistPair(SyncPair):
         super(PlaylistPair, self).__init__(source_player, destination_player)
         self.logger = logging.getLogger("PlexSync.PlaylistPair")
         self.source = source_playlist
+        self.stats_manager = source_player.stats_manager
 
     def match(self) -> bool:
         """
@@ -286,6 +296,8 @@ class PlaylistPair(SyncPair):
         else:
             self.sync_state = SyncState.UP_TO_DATE
             self.logger.info(f"Playlist {self.source.name} is up to date")
+
+        self.stats_manager.increment("playlists_matched")
         return True
 
     def resolve_conflict(self) -> bool:
@@ -336,6 +348,8 @@ class PlaylistPair(SyncPair):
             destination_tracks = [pair.destination for pair in track_pairs]
             self.destination = self.destination_player.create_playlist(self.source.name, destination_tracks)
             self.logger.info(f"Created new playlist {self.source.name} with {len(destination_tracks)} tracks")
+            self.stats_manager.increment("playlists_updated")
+            return True
         else:
             # Get current state
             orig_track_count = len(self.destination.tracks)
@@ -345,12 +359,13 @@ class PlaylistPair(SyncPair):
             updates = []
             for pair in track_pairs:
                 if not self.destination.has_track(pair.destination):
-                    updates.append((pair.destination, True))  # (track, present=True) for addition
+                    updates.append((pair.destination, True))
 
             if updates:
                 self.logger.debug(f"Adding {len(updates)} missing tracks to playlist {self.source.name}")
                 self.destination_player.sync_playlist(self.destination, updates)
+                self.stats_manager.increment("playlists_updated")
+                return True
             else:
                 self.logger.debug(f"Playlist {self.source.name} is up to date")
-
-        return True
+                return False

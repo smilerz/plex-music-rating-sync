@@ -9,6 +9,7 @@ import configargparse
 
 from cache_manager import CacheManager
 from MediaPlayer import MediaMonkey, MediaPlayer, PlexPlayer
+from stats_manager import StatsManager
 from sync_pair import PlaylistPair, SyncState, TrackPair
 
 
@@ -21,17 +22,7 @@ class PlexSync:
     log_levels = {"CRITICAL": logging.CRITICAL, "ERROR": logging.ERROR, "WARNING": logging.WARNING, "INFO": logging.INFO, "DEBUG": logging.DEBUG}
 
     def _create_player(self, player_type: str) -> MediaPlayer:
-        """Create and configure a media player instance
-
-        Args:
-            player_type: Type of player to create ('plex' or 'mediamonkey')
-
-        Returns:
-            Configured MediaPlayer instance
-
-        Raises:
-            ValueError: If player_type is invalid
-        """
+        """Create and configure a media player instance"""
         player_type = player_type.lower()
         player_map = {"plex": PlexPlayer, "mediamonkey": MediaMonkey}
 
@@ -40,8 +31,8 @@ class PlexSync:
             self.logger.error(f"Supported players: {', '.join(player_map.keys())}")
             raise ValueError(f"Invalid player type: {player_type}")
 
-        player = player_map[player_type]()
-        player.set_cache_manager(self.cache_manager)
+        player = player_map[player_type](cache_manager=self.cache_manager, stats_manager=self.stats_manager)
+        player.dry_run = self.options.dry
         return player
 
     def __init__(self, options) -> None:
@@ -49,28 +40,18 @@ class PlexSync:
         self.options = options
         self.setup_logging()
 
-        self.cache_manager = CacheManager(options.cache_mode, self.logger)
+        self.cache_manager = CacheManager(options.cache_mode)
+        self.stats_manager = StatsManager()
 
-        # Create players using helper method
         try:
             self.source_player = self._create_player(self.options.source)
             self.destination_player = self._create_player(self.options.destination)
-            self.source_player.dry_run = self.destination_player.dry_run = self.options.dry
         except ValueError:
             exit(1)
 
         self.conflicts = []
         self.updates = []
         self.start_time = time.time()
-        self.stats = {
-            "tracks_processed": 0,
-            "tracks_matched": 0,
-            "tracks_updated": 0,
-            "tracks_conflicts": 0,
-            "playlists_processed": 0,
-            "playlists_matched": 0,
-            "playlists_updated": 0,
-        }
 
     def get_player(self) -> None:
         """Removed as no longer needed"""
@@ -79,7 +60,6 @@ class PlexSync:
     def setup_logging(self) -> None:
         self.logger.setLevel(logging.DEBUG)
 
-        # Set up the two formatters
         formatter_brief = logging.Formatter(fmt="[%(asctime)s] %(levelname)s: %(message)s", datefmt="%H:%M:%S")
         formatter_explicit = logging.Formatter(fmt="[%(asctime)s] %(levelname)s [%(name)s.%(funcName)s:%(lineno)d] %(message)s", datefmt="%H:%M:%S")
 
@@ -117,11 +97,11 @@ class PlexSync:
             self.logger.addHandler(ch_std)
 
     def sync(self) -> None:
-        # Handle cache clearing if requested
         if self.options.clear_cache:
             self.cache_manager.invalidate()
 
         # Connect players appropriately based on which is Plex
+        # TODO: Refactor this to be more dynamic
         if isinstance(self.source_player, PlexPlayer):
             self.source_player.connect(server=self.options.server, username=self.options.username, password=self.options.passwd, token=self.options.token)
             self.destination_player.connect()
@@ -141,7 +121,7 @@ class PlexSync:
 
     def sync_tracks(self) -> None:
         tracks = self.source_player.search_tracks(key="rating", value=True)
-        self.stats["tracks_processed"] = len(tracks)
+        self.stats_manager.increment("tracks_processed", len(tracks))
         self.logger.info(f"Attempting to match {len(tracks)} tracks")
         sync_pairs = [TrackPair(self.source_player, self.destination_player, track) for track in tracks]
 
@@ -161,10 +141,7 @@ class PlexSync:
 
         pairs_conflicting = [pair for pair in sync_pairs if pair.sync_state is SyncState.CONFLICTING]
         self.logger.info(f"{len(pairs_conflicting)} pairs have conflicting ratings")
-
-        self.stats["tracks_matched"] = matched
-        self.stats["tracks_updated"] = len(pairs_need_update)
-        self.stats["tracks_conflicts"] = len(pairs_conflicting)
+        self.stats_manager.increment("tracks_conflicts", len(pairs_conflicting))
 
         choose = True
         while choose:
@@ -182,7 +159,6 @@ class PlexSync:
                 choice = input("Select how to resolve conflicting rating: ")
                 if choice == "1":
                     for pair in pairs_conflicting:
-                        # do what you were going to do anyway
                         pair.sync(force=True)
                 elif choice == "2":
                     for pair in pairs_conflicting:
@@ -204,7 +180,9 @@ class PlexSync:
                 elif choice == "4":
                     for pair in pairs_conflicting:
                         print(
-                            f"Conflict: {pair.source} (Source - {pair.source_player.name()}: {pair.rating_source} | Destination - {pair.destination_player.name()}: {pair.rating_destination})"
+                            f"Conflict: {pair.source} \
+                                (Source - {pair.source_player.name()}: {pair.rating_source} \
+                                | Destination - {pair.destination_player.name()}: {pair.rating_destination})"
                         )
                     choose = True
                 elif choice != "5":
@@ -214,7 +192,7 @@ class PlexSync:
     def sync_playlists(self) -> None:
         playlists = self.source_player.read_playlists()
         playlist_pairs = [PlaylistPair(self.source_player, self.destination_player, pl) for pl in playlists if not pl.is_auto_playlist]
-        self.stats["playlists_processed"] = len(playlist_pairs)
+        self.stats_manager.increment("playlists_processed", len(playlist_pairs))
 
         if self.options.dry:
             self.logger.info("Running a DRY RUN. No changes will be propagated!")
@@ -237,14 +215,22 @@ class PlexSync:
 
         if "tracks" in self.options.sync:
             print("Tracks:")
-            print(f"- Processed: {self.stats['tracks_processed']}")
-            print(f"- Matched: {self.stats['tracks_matched']}")
-            print(f"- Updated: {self.stats['tracks_updated']}")
-            print(f"- Conflicts: {self.stats['tracks_conflicts']}")
+            print(f"- Processed: {self.stats_manager.get('tracks_processed')}")
+            print(f"- Matched: {self.stats_manager.get('tracks_matched')}")
+            print(f"- Updated: {self.stats_manager.get('tracks_updated')}")
+            print(f"- Conflicts: {self.stats_manager.get('tracks_conflicts')}")
+            print("\nMatch Quality:")
+            print(f"- Perfect matches (100%): {self.stats_manager.get('perfect_matches')}")
+            print(f"- Good matches (80-99%): {self.stats_manager.get('good_matches')}")
+            print(f"- Poor matches (30-79%): {self.stats_manager.get('poor_matches')}")
+            print(f"- No matches (<30%): {self.stats_manager.get('no_matches')}")
+            print(f"- Cache hits: {self.stats_manager.get('cache_hits')}")
 
         if "playlists" in self.options.sync:
-            print("Playlists:")
-            print(f"- Processed: {self.stats['playlists_processed']}")
+            print("\nPlaylists:")
+            print(f"- Processed: {self.stats_manager.get('playlists_processed')}")
+            print(f"- Matched: {self.stats_manager.get('playlists_matched')}")
+            print(f"- Updated: {self.stats_manager.get('playlists_updated')}")
 
         if self.options.dry:
             print("\nThis was a DRY RUN - no changes were actually made.")
@@ -285,4 +271,4 @@ if __name__ == "__main__":
         sync_agent.cache_manager.invalidate()
     sync_agent.sync()
     sync_agent.print_summary()
-    sync_agent.cache_manager.cleanup()  # Clean up metadata cache at end
+    sync_agent.cache_manager.cleanup()
