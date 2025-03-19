@@ -207,6 +207,7 @@ class PlexSync:
 
         pairs_conflicting = [pair for pair in sync_pairs if pair.sync_state is SyncState.CONFLICTING]
         choose = True
+        status.close_all()
         while choose:
             choose = False
             if len(pairs_conflicting) > 0:
