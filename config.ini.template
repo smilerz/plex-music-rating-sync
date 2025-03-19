@@ -3,5 +3,6 @@ user =          #The plex username
 source =        #Source player (plex or mediamonkey) [default: mediamonkey]
 destination =   #Destination player (plex or mediamonkey) [default: plex]
 sync =          #items to sync between players, one or more of [tracks, playlists] [default: tracks]
+log =           #log level (CRITICAL, ERROR, WARNING, INFO, DEBUG) [default: WARNING]
 token =         #Plex API token. See https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/
 cache-mode =    #Cache mode: metadata, matches, matches-only, disabled [default: metadata]

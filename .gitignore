@@ -105,3 +105,4 @@ ENV/
 .vscode/
 config.ini
 *.pkl
+logs/

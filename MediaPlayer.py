@@ -14,11 +14,14 @@ from plexapi.myplex import MyPlexAccount
 
 from sync_items import AudioTag, Playlist
 
+# TODO: test both ways: empty title, album, artist
+
 
 class MediaPlayer(abc.ABC):
     album_empty_alias = ""
     dry_run = False
     rating_maximum = 5
+    abbr = None
 
     def __init__(self, cache_manager=None, stats_manager=None):
         self.cache_manager = cache_manager
@@ -77,7 +80,7 @@ class MediaPlayer(abc.ABC):
     def _remove_track_from_playlist(self, native_playlist: Any, native_track: Any) -> None:
         """Remove a track from a native playlist"""
 
-    def search_tracks(self, key: str, value: Union[bool, str]) -> List[AudioTag]:
+    def search_tracks(self, key: str, value: Union[bool, str], track_status=False) -> List[AudioTag]:
         """Search tracks and convert to AudioTag format
 
         :param key: Search mode (rating, title, etc)
@@ -92,14 +95,26 @@ class MediaPlayer(abc.ABC):
         native_tracks = self._search_native_tracks(key, value)
 
         tags = []
+        status = None
         counter = 0
+
+        try:
+            total = len(native_tracks)
+        except TypeError:
+            total = None
+
         for track in native_tracks:
+            if (total and total > 50) or counter >= 50:
+                if not status:
+                    status = self.stats_manager.get_status_handler()
+                    bar = status.start_phase(f"Reading track metadata from {self.name()}", initial=counter, total=total)
+                bar.update()
             tag = self.read_track_metadata(track)
             tags.append(tag)
             counter += 1
-            print(f"\rIdentifying metadata for {counter} tracks", end="", flush=True)
 
-        self.logger.info(f"Found {counter} tracks for {key}={value}")
+        bar.close() if status else None
+        self.logger.debug(f"Found {len(tags)} tracks for {key}={value}")
         return tags
 
     def sync_playlist(self, playlist: Playlist, updates: List[tuple]):
@@ -117,8 +132,13 @@ class MediaPlayer(abc.ABC):
 
         if playlist._native_playlist:
             self.logger.info(f"Syncing {len(updates)} changes to playlist '{playlist.name}'")
-            for track, present in updates:
-                self.update_playlist(playlist._native_playlist, track, present)
+            if len(updates) > 0:
+                status = self.stats_manager.get_status_handler()
+                bar = status.start_phase("Syncing playlist updates", total=len(updates))
+                for track, present in updates:
+                    self.update_playlist(playlist._native_playlist, track, present)
+                    bar.update()
+                bar.close()
             self.logger.debug("Playlist sync completed")
 
     def create_playlist(self, title: str, tracks: List[AudioTag]) -> Optional[Playlist]:
@@ -159,7 +179,7 @@ class MediaPlayer(abc.ABC):
         """
         title = kwargs.get("title")
         if not title:
-            self.logger.warning("Find playlist called without title")
+            self.logger.warning("Find playlist without title")
             return None
 
         self.logger.debug(f"Searching for playlist '{title}'")
@@ -218,7 +238,7 @@ class MediaPlayer(abc.ABC):
 
         matches = self._search_native_tracks("id", track.ID)
         if not matches:
-            self.logger.warning(f"Could not find native track for: {track}")
+            self.logger.warning(f"Could not find track for: {track} in {self.name()}")
             return
         native_track = matches[0]
 
@@ -242,6 +262,7 @@ class MediaMonkey(MediaPlayer):
     def __init__(self, cache_manager=None, stats_manager=None):
         self.logger = logging.getLogger("PlexSync.MediaMonkey")
         self.sdb = None
+        self.abbr = "MM"
         super().__init__(cache_manager, stats_manager)
 
     @classmethod
@@ -262,10 +283,16 @@ class MediaMonkey(MediaPlayer):
     def _create_native_playlist(self, title: str, tracks: List[AudioTag]) -> Optional[Any]:
         if not tracks:
             return None
+        self.logger.info(f"Creating playlist {title} with {len(tracks)} tracks")
         playlist = self.sdb.PlaylistByTitle("").CreateChildPlaylist(title)
-        for track in tracks:
-            song = self.sdb.Database.QuerySongs("ID=" + str(track.ID))
-            playlist.AddTrack(song.Item)
+        if len(tracks) > 0:
+            status = self.stats_manager.get_status_handler()
+            bar = status.start_phase("Adding tracks to playlist", total=len(tracks))
+            for track in tracks:
+                song = self.sdb.Database.QuerySongs("ID=" + str(track.ID))
+                playlist.AddTrack(song.Item)
+                bar.update()
+            bar.close()
         return playlist
 
     def _get_native_playlists(self):
@@ -344,12 +371,19 @@ class MediaMonkey(MediaPlayer):
         it = self.sdb.Database.QuerySongs(query)
 
         results = []
-        counter = 1
+        counter = 0
+        status = None
         while not it.EOF:
-            print(f"\rReading track {counter} from {self.name()}", end="", flush=True)
+            # TODO: track progress here
             results.append(it.Item)
             it.Next()
             counter += 1
+            if counter >= 50:
+                if not status:
+                    status = self.stats_manager.get_status_handler()
+                    bar = status.start_phase(f"Collecting tracks from {self.name()}", initial=counter, total=None)
+                bar.update()
+        bar.close() if status else None
         return results
 
     def update_rating(self, track, rating: float) -> None:
@@ -381,6 +415,7 @@ class PlexPlayer(MediaPlayer):
 
     def __init__(self, cache_manager=None, stats_manager=None):
         self.logger = logging.getLogger("PlexSync.PlexPlayer")
+        self.abbr = "PP"
         self.account = None
         self.plex_api_connection = None
         self.music_library = None
@@ -467,13 +502,13 @@ class PlexPlayer(MediaPlayer):
         if not tracks:
             return None
         plex_tracks = []
+        self.logger.info("Creating playlist {title} with {len(tracks)} tracks")
         for track in tracks:
-            self.logger.debug(f"Searching for track ID: {track.ID}")
+            # TODO: track progress here
             try:
                 matches = self._search_native_tracks("id", track.ID)
                 if matches:
                     plex_tracks.append(matches[0])
-                    self.logger.debug(f"Found track: {matches[0].title}")
                 else:
                     self.logger.warning(f"No match found for track ID: {track.ID}")
             except Exception as e:
@@ -551,17 +586,14 @@ class PlexPlayer(MediaPlayer):
     def _search_native_tracks(self, key: str, value: Union[bool, str]) -> List[Any]:
         if key == "title":
             matches = self.music_library.searchTracks(title=value)
-            n_matches = len(matches)
-            s_matches = f"match{'es' if n_matches > 1 else ''}"
-            self.logger.debug(f"Found {n_matches} {s_matches} for query title={value}")
+            self.logger.debug(f"Found tracks for query title={value}")
             return matches
-
         elif key == "rating":
             if value is True:
                 value = "0"
+            print(f"Collecting tracks from {self.name()}.  This may take some time for large libraries.")
             matches = self.music_library.searchTracks(**{"track.userRating!": value})
             return matches
-
         elif key == "id":
             return [self.music_library.fetchItem(int(value))]
 

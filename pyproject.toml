@@ -9,7 +9,8 @@ dependencies = [
 	"pypiwin32",
 	"numpy",
 	"ConfigArgParse",
-    "pandas"
+    "pandas",
+    "tqdm"
 ]
 
 [project.optional-dependencies]

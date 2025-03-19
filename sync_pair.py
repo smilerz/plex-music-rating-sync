@@ -1,7 +1,7 @@
 import abc
 import logging
 from enum import Enum, auto
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 from fuzzywuzzy import fuzz
@@ -24,20 +24,27 @@ class SyncPair(abc.ABC):
     sync_state = SyncState.UNKNOWN
 
     def __init__(self, source_player, destination_player) -> None:
-        # """
-        # TODO: this is no longer true - not sure if it matters
-        # :type local_player: MediaPlayer.MediaPlayer
-        # :type remote_player: MediaPlayer.PlexPlayer
-        # """
         self.source_player: MediaPlayer = source_player
         self.destination_player: MediaPlayer = destination_player
+        self.stats_manager = source_player.stats_manager
+
+    def track_match_quality(self, score: Optional[int]) -> None:
+        """Track match quality statistics based on the score."""
+        if score is None or score < 30:
+            self.stats_manager.increment("no_matches")
+        elif score < 80:
+            self.stats_manager.increment("poor_matches")
+        elif score < 100:
+            self.stats_manager.increment("good_matches")
+        else:
+            self.stats_manager.increment("perfect_matches")
 
     @abc.abstractmethod
     def match(self) -> bool:
         """Tries to find a match on the destination player that matches the source replica as good as possible"""
 
     @abc.abstractmethod
-    def resolve_conflict(self) -> bool:
+    def resolve_conflict(self, counter: int, total: int) -> bool:
         """Tries to resolve a conflict as good as possible and optionally prompts the user to resolve it manually"""
 
     @abc.abstractmethod
@@ -56,12 +63,71 @@ class SyncPair(abc.ABC):
 class TrackPair(SyncPair):
     rating_source = 0.0
     rating_destination = 0.0
+    score = None
 
     def __init__(self, source_player, destination_player, source_track: AudioTag) -> None:
         super(TrackPair, self).__init__(source_player, destination_player)
         self.logger = logging.getLogger("PlexSync.TrackPair")
         self.source = source_track
         self.stats_manager = source_player.stats_manager
+
+    @staticmethod
+    def truncate(value: str, length: int, from_end: bool = True) -> str:
+        """Truncate a string to the specified length, adding '...' at the start or end."""
+        if len(value) <= length:
+            return value
+        return f"{value[:length - 3]}..." if from_end else f"...{value[-(length - 3):]}"
+
+    @staticmethod
+    def display_pair_details(category: str, sync_pairs: List["TrackPair"]) -> None:
+        """Display track details in a tabular format."""
+
+        def safe_get(attr, default="N/A"):
+            """Safely retrieve an attribute or return default if not present."""
+            return attr if attr else default
+
+        if not sync_pairs:
+            print(f"\nNo tracks found for {category}.\n")
+            return
+
+        print(f"\n{category}:\n{'-' * 50}")
+        if category == "No Matches":
+            print(f"{'':<2} {'Source Artist':<20} {'Source Album':<20} {'Source Title':<30} {'Score/Status':<15}")
+            print(f"{'-' * 92}")
+            for pair in sync_pairs:
+                print(
+                    f"{pair.source_player.abbr:<2} {safe_get(pair.source.artist):<20} {safe_get(pair.source.album):<20} "
+                    f"{safe_get(pair.source.title):<30} {pair.sync_state.name if pair.score is None else pair.score:<15}"
+                )
+        else:
+            print(f"{'':<2} {'Track #':>5} {'Artist':<20} {'Album':<25} {'Title':<35} {'File Path':<50}")
+            print(f"{'-' * 137}")
+
+            for pair in sync_pairs:
+                # Source details
+                source_abbr = pair.source_player.abbr
+                source_track = safe_get(pair.source.track)
+                source_artist = TrackPair.truncate(safe_get(pair.source.artist), 20)
+                source_album = TrackPair.truncate(safe_get(pair.source.album), 25)
+                source_title = TrackPair.truncate(safe_get(pair.source.title), 35)
+                source_path = TrackPair.truncate(safe_get(pair.source.file_path), 50, from_end=False)
+
+                # Destination details
+                dest_abbr = pair.destination_player.abbr
+                dest_track = safe_get(pair.destination.track)
+                dest_artist = TrackPair.truncate(safe_get(pair.destination.artist), 20)
+                dest_album = TrackPair.truncate(safe_get(pair.destination.album), 25)
+                dest_title = TrackPair.truncate(safe_get(pair.destination.title), 35)
+                dest_path = TrackPair.truncate(safe_get(pair.destination.file_path), 50, from_end=False)
+
+                # Print Source Row
+                print(f"{source_abbr:<2} {source_track:>5} {source_artist:<20} {source_album:<25} {source_title:<35} {source_path:<50}")
+                # Print Destination Row
+                print(f"{dest_abbr:<2} {dest_track:>5} {dest_artist:<20} {dest_album:<25} {dest_title:<35} {dest_path:<50}")
+                # Print separator
+                print("-" * 137)
+
+        print("\n")
 
     def albums_similarity(self, destination=None) -> int:
         """
@@ -115,7 +181,6 @@ class TrackPair(SyncPair):
                 raise e
 
         if not candidates:
-            self.stats_manager.increment("no_matches")
             self.logger.warning(f"No candidates found for {self.source}")
             return None, 0
 
@@ -126,16 +191,8 @@ class TrackPair(SyncPair):
 
         # Track match quality
         if best_score < match_threshold:
-            self.stats_manager.increment("no_matches")
             self.logger.debug(f"Best candidate score too low: {best_score} < {match_threshold}")
             return None, best_score
-        elif best_score == 100:
-            self.stats_manager.increment("perfect_matches")
-        elif best_score >= 80:
-            self.stats_manager.increment("good_matches")
-        else:
-            self.stats_manager.increment("poor_matches")
-
         best_match = candidates[ranks[-1]]
 
         # Cache successful match if available
@@ -163,6 +220,8 @@ class TrackPair(SyncPair):
 
         # Find best matching track
         best_match, score = self.find_best_match(candidates, match_threshold)
+        self.track_match_quality(score)  # Track match quality statistics
+
         if not best_match:
             self.sync_state = SyncState.ERROR
             return score
@@ -183,9 +242,10 @@ class TrackPair(SyncPair):
             self.sync_state = SyncState.CONFLICTING
             self.logger.warning(f"Found match with conflicting ratings: {self.source} (Source: {self.rating_source} | Destination: {self.rating_destination})")
 
-        return score
+        self.score = score
+        return self.score
 
-    def resolve_conflict(self) -> bool:
+    def resolve_conflict(self, counter: int, total: int) -> bool:
         prompt = {
             "1": f"{self.source_player.name()}: ({self.source}) - Rating: {self.rating_source}",
             "2": f"{self.destination_player.name()}: ({self.destination}) - Rating: {self.rating_destination}",
@@ -194,22 +254,24 @@ class TrackPair(SyncPair):
             "5": "Cancel resolving conflicts",
         }
         choose = True
+        self.stats_manager.close_all()
         while choose:
             choose = False
+            print(f"\nResolving conflict {counter} of {total}:")
             for key in prompt:
                 print(f"\t[{key}]: {prompt[key]}")
 
             choice = input("Select how to resolve conflicting rating: ")
             if choice == "1":
-                # apply source rating to destination
+                # Apply source rating to destination
                 self.destination_player.update_rating(self.destination, self.rating_source)
                 return True
             elif choice == "2":
-                # apply destination rating to source
+                # Apply destination rating to source
                 self.source_player.update_rating(self.source, self.rating_destination)
                 return True
             elif choice == "3":
-                # apply new rating to source and destination
+                # Apply new rating to source and destination
                 new_rating = input("Please enter a rating between 0 and 10: ")
                 try:
                     new_rating = int(new_rating) / 10
@@ -232,7 +294,7 @@ class TrackPair(SyncPair):
                 print(f"{choice} is not a valid choice, please try again.")
                 choose = True
 
-        print(f"you chose {choice} which is {prompt[choice]}")
+        print(f"You chose {choice} which is {prompt[choice]}")
 
     def similarity(self, candidate) -> float:
         """
@@ -324,13 +386,18 @@ class PlaylistPair(SyncPair):
         # Match all tracks from source
         track_pairs = []
         unmatched = []
-        for track in self.source.tracks:
-            pair = TrackPair(self.source_player, self.destination_player, track)
-            pair.match()
-            if pair.destination is not None:
-                track_pairs.append(pair)
-            else:
-                unmatched.append(track)
+        if len(self.source.tracks) > 0:
+            status = self.stats_manager.get_status_handler()
+            bar = status.start_phase(f"Matching tracks for playlist '{self.source.name}'", total=len(self.source.tracks))
+            for track in self.source.tracks:
+                pair = TrackPair(self.source_player, self.destination_player, track)
+                pair.match()
+                if pair.destination is not None:
+                    track_pairs.append(pair)
+                else:
+                    unmatched.append(track)
+                bar.update()
+            bar.close()
 
         if not track_pairs:
             self.logger.warning(f"No tracks could be matched for playlist {self.source.name}")
@@ -351,15 +418,15 @@ class PlaylistPair(SyncPair):
             self.stats_manager.increment("playlists_updated")
             return True
         else:
-            # Get current state
-            orig_track_count = len(self.destination.tracks)
-            self.logger.debug(f"Destination playlist has {orig_track_count} tracks")
-
-            # Create list of updates - just additions for now since we're doing non-destructive sync
             updates = []
-            for pair in track_pairs:
-                if not self.destination.has_track(pair.destination):
-                    updates.append((pair.destination, True))
+            if len(track_pairs) > 0:
+                status = self.stats_manager.get_status_handler()
+                bar = status.start_phase(f"Updating playlist '{self.source.name}'", total=len(track_pairs))
+                for pair in track_pairs:
+                    if not self.destination.has_track(pair.destination):
+                        updates.append((pair.destination, True))
+                    bar.update()
+                bar.close()
 
             if updates:
                 self.logger.debug(f"Adding {len(updates)} missing tracks to playlist {self.source.name}")

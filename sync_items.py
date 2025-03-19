@@ -16,6 +16,9 @@ class AudioTag(object):
     def __str__(self):
         return " - ".join([self.artist, self.album, self.title])
 
+    def __repr__(self):
+        return f"AudioTag({" - ".join([self.artist, self.album, self.title])})"
+
     @staticmethod
     def get_fields() -> List[str]:
         """Get list of fields that should be cached"""

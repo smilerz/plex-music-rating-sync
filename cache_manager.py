@@ -20,15 +20,16 @@ class CacheManager:
     METADATA_CACHE_FILE = "metadata_cache.pkl"
     SAVE_THRESHOLD = 100
 
-    def __init__(self, mode: str) -> None:
+    def __init__(self, mode: str, stats_manager=None) -> None:
         """Initialize cache manager
 
         Args:
             mode: Cache mode to use
-            logger: Logger instance to use for messages
+            stats_manager: Optional stats manager for tracking cache hits
         """
         self.logger = logging.getLogger("PlexSync.CacheManager")
         self.mode = mode
+        self.stats_manager = stats_manager
         self.metadata_cache: Optional[pd.DataFrame] = None
         self.match_cache: Optional[pd.DataFrame] = None
         self._metadata_update_count = 0
@@ -75,7 +76,7 @@ class CacheManager:
         try:
             with open(filepath, "wb") as f:
                 pickle.dump(cache, f)
-            self.logger.info(f"{cache_type.title()}Cache saved successfully ({len(cache)} entries)")
+            self.logger.debug(f"{cache_type.title()}Cache saved successfully ({len(cache)} entries)")
             return True
         except Exception as e:
             self.logger.error(f"Failed to save {cache_type.title()}Cache to {filepath}: {e}")
@@ -179,6 +180,8 @@ class CacheManager:
         # Retrieve the corresponding match from the destination column
         match = row[dest_name].iloc[0]  # Get first match if multiple exist
         self.logger.debug(f"Match Cache hit: {match} for source_id: {source_id}")
+        if self.stats_manager:
+            self.stats_manager.increment("cache_hits")
         return match
 
     def set_match(self, source_id: str, dest_id: str, source_name: str, dest_name: str) -> None:
@@ -198,7 +201,7 @@ class CacheManager:
         empty_row_idx = self.match_cache.index[self.match_cache.isna().all(axis=1)][0] if self.match_cache.isna().all(axis=1).any() else None
 
         if empty_row_idx is None:
-            self.logger.warning("No empty rows left in match cache! Resizing...")
+            self.logger.debug("No empty rows left in match cache! Resizing...")
             self.match_cache = self._resize_cache(self.match_cache, "match")
             empty_row_idx = self.match_cache.index[self.match_cache.isna().all(axis=1)][0]  # Get new empty row
 
@@ -234,6 +237,8 @@ class CacheManager:
         # Convert row data to AudioTag
         data = row.iloc[0].to_dict()
         self.logger.debug(f"Metadata cache hit for {player_name}:{track_id}")
+        if self.stats_manager:
+            self.stats_manager.increment("cache_hits")
         return AudioTag.from_dict(data)
 
     ### METADATA CACHING (NON-PERSISTENT) ###
@@ -257,7 +262,7 @@ class CacheManager:
             empty_row_idx = self.metadata_cache.index[self.metadata_cache.isna().all(axis=1)][0] if self.metadata_cache.isna().all(axis=1).any() else None
 
             if empty_row_idx is None:
-                self.logger.warning("No empty rows left in metadata cache! Resizing...")
+                self.logger.debug("No empty rows left in metadata cache! Resizing...")
                 self.metadata_cache = self._resize_cache(self.metadata_cache, "metadata")
                 empty_row_idx = self.metadata_cache.index[self.metadata_cache.isna().all(axis=1)][0]
 
