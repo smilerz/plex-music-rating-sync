@@ -2,13 +2,15 @@ import logging
 import os
 import pickle
 import warnings
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import pandas as pd
 
 from MediaPlayer import MediaMonkey, PlexPlayer
 from sync_items import AudioTag
 
+if TYPE_CHECKING:
+    from stats_manager import StatsManager  # Avoid looping imports
 warnings.simplefilter(action="ignore", category=pd.errors.PerformanceWarning)
 
 
@@ -20,13 +22,17 @@ class CacheManager:
     METADATA_CACHE_FILE = "metadata_cache.pkl"
     SAVE_THRESHOLD = 100
 
-    def __init__(self, mode: str, stats_manager=None) -> None:
+    def __init__(self, mode: str, stats_manager: Optional["StatsManager"] = None) -> None:
         """Initialize cache manager
 
         Args:
             mode: Cache mode to use
             stats_manager: Optional stats manager for tracking cache hits
         """
+
+        self.logger = logging.getLogger("PlexSync.CacheManager")
+        self.mode = mode
+        self.stats_manager = stats_manager
         self.logger = logging.getLogger("PlexSync.CacheManager")
         self.mode = mode
         self.stats_manager = stats_manager

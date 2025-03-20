@@ -7,14 +7,29 @@ class StatusBarHandler:
     """Manages multiple tqdm progress bars, allowing parallel phase tracking and returning bar objects for direct manipulation."""
 
     def __init__(self):
-        self.bars = {}  # Stores progress bars by phase name
+        self.bars = {}
+
+    class ManagedProgressBar(tqdm):
+        """Custom progress bar that removes itself from handler when closed"""
+
+        def __init__(self, handler: "StatusBarHandler", desc: str, **kwargs):
+            super().__init__(**kwargs)
+            self.handler = handler
+            self.desc = desc
+
+        def close(self) -> None:
+            """Override close to remove the bar from handler's dictionary"""
+            super().close()
+            if self.desc in self.handler.bars:
+                del self.handler.bars[self.desc]
 
     def start_phase(self, desc: str, initial: int = 0, total: Optional[int] = None) -> tqdm:
         """Start a new phase with a separate progress bar and return it for direct manipulation."""
         if desc in self.bars:
             self.bars[desc].close()  # Close existing bar if restarting phase
 
-        bar = tqdm(
+        bar = self.ManagedProgressBar(
+            handler=self,
             desc=desc,
             unit=" track",
             leave=True,
@@ -25,25 +40,7 @@ class StatusBarHandler:
             position=len(self.bars),  # Ensures new bars appear below existing ones
         )
         self.bars[desc] = bar
-        return bar  # Return the tqdm instance
-
-    def get_phase(self, desc: str) -> Optional[tqdm]:
-        """Retrieve an active progress bar object for direct updates."""
-        return self.bars.get(desc, None)
-
-    def close_phase(self, desc: str) -> None:
-        """Close a progress bar for a completed or canceled phase."""
-        if desc in self.bars:
-            self.bars[desc].close()
-            del self.bars[desc]
-        else:
-            print(f"Warning: Tried to close nonexistent phase '{desc}'")
-
-    def close_all(self) -> None:
-        """Close all active progress bars."""
-        for desc in list(self.bars.keys()):
-            self.close_phase(desc)
-        self.bars.clear()
+        return bar
 
 
 class StatsManager:

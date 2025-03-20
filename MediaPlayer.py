@@ -113,7 +113,7 @@ class MediaPlayer(abc.ABC):
             tags.append(tag)
             counter += 1
 
-        bar.close() if status else None
+        bar.close() if status else None  # TODO: maybe close phase here
         self.logger.debug(f"Found {len(tags)} tracks for {key}={value}")
         return tags
 
@@ -131,8 +131,8 @@ class MediaPlayer(abc.ABC):
             return
 
         if playlist._native_playlist:
-            self.logger.info(f"Syncing {len(updates)} changes to playlist '{playlist.name}'")
             if len(updates) > 0:
+                self.logger.info(f"Syncing {len(updates)} changes to playlist '{playlist.name}'")
                 status = self.stats_manager.get_status_handler()
                 bar = status.start_phase("Syncing playlist updates", total=len(updates))
                 for track, present in updates:
@@ -386,7 +386,7 @@ class MediaMonkey(MediaPlayer):
         bar.close() if status else None
         return results
 
-    def update_rating(self, track, rating: float) -> None:
+    def update_rating(self, track: AudioTag, rating: float) -> None:
         if self.dry_run:
             self.logger.info(f"DRY RUN: Would update rating for {track} to {rating}")
             return
