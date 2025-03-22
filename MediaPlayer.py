@@ -379,7 +379,6 @@ class MediaMonkey(MediaPlayer):
         counter = 0
         status = None
         while not it.EOF:
-            # TODO: track progress here
             results.append(it.Item)
             it.Next()
             counter += 1
@@ -439,27 +438,7 @@ class PlexPlayer(MediaPlayer):
 
     def connect(self, server: str, username: str, password: str = "", token: str = "") -> None:
         self.logger.info(f"Connecting to Plex server {server} as {username}")
-        connection_attempts_left = self.maximum_connection_attempts
-        while connection_attempts_left > 0:
-            time.sleep(0.5)  # important. Otherwise, the above print statement can be flushed after
-            if (not password) & (not token):
-                password = getpass.getpass()
-            try:
-                if password:
-                    self.account = MyPlexAccount(username=username, password=password)
-                elif token:
-                    self.account = MyPlexAccount(username=username, token=token)
-                break
-            except NotFound:
-                print(f"Username {username}, password or token wrong for server {server}.")
-                password = ""
-                connection_attempts_left -= 1
-            except BadRequest as error:
-                self.logger.warning(f"Failed to connect: {error}")
-                connection_attempts_left -= 1
-        if connection_attempts_left == 0 or self.account is None:
-            self.logger.error(f"Exiting after {self.maximum_connection_attempts} failed attempts ...")
-            exit(1)
+        self.account = self._authenticate(server, username, password, token)
 
         self.logger.info(f"Connecting to remote player {self.name()} on the server {server}")
         try:
@@ -492,6 +471,28 @@ class PlexPlayer(MediaPlayer):
                 except (ValueError, KeyError):
                     print("Invalid choice. Please enter a valid number corresponding to the library.")
 
+    def _authenticate(self, server: str, username: str, password: str, token: str) -> MyPlexAccount:
+        connection_attempts_left = self.maximum_connection_attempts
+        while connection_attempts_left > 0:
+            time.sleep(0.5)  # important. Otherwise, the above print statement can be flushed after
+            if not password and not token:
+                password = getpass.getpass()
+            try:
+                if password:
+                    return MyPlexAccount(username=username, password=password)
+                elif token:
+                    return MyPlexAccount(username=username, token=token)
+            except NotFound:
+                print(f"Username {username}, password or token wrong for server {server}.")
+                password = ""
+                connection_attempts_left -= 1
+            except BadRequest as error:
+                self.logger.warning(f"Failed to connect: {error}")
+                connection_attempts_left -= 1
+
+        self.logger.error(f"Exiting after {self.maximum_connection_attempts} failed attempts ...")
+        exit(1)
+
     def read_track_metadata(self, track: plexapi.audio.Track) -> AudioTag:
         return AudioTag(
             artist=track.grandparentTitle,
@@ -509,7 +510,6 @@ class PlexPlayer(MediaPlayer):
         plex_tracks = []
         self.logger.info("Creating playlist {title} with {len(tracks)} tracks")
         for track in tracks:
-            # TODO: track progress here
             try:
                 matches = self._search_native_tracks("id", track.ID)
                 if matches:

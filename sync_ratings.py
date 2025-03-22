@@ -64,14 +64,12 @@ class PlexSync:
         if self.options.clear_cache:
             self.cache_manager.invalidate()
 
-        # Connect players appropriately based on which is Plex
-        # TODO: Refactor this to be more dynamic
-        if isinstance(self.source_player, PlexPlayer):
-            self.source_player.connect(server=self.options.server, username=self.options.username, password=self.options.passwd, token=self.options.token)
-            self.destination_player.connect()
-        elif isinstance(self.destination_player, PlexPlayer):
-            self.destination_player.connect(server=self.options.server, username=self.options.username, password=self.options.passwd, token=self.options.token)
-            self.source_player.connect()
+        # Connect players with appropriate parameters based on player type
+        for player in [self.source_player, self.destination_player]:
+            if isinstance(player, PlexPlayer):
+                player.connect(server=self.options.server, username=self.options.username, password=self.options.passwd, token=self.options.token)
+            else:
+                player.connect()
 
         for sync_item in self.options.sync:
             if sync_item.lower() == "tracks":
