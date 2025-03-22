@@ -36,7 +36,7 @@ class MediaPlayer(abc.ABC):
     rating_maximum = 5
     abbr = None
 
-    def __init__(self, cache_manager: Optional[CacheManager] = None, stats_manager: Optional[StatsManager] = None):
+    def __init__(self, cache_manager: Optional["CacheManager"] = None, stats_manager: Optional["StatsManager"] = None):
         self.cache_manager = cache_manager
         self.stats_manager = stats_manager
         if cache_manager:
@@ -179,11 +179,10 @@ class MediaPlayer(abc.ABC):
 
                 return playlists
 
-    def find_playlist(self, **kwargs) -> Optional[Playlist]:
+    def find_playlist(self, title: str) -> Optional[Playlist]:
         """Find playlist by title
         :return: Matching Playlist or None
         """
-        title = kwargs.get("title")
         if not title:
             self.logger.warning("Find playlist without title")
             return None
@@ -265,7 +264,7 @@ class MediaPlayer(abc.ABC):
 class MediaMonkey(MediaPlayer):
     rating_maximum = 100
 
-    def __init__(self, cache_manager: Optional[CacheManager] = None, stats_manager: Optional[StatsManager] = None):
+    def __init__(self, cache_manager: Optional["CacheManager"] = None, stats_manager: Optional["StatsManager"] = None):
         self.logger = logging.getLogger("PlexSync.MediaMonkey")
         self.sdb = None
         self.abbr = "MM"
@@ -419,7 +418,7 @@ class PlexPlayer(MediaPlayer):
     rating_maximum = 10
     album_empty_alias = "[Unknown Album]"
 
-    def __init__(self, cache_manager: Optional[CacheManager] = None, stats_manager: Optional[StatsManager] = None):
+    def __init__(self, cache_manager: Optional["CacheManager"] = None, stats_manager: Optional["StatsManager"] = None):
         self.logger = logging.getLogger("PlexSync.PlexPlayer")
         self.abbr = "PP"
         self.account = None
@@ -574,8 +573,7 @@ class PlexPlayer(MediaPlayer):
             self.logger.error(f"Failed to read playlists: {e!s}")
             return []
 
-    def find_playlist(self, **kwargs) -> Optional[Playlist]:
-        title = kwargs["title"]
+    def find_playlist(self, title: str) -> Optional[Playlist]:
         try:
             plex_pl = self.plex_api_connection.playlist(title)
             # Convert to standard Playlist

@@ -19,8 +19,8 @@ class SyncState(Enum):
 
 
 class MatchThresholds:
-    NO_MATCH = 30
-    POOR_MATCH = 30
+    MINIMUM_ACCEPTABLE = 30
+    POOR_MATCH = MINIMUM_ACCEPTABLE
     GOOD_MATCH = 80
     PERFECT_MATCH = 100
 
@@ -67,16 +67,16 @@ class SyncPair(abc.ABC):
         self.destination_player: MediaPlayer = destination_player
         self.stats_manager = source_player.stats_manager
 
-    def track_match_quality(self, score: Optional[int]) -> None:
+    def _record_match_quality(self, score: int) -> None:
         """Track match quality statistics based on the score."""
-        if score is None or score < MatchThresholds.NO_MATCH:
-            self.stats_manager.increment("no_matches")
-        elif score < MatchThresholds.GOOD_MATCH:
-            self.stats_manager.increment("poor_matches")
-        elif score < MatchThresholds.PERFECT_MATCH:
-            self.stats_manager.increment("good_matches")
-        else:
+        if score >= MatchThresholds.PERFECT_MATCH:
             self.stats_manager.increment("perfect_matches")
+        elif score >= MatchThresholds.GOOD_MATCH:
+            self.stats_manager.increment("good_matches")
+        elif score >= MatchThresholds.POOR_MATCH:
+            self.stats_manager.increment("poor_matches")
+        else:
+            self.stats_manager.increment("no_matches")
 
     @abc.abstractmethod
     def match(self) -> bool:
@@ -150,15 +150,17 @@ class TrackPair(SyncPair):
                 source_title = TrackPair.truncate(safe_get(pair.source.title), TruncateDefaults.MAX_TITLE_LENGTH)
                 source_path = TrackPair.truncate(safe_get(pair.source.file_path), TruncateDefaults.MAX_FILE_PATH_LENGTH, from_end=False)
 
-                dest_abbr = pair.destination_player.abbr
-                dest_track = safe_get(pair.destination.track)
-                dest_artist = TrackPair.truncate(safe_get(pair.destination.artist), TruncateDefaults.MAX_ARTIST_LENGTH)
-                dest_album = TrackPair.truncate(safe_get(pair.destination.album), TruncateDefaults.MAX_ALBUM_LENGTH)
-                dest_title = TrackPair.truncate(safe_get(pair.destination.title), TruncateDefaults.MAX_TITLE_LENGTH)
-                dest_path = TrackPair.truncate(safe_get(pair.destination.file_path), TruncateDefaults.MAX_FILE_PATH_LENGTH, from_end=False)
-
                 print(f"{source_abbr:<2} {source_track:>5} {source_artist:<20} {source_album:<25} {source_title:<35} {source_path:<50}")
-                print(f"{dest_abbr:<2} {dest_track:>5} {dest_artist:<20} {dest_album:<25} {dest_title:<35} {dest_path:<50}")
+
+                if pair.destination:
+                    dest_abbr = pair.destination_player.abbr
+                    dest_track = safe_get(pair.destination.track)
+                    dest_artist = TrackPair.truncate(safe_get(pair.destination.artist), TruncateDefaults.MAX_ARTIST_LENGTH)
+                    dest_album = TrackPair.truncate(safe_get(pair.destination.album), TruncateDefaults.MAX_ALBUM_LENGTH)
+                    dest_title = TrackPair.truncate(safe_get(pair.destination.title), TruncateDefaults.MAX_TITLE_LENGTH)
+                    dest_path = TrackPair.truncate(safe_get(pair.destination.file_path), TruncateDefaults.MAX_FILE_PATH_LENGTH, from_end=False)
+
+                    print(f"{dest_abbr:<2} {dest_track:>5} {dest_artist:<20} {dest_album:<25} {dest_title:<35} {dest_path:<50}")
                 print("-" * 137)
 
         print("\n")
@@ -220,7 +222,7 @@ class TrackPair(SyncPair):
             self.logger.error(f"Failed to search tracks for track '{self.source}' stored at {self.source.file_path}.")
             raise e
 
-    def _get_best_match(self, candidates: List[AudioTag], match_threshold: int = MatchThresholds.NO_MATCH) -> Tuple[Optional[AudioTag], int]:
+    def _get_best_match(self, candidates: List[AudioTag], match_threshold: int = MatchThresholds.MINIMUM_ACCEPTABLE) -> Tuple[Optional[AudioTag], int]:
         """Find the best matching track from a list of candidates based on similarity score."""
         if not candidates:
             return None, 0
@@ -248,11 +250,10 @@ class TrackPair(SyncPair):
 
         self.source_player.cache_manager.set_match(self.source.ID, best_match.ID, self.source_player.name(), self.destination_player.name(), score)
 
-    def find_best_match(self, candidates: Optional[List[AudioTag]] = None, match_threshold: int = MatchThresholds.NO_MATCH) -> Tuple[Optional[AudioTag], int]:
+    def find_best_match(self, candidates: Optional[List[AudioTag]] = None, match_threshold: int = MatchThresholds.MINIMUM_ACCEPTABLE) -> Tuple[Optional[AudioTag], int]:
         """Find the best matching track from candidates or by searching."""
-        cached_match, cached_score = self._get_cache_match()
+        cached_match = self._get_cache_match()
         if cached_match:
-            self.score = cached_score or MatchThresholds.PERFECT_MATCH
             return cached_match, self.score
 
         if candidates is None:
@@ -276,13 +277,13 @@ class TrackPair(SyncPair):
 
         return best_match, best_score
 
-    def match(self, candidates: Optional[List[AudioTag]] = None, match_threshold: int = MatchThresholds.NO_MATCH) -> int:
+    def match(self, candidates: Optional[List[AudioTag]] = None, match_threshold: int = MatchThresholds.MINIMUM_ACCEPTABLE) -> int:
         """Find matching track on destination player"""
         if self.source is None:
             raise RuntimeError("Source track not set")
 
         best_match, score = self.find_best_match(candidates, match_threshold)
-        self.track_match_quality(score)
+        self._record_match_quality(score)
 
         if not best_match:
             self.sync_state = SyncState.ERROR
@@ -324,17 +325,8 @@ class TrackPair(SyncPair):
             return None
 
     def _apply_resolution(self, choice: str, counter: int, total: int) -> bool:
-        """Display conflict menu and apply the selected resolution.
+        """Display conflict menu and apply the selected resolution."""
 
-        Args:
-            choice: The user's selected resolution option
-            counter: Current conflict number
-            total: Total number of conflicts
-
-        Returns:
-            True if the conflict was resolved (including skips), False to cancel
-        """
-        # Display the menu if no choice has been made yet
         if not choice:
             print(f"\nResolving conflict {counter} of {total}:")
             print("\n".join(f"\t[{key}]: {value}" for key, value in ConflictResolutionOptions.PROMPT.items()))
@@ -379,27 +371,19 @@ class TrackPair(SyncPair):
                 choice = ""
 
     def similarity(self, candidate: AudioTag) -> float:
-        """
-        Determines the matching similarity of @candidate with the source query track
-        :param candidate: Track to compare with the source
-        :return: A similarity rating [0.0, 100.0]
-        """
+        """Determines the matching similarity of @candidate with the source query track"""
         scores = np.array(
             [
                 fuzz.ratio(self.source.title, candidate.title),
                 fuzz.ratio(self.source.artist, candidate.artist),
-                MatchThresholds.PERFECT_MATCH if self.source.track == candidate.track else MatchThresholds.NO_MATCH,
+                MatchThresholds.PERFECT_MATCH if self.source.track == candidate.track else 0,
                 self.albums_similarity(destination=candidate),
             ]
         )
         return np.average(scores)
 
     def sync(self, force: bool = False, source_to_destination: bool = False) -> bool:
-        """
-        Synchronizes the source and destination replicas.
-        :param force: Whether to force synchronization
-        :return: True if synchronization was successful, False otherwise
-        """
+        """Synchronizes the source and destination replicas.:return: True if synchronization was successful, False otherwise"""
         if self.rating_destination <= 0.0 or force:
             if source_to_destination:
                 self.destination_player.update_rating(self.destination, self.rating_source)
@@ -450,14 +434,7 @@ class PlaylistPair(SyncPair):
         raise NotImplementedError
 
     def _create_new_playlist(self, track_pairs: List[TrackPair]) -> bool:
-        """Create a new playlist on the destination player with matched tracks.
-
-        Args:
-            track_pairs: List of matched track pairs
-
-        Returns:
-            True to indicate successful creation
-        """
+        """Create a new playlist on the destination player with matched tracks."""
         destination_tracks = [pair.destination for pair in track_pairs]
         self.destination = self.destination_player.create_playlist(self.source.name, destination_tracks)
         self.logger.info(f"Created new playlist {self.source.name} with {len(destination_tracks)} tracks")
@@ -465,14 +442,7 @@ class PlaylistPair(SyncPair):
         return True
 
     def _update_existing_playlist(self, track_pairs: List[TrackPair]) -> bool:
-        """Update an existing playlist on the destination player with missing tracks.
-
-        Args:
-            track_pairs: List of matched track pairs
-
-        Returns:
-            True if updates were made, False otherwise
-        """
+        """Update an existing playlist on the destination player with missing tracks."""
         updates = []
         if len(track_pairs) > 0:
             status = self.stats_manager.get_status_handler()

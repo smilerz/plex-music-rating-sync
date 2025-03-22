@@ -141,20 +141,13 @@ class PlexSync:
             "5": "Display track match details",
             "6": "Don't resolve conflicts",
         }
-        print("/n")
+        print("\n")
         for key in prompt:
             print(f"\t[{key}]: {prompt[key]}")
         return input("Select how to resolve conflicting rating: ")
 
     def _apply_ratings(self, pairs_conflicting: List[TrackPair], source_to_destination: bool) -> None:
-        """Apply ratings from one player to another for all conflicting track pairs.
-
-        Args:
-            pairs_conflicting: List of track pairs with conflicting ratings
-            source_to_destination:
-                - If True, apply ratings from source to destination.
-                - If False, apply ratings from destination to source.
-        """
+        """Apply ratings from one player to another for all conflicting track pairs."""
         if not pairs_conflicting:
             return
 
@@ -166,15 +159,15 @@ class PlexSync:
 
     def _display_track_details(self, sync_pairs: List[TrackPair]) -> None:
         """Display track match details based on user selection."""
-        valid_choices = {"A", "G", "P", "N"}
+        valid_choices = {"U", "G", "P", "N"}
         while True:
-            sub_choice = input("Select tracks to display: [A]ll, [G]ood, [P]oor, [N]one: ").strip().upper()
+            sub_choice = input("Select tracks to display: [U]pdated, [G]ood, [P]oor, [N]one: ").strip().upper()
             if sub_choice in valid_choices:
                 break
             print("Invalid choice. Please select [A], [G], [P], or [N].")
 
         filters = {
-            "A": lambda pair: pair.score is not None and pair.sync_state is not SyncState.UP_TO_DATE,
+            "U": lambda pair: pair.score is not None and pair.sync_state is not SyncState.UP_TO_DATE,
             "G": lambda pair: pair.score is not None and pair.score >= 80,
             "P": lambda pair: pair.score is not None and 30 <= pair.score < 80,
             "N": lambda pair: pair.score is None or pair.score < 30,
@@ -182,12 +175,7 @@ class PlexSync:
         TrackPair.display_pair_details(f"{sub_choice} Matches", [pair for pair in sync_pairs if filters[sub_choice](pair)])
 
     def _resolve_conflicts(self, pairs_conflicting: List[TrackPair], sync_pairs: List[TrackPair]) -> None:
-        """Resolve conflicts between source and destination ratings
-
-        Args:
-            pairs_conflicting: List of track pairs with conflicting ratings
-            sync_pairs: Complete list of all sync pairs (needed for display options)
-        """
+        """Resolve conflicts between source and destination ratings"""
         self.stats_manager.set("tracks_conflicts", len(pairs_conflicting))
 
         while True:

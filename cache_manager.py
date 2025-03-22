@@ -99,6 +99,10 @@ class Cache:
             self.save()
             self.update_count = 0
 
+    def is_empty(self) -> bool:
+        """Check if the cache DataFrame is empty."""
+        return self.cache.empty
+
 
 class CacheManager:
     """Handles caching for metadata and track matches, supporting multiple caching modes."""
@@ -122,6 +126,14 @@ class CacheManager:
 
         self._initialize_caches()
 
+    def is_match_cache_enabled(self) -> bool:
+        """Return True if match caching is enabled based on current mode."""
+        return self.mode in {"matches", "matches-only"}
+
+    def is_metadata_cache_enabled(self) -> bool:
+        """Return True if metadata caching is enabled based on current mode."""
+        return self.mode in {"metadata", "matches"}
+
     def _initialize_caches(self) -> None:
         """Initialize both caches based on current mode."""
         self.logger.debug(f"Initializing caches for mode: {self.mode}")
@@ -139,6 +151,11 @@ class CacheManager:
                 save_threshold=self.SAVE_THRESHOLD,
             )
             self.metadata_cache.load()
+
+    def _safe_get_value(self, row: pd.DataFrame, column_name: str) -> Optional[object]:
+        """Safely extract a value from a pandas row, converting NaN to None."""
+        value = row[column_name].iloc[0]
+        return None if pd.isna(value) else value
 
     def _get_match_cache_columns(self) -> list:
         """Get the required columns for the match cache."""
@@ -181,68 +198,64 @@ class CacheManager:
     ### MATCH CACHING (PERSISTENT) ###
     def get_match(self, source_id: str, source_name: str, dest_name: str) -> Optional[str]:
         """Retrieve a cached match for a track."""
-        if self.mode not in {"matches", "matches-only"}:
-            return None
+        if not self.is_match_cache_enabled() or self.match_cache is None or self.match_cache.is_empty():
+            return None, None
 
-        if self.match_cache is None or self.match_cache.empty:
-            return None
-
-        row = self.match_cache[self.match_cache[source_name] == source_id]
+        row = self.match_cache.cache[self.match_cache.cache[source_name] == source_id]
         if row.empty:
-            return None
+            return None, None
 
-        match = row[dest_name].iloc[0]
-        score = row["score"].iloc[0] if "score" in row.columns else None
+        match = self._safe_get_value(row, dest_name)
+        score = self._safe_get_value(row, "score")
         self.logger.debug(f"Match Cache hit: {match} (score: {score}) for source_id: {source_id}")
         if self.stats_manager:
             self.stats_manager.increment("cache_hits")
-        return match
+        return match, score
 
     def set_match(self, source_id: str, dest_id: str, source_name: str, dest_name: str, score: Optional[float] = None) -> None:
-        """Store a track match between source and destination, including a score."""
-        if self.mode not in {"matches", "matches-only"}:
-            return
-        if self.match_cache is None or self.match_cache.empty:
+        """Store or update a track match between source and destination, including a score."""
+        if not self.is_match_cache_enabled() or self.match_cache is None or self.match_cache.is_empty():
             return
 
-        # Check if this match already exists to prevent duplicates
-        existing_match = self.get_match(source_id, source_name, dest_name)
-        if existing_match == dest_id:
-            self.logger.debug(f"Match already exists: {source_name}:{source_id} <-> {dest_name}:{dest_id}")
+        # Check if this match already exists
+        existing_row = self.match_cache.cache[(self.match_cache.cache[source_name] == source_id) & (self.match_cache.cache[dest_name] == dest_id)]
+
+        if not existing_row.empty:
+            # Update the score if it differs
+            row_idx = existing_row.index[0]
+            if self._safe_get_value(existing_row, "score") != score:
+                self.match_cache.cache.loc[row_idx, "score"] = score
+                self.logger.debug(f"Updated score for existing match: {source_name}:{source_id} <-> {dest_name}:{dest_id}")
+                self.match_cache.update_count += 1
+                self.match_cache.auto_save()
             return
 
-        # Find the next available empty row
-        empty_row_idx = self.match_cache.index[self.match_cache.isna().all(axis=1)][0] if self.match_cache.isna().all(axis=1).any() else None
-
+        # Find the next available empty row or resize if needed
+        empty_row_idx = self.match_cache.cache.index[self.match_cache.cache.isna().all(axis=1)][0] if self.match_cache.cache.isna().all(axis=1).any() else None
         if empty_row_idx is None:
             self.logger.debug("No empty rows left in match cache! Resizing...")
-            self.match_cache = self._resize_cache(self.match_cache, "match")
-            empty_row_idx = self.match_cache.index[self.match_cache.isna().all(axis=1)][0]  # Get new empty row
+            self.match_cache.resize()
+            empty_row_idx = self.match_cache.cache.index[self.match_cache.cache.isna().all(axis=1)][0]
 
-        # Assign new values in-place
-        self.match_cache.loc[empty_row_idx, source_name] = source_id
-        self.match_cache.loc[empty_row_idx, dest_name] = dest_id
-        self.match_cache.loc[empty_row_idx, "score"] = score if score is not None else None  # Ternary operator
-
-        self._match_update_count += 1
-        self._trigger_auto_save()
+        # Insert new match
+        self.match_cache.cache.loc[empty_row_idx, [source_name, dest_name, "score"]] = [source_id, dest_id, score]
+        self.logger.debug(f"Added new match: {source_name}:{source_id} <-> {dest_name}:{dest_id} (score: {score})")
+        self.match_cache.update_count += 1
+        self.match_cache.auto_save()
 
     def get_metadata(self, player_name: str, track_id: str) -> Optional[AudioTag]:
         """Retrieve cached metadata by player name and track ID."""
-        if self.mode not in {"metadata", "matches"}:
-            return None
-
-        if self.metadata_cache is None or self.metadata_cache.empty:
+        if not self.is_metadata_cache_enabled() or self.metadata_cache is None or self.metadata_cache.is_empty():
             return None
 
         # Find row matching player name and track ID
-        row = self.metadata_cache[(self.metadata_cache["player_name"] == player_name) & (self.metadata_cache["ID"] == track_id)]
+        row = self.metadata_cache.cache[(self.metadata_cache.cache["player_name"] == player_name) & (self.metadata_cache.cache["ID"] == track_id)]
 
         if row.empty:
             return None
 
         # Convert row data to AudioTag
-        data = row.iloc[0].to_dict()
+        data = {key: self._safe_get_value(row, key) for key in row.columns}
         self.logger.debug(f"Metadata cache hit for {player_name}:{track_id}")
         if self.stats_manager:
             self.stats_manager.increment("cache_hits")
@@ -251,33 +264,39 @@ class CacheManager:
     ### METADATA CACHING (NON-PERSISTENT) ###
     def set_metadata(self, player_name: str, track_id: str, metadata: AudioTag) -> None:
         """Store metadata in the pre-allocated cache, resizing if needed."""
-        if self.mode not in {"metadata", "matches"}:
+        if not self.is_metadata_cache_enabled():
             return
 
-        if self.metadata_cache is None or self.metadata_cache.empty:
-            self.metadata_cache = self._initialize_metadata_cache()
+        if self.metadata_cache is None or self.metadata_cache.is_empty():
+            self.metadata_cache = Cache(
+                filepath=self.METADATA_CACHE_FILE,
+                columns=self._get_metadata_cache_columns(),
+                dtype={col: "str" if col == "ID" else "object" for col in self._get_metadata_cache_columns()},
+                save_threshold=self.SAVE_THRESHOLD,
+            )
+            self.metadata_cache.load()
 
         # Check if metadata already exists for this track
-        existing_row = self.metadata_cache[(self.metadata_cache["player_name"] == player_name) & (self.metadata_cache["ID"] == track_id)]
+        existing_row = self.metadata_cache.cache[(self.metadata_cache.cache["player_name"] == player_name) & (self.metadata_cache.cache["ID"] == track_id)]
 
         if not existing_row.empty:
             # Update the existing row
             row_index = existing_row.index[0]
-            self.metadata_cache.update(pd.DataFrame(metadata.to_dict(), index=[row_index]))
+            self.metadata_cache.cache.update(pd.DataFrame(metadata.to_dict(), index=[row_index]))
         else:
             # Find the next available empty row (first row where all columns are NaN)
-            empty_row_idx = self.metadata_cache.index[self.metadata_cache.isna().all(axis=1)][0] if self.metadata_cache.isna().all(axis=1).any() else None
+            empty_row_idx = self.metadata_cache.cache.index[self.metadata_cache.cache.isna().all(axis=1)][0] if self.metadata_cache.cache.isna().all(axis=1).any() else None
 
             if empty_row_idx is None:
                 self.logger.debug("No empty rows left in metadata cache! Resizing...")
-                self.metadata_cache = self._resize_cache(self.metadata_cache, "metadata")
-                empty_row_idx = self.metadata_cache.index[self.metadata_cache.isna().all(axis=1)][0]
+                self.metadata_cache.resize()
+                empty_row_idx = self.metadata_cache.cache.index[self.metadata_cache.cache.isna().all(axis=1)][0]
 
             # Store new metadata in the available row
-            self.metadata_cache.loc[empty_row_idx, "player_name"] = player_name
-            self.metadata_cache.loc[empty_row_idx, "ID"] = track_id
+            self.metadata_cache.cache.loc[empty_row_idx, "player_name"] = player_name
+            self.metadata_cache.cache.loc[empty_row_idx, "ID"] = track_id
             for key, value in metadata.to_dict().items():
-                if key in self.metadata_cache.columns:
-                    self.metadata_cache.loc[empty_row_idx, key] = value
-        self._metadata_update_count += 1
-        self._trigger_auto_save()
+                if key in self.metadata_cache.cache.columns:
+                    self.metadata_cache.cache.loc[empty_row_idx, key] = value
+        self.metadata_cache.update_count += 1
+        self.metadata_cache.auto_save()
