@@ -10,8 +10,94 @@ from MediaPlayer import MediaMonkey, PlexPlayer
 from sync_items import AudioTag
 
 if TYPE_CHECKING:
-    from stats_manager import StatsManager  # Avoid looping imports
+    from stats_manager import StatsManager
 warnings.simplefilter(action="ignore", category=pd.errors.PerformanceWarning)
+
+
+class Cache:
+    """Generic Cache class to handle common operations for caching."""
+
+    def __init__(self, filepath: str, columns: list, dtype: dict, save_threshold: int = 100) -> None:
+        """
+        Initialize the Cache.
+
+        Args:
+            filepath: Path to the cache file.
+            columns: List of required columns for the cache.
+            dtype: Dictionary specifying the data types for the columns.
+            save_threshold: Number of updates before triggering an auto-save.
+        """
+        self.filepath = filepath
+        self.columns = columns
+        self.dtype = dtype
+        self.save_threshold = save_threshold
+        self.logger = logging.getLogger("PlexSync.Cache")
+        self.cache: pd.DataFrame = self._initialize_cache()
+        self.update_count = 0
+
+    def _initialize_cache(self) -> pd.DataFrame:
+        """Initialize a new cache with the required columns."""
+        self.logger.debug(f"Initializing cache with columns: {self.columns}")
+        df = pd.DataFrame(data=None, index=range(self.save_threshold + 1), columns=self.columns).astype(self.dtype)
+        self.logger.info(f"Cache initialized with {self.save_threshold + 1} empty rows")
+        return df
+
+    def load(self) -> None:
+        """Load the cache from the file."""
+        if os.path.exists(self.filepath):
+            try:
+                with open(self.filepath, "rb") as f:
+                    self.cache = pickle.load(f)
+                self.logger.info(f"Cache loaded from {self.filepath}: {len(self.cache)} entries")
+                self._ensure_columns()
+            except (pickle.UnpicklingError, EOFError) as e:
+                self.logger.error(f"Failed to load cache from {self.filepath}: {e}")
+                self.logger.warning("Falling back to new cache initialization")
+                self.cache = self._initialize_cache()
+        else:
+            self.logger.debug(f"No existing cache found at {self.filepath}. Initializing new cache.")
+            self.cache = self._initialize_cache()
+
+    def save(self) -> None:
+        """Save the cache to the file."""
+        try:
+            with open(self.filepath, "wb") as f:
+                pickle.dump(self.cache, f)
+            self.logger.info(f"Cache saved to {self.filepath}: {len(self.cache)} entries")
+        except Exception as e:
+            self.logger.error(f"Failed to save cache to {self.filepath}: {e}")
+
+    def delete(self) -> None:
+        """Delete the cache file."""
+        try:
+            if os.path.exists(self.filepath):
+                os.remove(self.filepath)
+                self.logger.info(f"Cache file {self.filepath} deleted successfully")
+            else:
+                self.logger.debug(f"No cache file found at {self.filepath} to delete")
+        except Exception as e:
+            self.logger.error(f"Failed to delete cache file {self.filepath}: {e}")
+
+    def _ensure_columns(self) -> None:
+        """Ensure all required columns are present in the cache."""
+        for column in self.columns:
+            if column not in self.cache.columns:
+                self.logger.warning(f"Missing column '{column}' in cache. Adding it with NaN values.")
+                self.cache[column] = pd.NA
+
+    def resize(self, additional_rows: int = 100) -> None:
+        """Resize the cache by adding more empty rows."""
+        start_index = self.cache.index.max() + 1 if not self.cache.empty else 0
+        new_index = range(start_index, start_index + additional_rows)
+        self.cache = self.cache.reindex(self.cache.index.union(new_index))
+        self.logger.debug(f"Cache resized by {additional_rows} rows. New size: {len(self.cache)}")
+
+    def auto_save(self) -> None:
+        """Trigger an auto-save if the update count exceeds the threshold."""
+        if self.update_count >= self.save_threshold:
+            self.cache = self.cache.dropna(how="all").copy()
+            self.save()
+            self.update_count = 0
 
 
 class CacheManager:
@@ -23,23 +109,12 @@ class CacheManager:
     SAVE_THRESHOLD = 100
 
     def __init__(self, mode: str, stats_manager: Optional["StatsManager"] = None) -> None:
-        """Initialize cache manager
-
-        Args:
-            mode: Cache mode to use
-            stats_manager: Optional stats manager for tracking cache hits
-        """
-
+        """Initialize cache manager"""
         self.logger = logging.getLogger("PlexSync.CacheManager")
         self.mode = mode
         self.stats_manager = stats_manager
-        self.logger = logging.getLogger("PlexSync.CacheManager")
-        self.mode = mode
-        self.stats_manager = stats_manager
-        self.metadata_cache: Optional[pd.DataFrame] = None
-        self.match_cache: Optional[pd.DataFrame] = None
-        self._metadata_update_count = 0
-        self._match_update_count = 0
+        self.metadata_cache: Optional[Cache] = None
+        self.match_cache: Optional[Cache] = None
 
         if self.mode == "disabled":
             self.logger.info("Cache disabled.")
@@ -50,122 +125,57 @@ class CacheManager:
     def _initialize_caches(self) -> None:
         """Initialize both caches based on current mode."""
         self.logger.debug(f"Initializing caches for mode: {self.mode}")
-        if self.mode in {"matches", "matches-only"}:
+        if self.is_match_cache_enabled():
             self.logger.debug("Initializing match cache")
-            self.match_cache = self._load_cache(self.MATCH_CACHE_FILE, self._initialize_match_cache, "match")
+            self.match_cache = Cache(filepath=self.MATCH_CACHE_FILE, columns=self._get_match_cache_columns(), dtype="object", save_threshold=self.SAVE_THRESHOLD)
+            self.match_cache.load()
 
-        if self.mode in {"metadata", "matches"}:
+        if self.is_metadata_cache_enabled():
             self.logger.debug("Initializing metadata cache")
-            self.metadata_cache = self._load_cache(self.METADATA_CACHE_FILE, self._initialize_metadata_cache, "metadata")
+            self.metadata_cache = Cache(
+                filepath=self.METADATA_CACHE_FILE,
+                columns=self._get_metadata_cache_columns(),
+                dtype={col: "str" if col == "ID" else "object" for col in self._get_metadata_cache_columns()},
+                save_threshold=self.SAVE_THRESHOLD,
+            )
+            self.metadata_cache.load()
 
-    def _load_cache(self, filepath: str, init_func: callable, cache_type: str) -> Optional[pd.DataFrame]:
-        """Generic cache loading with error handling."""
-        self.logger.debug(f"Attempting to load {cache_type.title()}Cache from {filepath}")
-        if os.path.exists(filepath):
-            try:
-                with open(filepath, "rb") as f:
-                    cache = pickle.load(f)
-                self.logger.info(f"{cache_type.title()} cache loaded: {len(cache)} entries")
-                return cache
-            except (pickle.UnpicklingError, EOFError) as e:
-                self.logger.error(f"Failed to load {cache_type.title()}Cache from {filepath}: {e}")
-                self.logger.warning(f"Falling back to new {cache_type.title()}Cache initialization")
-        else:
-            self.logger.debug(f"No existing {cache_type.title()}Cache found at {filepath}")
-        return init_func()
+    def _get_match_cache_columns(self) -> list:
+        """Get the required columns for the match cache."""
+        return [player.name() for player in self.KNOWN_PLAYERS] + ["score"]
 
-    def _save_cache(self, cache: pd.DataFrame, filepath: str, cache_type: str) -> bool:
-        """Generic cache saving with error handling."""
-        if cache is None:
-            return False
+    def _get_metadata_cache_columns(self) -> list:
+        """Get the required columns for the metadata cache."""
+        return list(dict.fromkeys(["player_name", *AudioTag.get_fields()]))
 
-        try:
-            with open(filepath, "wb") as f:
-                pickle.dump(cache, f)
-            self.logger.debug(f"{cache_type.title()}Cache saved successfully ({len(cache)} entries)")
-            return True
-        except Exception as e:
-            self.logger.error(f"Failed to save {cache_type.title()}Cache to {filepath}: {e}")
-            return False
+    def cleanup(self) -> None:
+        """Clean up cache files from disk."""
+        if self.is_metadata_cache_enabled() and self.metadata_cache:
+            self.metadata_cache.delete()
 
-    def _delete_cache(self, filepath: str, cache_type: str) -> bool:
-        """Generic cache deletion with error handling."""
-        self.logger.debug(f"Attempting to delete {cache_type.title()}Cache at {filepath}")
-        try:
-            if os.path.exists(filepath):
-                os.remove(filepath)
-                self.logger.debug(f"{cache_type.title()}Cache deleted successfully")
-            else:
-                self.logger.debug(f"No {cache_type.title()} cache file found to delete")
-            return True
-        except PermissionError as e:
-            self.logger.error(f"Permission denied while deleting {cache_type.title()}Cache: {e}")
-            return False
-        except Exception as e:
-            self.logger.error(f"Unexpected error deleting {cache_type.title()}Cache: {e}")
-            return False
+        if self.is_match_cache_enabled() and self.match_cache:
+            self.match_cache.delete()
 
-    def _initialize_match_cache(self) -> pd.DataFrame:
-        """Create a match cache with explicitly defined player columns and pre-allocated empty rows."""
-        player_names = [player.name() for player in self.KNOWN_PLAYERS]
-        self.logger.debug(f"Match cache initialized with columns: {player_names}")
+    def invalidate(self) -> None:
+        """Invalidate both match and metadata caches."""
+        if self.is_match_cache_enabled() and self.match_cache:
+            self.match_cache.delete()
+            self.match_cache = None
 
-        # Create a DataFrame with empty string values (or use NaN if preferred)
-        df = pd.DataFrame(
-            data=None,  # No actual data yet
-            index=range(self.SAVE_THRESHOLD + 1),  # Auto-incrementing index
-            columns=player_names,
-        ).astype("object")  # Ensure all values are stored as objects (strings, None, etc.)
+        if self.is_metadata_cache_enabled() and self.metadata_cache:
+            self.metadata_cache.delete()
+            self.metadata_cache = None
 
-        self.logger.info(f"Match cache initialized with {self.SAVE_THRESHOLD + 1} empty rows")
-        return df
-
-    def _initialize_metadata_cache(self) -> pd.DataFrame:
-        """Create metadata cache on first access, defining columns from AudioTag attributes."""
-        # Ensure "player_name" is included, and remove duplicate column names
-        fields = AudioTag.get_fields()
-        columns = list(dict.fromkeys(["player_name", *fields]))  # Preserve order, remove duplicates
-
-        self.logger.debug(f"Metadata cache columns: {columns}")
-
-        # Create DataFrame with pre-allocated empty rows and an auto-incrementing integer index
-        df = pd.DataFrame(
-            data=None,
-            index=range(self.SAVE_THRESHOLD + 1),  # Auto-numbered index
-            columns=columns,
-        ).astype({col: "str" if col == "ID" else "object" for col in columns})
-
-        self.logger.info(f"Metadata cache initialized with {self.SAVE_THRESHOLD + 1} empty rows")
-        return df
-
-    def _resize_cache(self, cache: pd.DataFrame, cache_type: str, additional_rows: int = 100) -> pd.DataFrame:
-        """Expands a cache DataFrame by adding more empty rows."""
-        if cache is None:
-            return None
-
-        # Get the next available index
-        start_index = cache.index.max() + 1 if not cache.empty else 0
-        new_index = range(start_index, start_index + additional_rows)
-
-        # Efficiently reindex without unnecessary copies
-        cache = cache.reindex(cache.index.union(new_index))
-
-        self.logger.debug(f"{cache_type.title()} cache expanded by {additional_rows} rows. New size: {len(cache)}")
-        return cache
-
-    ### PERIODIC SAVING ###
     def _trigger_auto_save(self) -> None:
         """Handle periodic cache saving for each cache type independently."""
         # Check and save match cache if needed
-        if self.mode in {"matches", "matches-only"} and self._match_update_count >= self.SAVE_THRESHOLD:
-            self.match_cache = self.match_cache.dropna(how="all").copy()
-            self._save_cache(self.match_cache.reset_index(drop=True), self.MATCH_CACHE_FILE, "match")
+        if self.is_match_cache_enabled() and self.match_cache and self._match_update_count >= self.SAVE_THRESHOLD:
+            self.match_cache.auto_save()
             self._match_update_count = 0
 
         # Check and save metadata cache if needed
-        if self.mode in {"metadata", "matches"} and self._metadata_update_count >= self.SAVE_THRESHOLD:
-            self.metadata_cache = self.metadata_cache.dropna(how="all").copy()
-            self._save_cache(self.metadata_cache.reset_index(drop=True), self.METADATA_CACHE_FILE, "metadata")
+        if self.is_metadata_cache_enabled() and self.metadata_cache and self._metadata_update_count >= self.SAVE_THRESHOLD:
+            self.metadata_cache.auto_save()
             self._metadata_update_count = 0
 
     ### MATCH CACHING (PERSISTENT) ###
@@ -177,21 +187,19 @@ class CacheManager:
         if self.match_cache is None or self.match_cache.empty:
             return None
 
-        # Find rows where source_id is stored in the source_name column
         row = self.match_cache[self.match_cache[source_name] == source_id]
-
         if row.empty:
-            return None  # No match found
+            return None
 
-        # Retrieve the corresponding match from the destination column
-        match = row[dest_name].iloc[0]  # Get first match if multiple exist
-        self.logger.debug(f"Match Cache hit: {match} for source_id: {source_id}")
+        match = row[dest_name].iloc[0]
+        score = row["score"].iloc[0] if "score" in row.columns else None
+        self.logger.debug(f"Match Cache hit: {match} (score: {score}) for source_id: {source_id}")
         if self.stats_manager:
             self.stats_manager.increment("cache_hits")
         return match
 
-    def set_match(self, source_id: str, dest_id: str, source_name: str, dest_name: str) -> None:
-        """Store a track match between source and destination."""
+    def set_match(self, source_id: str, dest_id: str, source_name: str, dest_name: str, score: Optional[float] = None) -> None:
+        """Store a track match between source and destination, including a score."""
         if self.mode not in {"matches", "matches-only"}:
             return
         if self.match_cache is None or self.match_cache.empty:
@@ -214,20 +222,13 @@ class CacheManager:
         # Assign new values in-place
         self.match_cache.loc[empty_row_idx, source_name] = source_id
         self.match_cache.loc[empty_row_idx, dest_name] = dest_id
+        self.match_cache.loc[empty_row_idx, "score"] = score if score is not None else None  # Ternary operator
 
         self._match_update_count += 1
         self._trigger_auto_save()
 
     def get_metadata(self, player_name: str, track_id: str) -> Optional[AudioTag]:
-        """Retrieve cached metadata by player name and track ID.
-
-        Args:
-            player_name: Name of the player
-            track_id: Track identifier
-
-        Returns:
-            AudioTag if found, None otherwise
-        """
+        """Retrieve cached metadata by player name and track ID."""
         if self.mode not in {"metadata", "matches"}:
             return None
 
@@ -280,18 +281,3 @@ class CacheManager:
                     self.metadata_cache.loc[empty_row_idx, key] = value
         self._metadata_update_count += 1
         self._trigger_auto_save()
-
-    def cleanup(self) -> None:
-        """Clean up cache files from disk."""
-        if self.mode in {"metadata", "matches"}:
-            self._delete_cache(self.METADATA_CACHE_FILE, "metadata")
-
-    def invalidate(self) -> None:
-        """Invalidate both match and metadata caches."""
-        if self.mode in {"matches", "matches-only"}:
-            self._delete_cache(self.MATCH_CACHE_FILE, "match")
-            self.match_cache = None
-
-        if self.mode in {"metadata", "matches"}:
-            self._delete_cache(self.METADATA_CACHE_FILE, "metadata")
-            self.metadata_cache = None

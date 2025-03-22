@@ -185,11 +185,15 @@ class TrackPair(SyncPair):
         return self.source_player.album_empty(self.source.album) and self.destination_player.album_empty(destination.album)
 
     def _get_cache_match(self) -> Optional[AudioTag]:
-        """Attempt to retrieve a cached match for the current source track."""
+        """Attempt to retrieve a cached match for the current source track.
+
+        Returns:
+            The matched AudioTag with full metadata if needed, otherwise None.
+        """
         if not self.source_player.cache_manager:
             return None
 
-        cached_id = self.source_player.cache_manager.get_match(self.source.ID, source_name=self.source_player.name(), dest_name=self.destination_player.name())
+        cached_id, cached_score = self.source_player.cache_manager.get_match(self.source.ID, source_name=self.source_player.name(), dest_name=self.destination_player.name())
 
         if not cached_id:
             return None
@@ -197,8 +201,14 @@ class TrackPair(SyncPair):
         candidates = self.destination_player.search_tracks(key="id", value=cached_id)
         if candidates:
             self.stats_manager.increment("cache_hits")
-            return candidates[0]
+            destination_track = candidates[0]
 
+            if cached_score is None:
+                cached_score = self.similarity(destination_track)
+                self.source_player.cache_manager.set_match(self.source.ID, destination_track.ID, self.source_player.name(), self.destination_player.name(), cached_score)
+
+            self.score = cached_score
+            return destination_track
         return None
 
     def _search_candidates(self) -> List[AudioTag]:
@@ -226,18 +236,24 @@ class TrackPair(SyncPair):
         best_match = candidates[best_idx]
         return best_match, best_score
 
-    def _set_cache_match(self, best_match: AudioTag) -> None:
-        """Store a successful match in the cache."""
+    def _set_cache_match(self, best_match: AudioTag, score: Optional[float] = None) -> None:
+        """Store a successful match in the cache along with its score.
+
+        Args:
+            best_match: The best matching track found.
+            score: The similarity score of the match (optional).
+        """
         if not self.source_player.cache_manager:
             return
 
-        self.source_player.cache_manager.set_match(self.source.ID, best_match.ID, self.source_player.name(), self.destination_player.name())
+        self.source_player.cache_manager.set_match(self.source.ID, best_match.ID, self.source_player.name(), self.destination_player.name(), score)
 
     def find_best_match(self, candidates: Optional[List[AudioTag]] = None, match_threshold: int = MatchThresholds.NO_MATCH) -> Tuple[Optional[AudioTag], int]:
-        """Find the best matching track from candidates or by searching"""
-        cached_match = self._get_cache_match()
+        """Find the best matching track from candidates or by searching."""
+        cached_match, cached_score = self._get_cache_match()
         if cached_match:
-            return cached_match, MatchThresholds.PERFECT_MATCH
+            self.score = cached_score or MatchThresholds.PERFECT_MATCH
+            return cached_match, self.score
 
         if candidates is None:
             candidates = self._search_candidates()
@@ -249,7 +265,7 @@ class TrackPair(SyncPair):
         best_match, best_score = self._get_best_match(candidates, match_threshold)
 
         if best_match:
-            self._set_cache_match(best_match)
+            self._set_cache_match(best_match, best_score)
 
             self.logger.debug(f"Found match with score {best_score} for {self.source} - : - {best_match}")
             if best_score != MatchThresholds.PERFECT_MATCH:
