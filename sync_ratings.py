@@ -191,7 +191,7 @@ class PlexSync:
                         break
                 break
             elif choice == "4":
-                TrackPair.display_pair_details("Conflicting Matches", pairs_conflicting)
+                TrackPair.display_pair6_details("Conflicting Matches", pairs_conflicting)
             elif choice == "5":
                 self._display_track_details(sync_pairs)
             elif choice == "6":

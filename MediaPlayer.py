@@ -28,6 +28,8 @@ PlexTrack = Any  # plexapi.audio.Track
 # TODO: add file system as mediaplayer
 # TODO: itunes
 # TODO add mediamonkey 5
+# TODO: add updating Album, Artist, Title, Rating, Track, Genre
+# TODO: add setting source of record per attribute
 
 
 class MediaPlayer(abc.ABC):

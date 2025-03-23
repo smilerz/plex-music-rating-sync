@@ -38,9 +38,9 @@ class ConflictResolutionOptions:
 
 
 class TruncateDefaults:
-    MAX_ARTIST_LENGTH = 20
-    MAX_ALBUM_LENGTH = 25
-    MAX_TITLE_LENGTH = 35
+    MAX_ARTIST_LENGTH = 25
+    MAX_ALBUM_LENGTH = 30
+    MAX_TITLE_LENGTH = 40
     MAX_FILE_PATH_LENGTH = 50
 
 
@@ -118,13 +118,29 @@ class TrackPair(SyncPair):
         return f"{value[:length - 3]}..." if from_end else f"...{value[-(length - 3):]}"
 
     @staticmethod
+    def _safe_get(attr: Optional[str], default: str = "N/A") -> str:
+        """Safely retrieve an attribute or return a default value if not present."""
+        return attr if attr is not None else default
+
+    @staticmethod
+    def track_details(player_abbr: str, track: AudioTag) -> None:
+        """Print formatted track details."""
+        track_number = TrackPair._safe_get(track.track)
+        track_rating = TrackPair._safe_get(track.rating)
+        artist = TrackPair.truncate(TrackPair._safe_get(track.artist), TruncateDefaults.MAX_ARTIST_LENGTH)
+        album = TrackPair.truncate(TrackPair._safe_get(track.album), TruncateDefaults.MAX_ALBUM_LENGTH)
+        title = TrackPair.truncate(TrackPair._safe_get(track.title), TruncateDefaults.MAX_TITLE_LENGTH)
+        file_path = TrackPair.truncate(TrackPair._safe_get(track.file_path), TruncateDefaults.MAX_FILE_PATH_LENGTH, from_end=False)
+        player_rating = f"{player_abbr}[{track_rating}]"
+        return (
+            f"{player_rating:<7} {track_number:>{5}} {artist:<{TruncateDefaults.MAX_ARTIST_LENGTH}} "
+            f"{album:<{TruncateDefaults.MAX_ALBUM_LENGTH}} {title:<{TruncateDefaults.MAX_TITLE_LENGTH}} "
+            f"{file_path:<{TruncateDefaults.MAX_FILE_PATH_LENGTH}}"
+        )
+
+    @staticmethod
     def display_pair_details(category: str, sync_pairs: List["TrackPair"]) -> None:
         """Display track details in a tabular format."""
-
-        def safe_get(attr: str, default: str = "N/A"):
-            """Safely retrieve an attribute or return default if not present."""
-            return attr if attr else default
-
         if not sync_pairs:
             print(f"\nNo tracks found for {category}.\n")
             return
@@ -134,33 +150,17 @@ class TrackPair(SyncPair):
             print(NO_MATCHES_HEADER)
             print(f"{'-' * 92}")
             for pair in sync_pairs:
-                print(
-                    f"{pair.source_player.abbr:<2} {safe_get(pair.source.artist):<20} {safe_get(pair.source.album):<20} "
-                    f"{safe_get(pair.source.title):<30} {pair.sync_state.name if pair.score is None else pair.score:<15}"
-                )
+                print(TrackPair.track_details(pair.source_player.abbr, pair.source))
         else:
             print(MATCHES_HEADER)
             print(f"{'-' * 137}")
 
             for pair in sync_pairs:
-                source_abbr = pair.source_player.abbr
-                source_track = safe_get(pair.source.track)
-                source_artist = TrackPair.truncate(safe_get(pair.source.artist), TruncateDefaults.MAX_ARTIST_LENGTH)
-                source_album = TrackPair.truncate(safe_get(pair.source.album), TruncateDefaults.MAX_ALBUM_LENGTH)
-                source_title = TrackPair.truncate(safe_get(pair.source.title), TruncateDefaults.MAX_TITLE_LENGTH)
-                source_path = TrackPair.truncate(safe_get(pair.source.file_path), TruncateDefaults.MAX_FILE_PATH_LENGTH, from_end=False)
-
-                print(f"{source_abbr:<2} {source_track:>5} {source_artist:<20} {source_album:<25} {source_title:<35} {source_path:<50}")
+                print(TrackPair.track_details(pair.source_player.abbr, pair.source))
 
                 if pair.destination:
-                    dest_abbr = pair.destination_player.abbr
-                    dest_track = safe_get(pair.destination.track)
-                    dest_artist = TrackPair.truncate(safe_get(pair.destination.artist), TruncateDefaults.MAX_ARTIST_LENGTH)
-                    dest_album = TrackPair.truncate(safe_get(pair.destination.album), TruncateDefaults.MAX_ALBUM_LENGTH)
-                    dest_title = TrackPair.truncate(safe_get(pair.destination.title), TruncateDefaults.MAX_TITLE_LENGTH)
-                    dest_path = TrackPair.truncate(safe_get(pair.destination.file_path), TruncateDefaults.MAX_FILE_PATH_LENGTH, from_end=False)
+                    print(TrackPair.track_details(pair.destination_player.abbr, pair.destination))
 
-                    print(f"{dest_abbr:<2} {dest_track:>5} {dest_artist:<20} {dest_album:<25} {dest_title:<35} {dest_path:<50}")
                 print("-" * 137)
 
         print("\n")
@@ -215,11 +215,14 @@ class TrackPair(SyncPair):
 
     def _search_candidates(self) -> List[AudioTag]:
         """Search for track candidates matching the source track in the destination player."""
+        if not self.source.title:
+            self.logger.error(f"Source track has no title:\n{TrackPair.track_details(self.source_player.abbr, self.source)}")
+            return []
         try:
             candidates = self.destination_player.search_tracks(key="title", value=self.source.title)
             return candidates
         except ValueError as e:
-            self.logger.error(f"Failed to search tracks for track '{self.source}' stored at {self.source.file_path}.")
+            self.logger.error(f"Search failed\n'{TrackPair.track_details(self.source_player.abbr, self.source)}.")
             raise e
 
     def _get_best_match(self, candidates: List[AudioTag], match_threshold: int = MatchThresholds.MINIMUM_ACCEPTABLE) -> Tuple[Optional[AudioTag], int]:

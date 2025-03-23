@@ -167,10 +167,10 @@ class CacheManager:
 
     def cleanup(self) -> None:
         """Clean up cache files from disk."""
-        if self.is_metadata_cache_enabled() and self.metadata_cache:
+        if self.metadata_cache:
             self.metadata_cache.delete()
 
-        if self.is_match_cache_enabled() and self.match_cache:
+        if self.match_cache and not self.is_match_cache_enabled():
             self.match_cache.delete()
 
     def invalidate(self) -> None:

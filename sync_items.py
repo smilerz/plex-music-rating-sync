@@ -8,10 +8,10 @@ class AudioTag(object):
         self.album = album
         self.artist = artist
         self.title = title
-        self.rating = kwargs.get("rating", 0)
+        self.rating = kwargs.get("rating", None)
         self.genre = kwargs.get("genre", "")
         self.file_path = kwargs.get("file_path", None)
-        self.track = kwargs.get("rating", 0)
+        self.track = kwargs.get("track", None)
 
     def __str__(self) -> str:
         return " - ".join([self.artist, self.album, self.title])
