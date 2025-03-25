@@ -10,7 +10,8 @@ dependencies = [
 	"numpy",
 	"ConfigArgParse",
     "pandas",
-    "tqdm"
+    "tqdm",
+    "mutagen"
 ]
 
 [project.optional-dependencies]

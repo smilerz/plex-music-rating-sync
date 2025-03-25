@@ -2,7 +2,7 @@ import logging
 import os
 import pickle
 import warnings
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 import pandas as pd
 
@@ -243,9 +243,9 @@ class CacheManager:
         self.match_cache.update_count += 1
         self.match_cache.auto_save()
 
-    def get_metadata(self, player_name: str, track_id: str) -> Optional[AudioTag]:
+    def get_metadata(self, player_name: str, track_id: str, force_enable: bool = False) -> Optional[AudioTag]:
         """Retrieve cached metadata by player name and track ID."""
-        if not self.is_metadata_cache_enabled() or self.metadata_cache is None or self.metadata_cache.is_empty():
+        if not (force_enable or self.is_metadata_cache_enabled()) or self.metadata_cache is None or self.metadata_cache.is_empty():
             return None
 
         # Find row matching player name and track ID
@@ -262,9 +262,9 @@ class CacheManager:
         return AudioTag.from_dict(data)
 
     ### METADATA CACHING (NON-PERSISTENT) ###
-    def set_metadata(self, player_name: str, track_id: str, metadata: AudioTag) -> None:
+    def set_metadata(self, player_name: str, track_id: str, metadata: AudioTag, force_enable: bool = False) -> None:
         """Store metadata in the pre-allocated cache, resizing if needed."""
-        if not self.is_metadata_cache_enabled():
+        if not (force_enable or self.is_metadata_cache_enabled()):
             return
 
         if self.metadata_cache is None or self.metadata_cache.is_empty():
@@ -300,3 +300,19 @@ class CacheManager:
                     self.metadata_cache.cache.loc[empty_row_idx, key] = value
         self.metadata_cache.update_count += 1
         self.metadata_cache.auto_save()
+
+    def get_tracks_by_filter(self, filter_mask: pd.Series) -> List[AudioTag]:
+        """Convert filtered DataFrame rows into AudioTag objects"""
+        # Apply filter to get matching rows
+        matching_rows = self.metadata_cache.cache[filter_mask]
+
+        if matching_rows.empty:
+            return []
+
+        # Convert each row to an AudioTag
+        tracks = []
+        for _idx, row in matching_rows.iterrows():
+            data = {col: None if pd.isna(row[col]) else row[col] for col in matching_rows.columns}
+            track = AudioTag.from_dict(data)
+            tracks.append(track)
+        return tracks

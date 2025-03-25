@@ -2,16 +2,20 @@ import abc
 import getpass
 import logging
 import time
+from enum import Enum
 from typing import TYPE_CHECKING, Any, List, Optional, Union
 
 if TYPE_CHECKING:
     from cache_manager import CacheManager
     from stats_manager import StatsManager
 
+from pathlib import Path
 from typing import Tuple
 
+import mutagen
 import plexapi.audio
 import plexapi.playlist
+from fuzzywuzzy import fuzz
 from plexapi.exceptions import BadRequest, NotFound
 from plexapi.myplex import MyPlexAccount
 
@@ -24,12 +28,72 @@ MediaMonkeyTrack = Any  # COM SDBSongData object
 PlexPlaylist = Any  # plexapi.playlist.Playlist
 PlexTrack = Any  # plexapi.audio.Track
 
-# TODO: test both ways: empty title, album, artist
-# TODO: add file system as mediaplayer
 # TODO: itunes
 # TODO add mediamonkey 5
 # TODO: add updating Album, Artist, Title, Rating, Track, Genre
 # TODO: add setting source of record per attribute
+
+
+class RatingTag(Enum):
+    WINDOWSMEDIAPLAYER = ("POPM:Windows Media Player 9 Series", "Windows Media Player")
+    MEDIAMONKEY = ("POPM:no@email", "MediaMonkey")
+    MUSICBEE = ("POPM:MusicBee", "MusicBee")
+    WINAMP = ("POPM:rating@winamp", "Winamp")
+    TEXT = ("TXXX:RATING", "Text")
+
+    def __init__(self, tag: str, player_name: str):
+        self.tag = tag
+        self.player_name = player_name
+
+    @classmethod
+    def from_tag(cls, tag: str) -> Optional["RatingTag"]:
+        for item in cls:
+            if item.tag == tag:
+                return item
+        return None
+
+    @classmethod
+    def from_value(cls, value: Optional[str]) -> Optional[Union["RatingTag", str]]:
+        if value is None:
+            return None
+        if value.startswith("POPM:"):
+            return value  # Return the string directly for "POPM:<some string>"
+        for item in cls:
+            if item.tag == value or item.player_name == value:
+                return item
+        raise ValueError(f"Invalid RatingTag: {value}")
+
+
+class TagWriteStrategy(Enum):
+    WRITE_ALL = "write_all"
+    WRITE_EXISTING = "write_existing"
+    WRITE_STANDARD = "write_standard"
+    OVERWRITE_STANDARD = "overwrite_standard"
+
+    @classmethod
+    def from_value(cls, value: Optional[str]) -> Optional["TagWriteStrategy"]:
+        if value is None:
+            return None
+        for item in cls:
+            if item.value == value:
+                return item
+        raise ValueError(f"Invalid TagWriteStrategy: {value}")
+
+
+class ConflictResolutionStrategy(Enum):
+    PRIORITIZED_ORDER = "prioritized_order"
+    HIGHEST = "highest"
+    LOWEST = "lowest"
+    AVERAGE = "average"
+
+    @classmethod
+    def from_value(cls, value: Optional[str]) -> Optional["ConflictResolutionStrategy"]:
+        if value is None:
+            return None
+        for item in cls:
+            if item.value == value:
+                return item
+        raise ValueError(f"Invalid ConflictResolutionStrategy: {value}")
 
 
 class MediaPlayer(abc.ABC):
@@ -89,12 +153,7 @@ class MediaPlayer(abc.ABC):
         """Remove a track from a native playlist"""
 
     def search_tracks(self, key: str, value: Union[bool, str], track_status: bool = False) -> List[AudioTag]:
-        """Search tracks and convert to AudioTag format
-
-        :param key: Search mode (rating, title, etc)
-        :param value: Search value
-        :return: List of AudioTag objects
-        """
+        """Search tracks and convert to AudioTag format"""
         self.logger.debug(f"Searching tracks with {key}={value}")
         if not value:
             self.logger.error("Search value cannot be empty")
@@ -126,10 +185,7 @@ class MediaPlayer(abc.ABC):
         return tags
 
     def sync_playlist(self, playlist: Playlist, updates: List[Tuple[AudioTag, bool]]) -> None:
-        """Sync playlist changes to native format
-        :param playlist: Playlist to update
-        :param updates: List of (track, present) tuples indicating changes
-        """
+        """Sync playlist changes to native format"""
         if not updates:
             self.logger.debug("No updates to sync")
             return
@@ -150,9 +206,7 @@ class MediaPlayer(abc.ABC):
             self.logger.debug("Playlist sync completed")
 
     def create_playlist(self, title: str, tracks: List[AudioTag]) -> Optional[Playlist]:
-        """Create a new playlist with the given tracks
-        :return: Created Playlist or None if dry run
-        """
+        """Create a new playlist with the given tracks"""
         if self.dry_run:
             self.logger.info(f"DRY RUN: Would create playlist '{title}' with {len(tracks)} tracks")
             return None
@@ -394,15 +448,14 @@ class MediaMonkey(MediaPlayer):
 
     def update_rating(self, track: AudioTag, rating: float) -> None:
         if self.dry_run:
-            self.logger.info(f"DRY RUN: Would update rating for {track} to {rating}")
+            self.logger.info(f"DRY RUN: Would update rating for {track} to {self.get_5star_rating(rating)}")
             return
 
-        self.logger.debug(f"Updating rating for {track} to {rating}")
+        self.logger.debug(f"Updating rating for {track} to {self.get_5star_rating(rating)}")
         try:
             song = self.sdb.Database.QuerySongs("ID=" + str(track.ID))
             song.Item.Rating = self.get_native_rating(rating)
             song.Item.UpdateDB()
-            self.logger.info(f"Successfully updated rating for {track}")
         except Exception as e:
             self.logger.error(f"Failed to update rating: {e!s}")
             raise
@@ -607,26 +660,480 @@ class PlexPlayer(MediaPlayer):
 
     def update_rating(self, track: [PlexTrack, AudioTag], rating: float) -> None:
         if self.dry_run:
-            self.logger.info(f"DRY RUN: Would update rating for {track} to {rating}")
+            self.logger.info(f"DRY RUN: Would update rating for {track} to {self.get_5star_rating(rating)}")
             return
 
-        self.logger.debug(f"Updating rating for {track} to {rating}")
+        self.logger.debug(f"Updating rating for {track} to {self.get_5star_rating(rating)}")
+
         try:
-            track.edit(**{"userRating.value": self.get_native_rating(rating)})
-            self.logger.info(f"Successfully updated rating for {track}")
-        except Exception as e:
-            self.logger.error(f"Failed to update rating: {e!s}")
-            try:
-                # Fallback to searching by title/ID
+            if isinstance(track, AudioTag):
                 song = self._search_native_tracks("id", track.ID)[0]
                 song.edit(**{"userRating.value": self.get_native_rating(rating)})
-                self.logger.info("Successfully updated rating using fallback method")
-            except Exception as e2:
-                self.logger.error(f"Failed to update rating using fallback: {e2!s}")
-                raise
+            else:
+                track.edit(**{"userRating.value": self.get_native_rating(rating)})
+        except Exception as e:
+            self.logger.error(f"Failed to update rating using fallback: {e!s}")
+            raise
+        self.logger.info(f"Successfully updated rating for {track}")
 
     def _add_track_to_playlist(self, native_playlist: PlexPlaylist, native_track: PlexTrack) -> None:
         native_playlist.addItems(native_track)
 
     def _remove_track_from_playlist(self, native_playlist: PlexPlaylist, native_track: PlexTrack) -> None:
         native_playlist.removeItem(native_track)
+
+
+class FileSystemPlayer(MediaPlayer):
+    rating_maximum = 10
+    album_empty_alias = "[Unknown Album]"
+    SEARCH_THRESHOLD = 75
+    DEFAULT_RATING_TAG = RatingTag.WINDOWSMEDIAPLAYER
+    _audio_files = None
+
+    def __init__(self, cache_manager: Optional["CacheManager"] = None, stats_manager: Optional["StatsManager"] = None):
+        self.logger = logging.getLogger("PlexSync.FileSystem")
+        self.abbr = "FS"
+        super().__init__(cache_manager, stats_manager)
+
+    @staticmethod
+    def name() -> str:
+        return "FileSystemPlayer"
+
+    def connect(self, **kwargs) -> None:
+        """Connect to filesystem music library with additional options."""
+        self.path = Path(kwargs.get("path"))
+        playlist_path = kwargs.get("playlist_path", None)
+        if not self.path.exists():
+            raise FileNotFoundError(f"Music directory not found: {self.path}")
+
+        self.logger.info(f"Connected to filesystem music library at {self.path}")
+        self.playlist_path = Path(playlist_path) if playlist_path else self.path
+        self.playlist_path.mkdir(exist_ok=True)
+        self.logger.info(f"Using playlists directory: {self.playlist_path}")
+
+        self.tag_write_strategy = TagWriteStrategy.from_value(kwargs.get("tag_write_strategy"))
+        self.standard_tag = RatingTag.from_value(kwargs.get("standard_tag"))
+        self.conflict_resolution_strategy = ConflictResolutionStrategy.from_value(kwargs.get("conflict_resolution_strategy"))
+        self.tag_priority_order = [RatingTag.from_value(tag) for tag in kwargs.get("tag_priority_order", [])]
+
+        status = None
+        if FileSystemPlayer._audio_files is None:
+            self._scan_audio_files()
+            for file_path in self._audio_files:
+                if not status:
+                    status = self.stats_manager.get_status_handler()
+                    bar = status.start_phase(f"Reading track metadata from {self.name()}", total=len(FileSystemPlayer._audio_files))
+                self.read_track_metadata(file_path)
+        bar.close() if status else None
+
+    @staticmethod
+    def get_5star_rating(popm_rating: Optional[int]) -> Optional[float]:  # noqa
+        if popm_rating is None or popm_rating == 0:
+            return None
+        elif popm_rating <= 22:
+            return 0.5
+        elif popm_rating <= 63:
+            return 1.0
+        elif popm_rating <= 95:
+            return 1.5
+        elif popm_rating <= 127:
+            return 2.0
+        elif popm_rating <= 159:
+            return 2.5
+        elif popm_rating <= 191:
+            return 3.0
+        elif popm_rating <= 223:
+            return 3.5
+        elif popm_rating <= 239:
+            return 4.0
+        elif popm_rating <= 252:
+            return 4.5
+        else:  # 253-255
+            return 5.0
+
+    def get_native_rating(self, normed_rating: Optional[float]) -> int:  # noqa
+        if normed_rating is None or normed_rating <= 0:
+            return 0
+        elif normed_rating <= 0.1:
+            return 16  # 0.5 stars
+        elif normed_rating <= 0.2:
+            return 48  # 1.0 star
+        elif normed_rating <= 0.3:
+            return 80  # 1.5 stars
+        elif normed_rating <= 0.4:
+            return 112  # 2.0 stars
+        elif normed_rating <= 0.5:
+            return 144  # 2.5 stars
+        elif normed_rating <= 0.6:
+            return 176  # 3.0 stars
+        elif normed_rating <= 0.7:
+            return 208  # 3.5 stars
+        elif normed_rating <= 0.8:
+            return 232  # 4.0 stars
+        elif normed_rating <= 0.9:
+            return 247  # 4.5 stars
+        else:
+            return 255  # 5.0 stars
+
+    def get_normed_rating(self, popm_rating: Optional[int]) -> Optional[float]:  # noqa
+        if popm_rating is None or popm_rating == 0:
+            return None
+        elif popm_rating <= 22:
+            return 0.1  # 0.5 stars
+        elif popm_rating <= 63:
+            return 0.2  # 1.0 star
+        elif popm_rating <= 95:
+            return 0.3  # 1.5 stars
+        elif popm_rating <= 127:
+            return 0.4  # 2.0 stars
+        elif popm_rating <= 159:
+            return 0.5  # 2.5 stars
+        elif popm_rating <= 191:
+            return 0.6  # 3.0 stars
+        elif popm_rating <= 223:
+            return 0.7  # 3.5 stars
+        elif popm_rating <= 239:
+            return 0.8  # 4.0 stars
+        elif popm_rating <= 252:
+            return 0.9  # 4.5 stars
+        else:
+            return 1.0  # 5.0 stars
+
+    def _scan_audio_files(self) -> None:
+        """Scan directory structure and cache audio files"""
+        FileSystemPlayer._audio_files = []
+        self.logger.info(f"Scanning {self.path} for audio files...")
+        audio_extensions = {".mp3", ".flac", ".ogg", ".m4a", ".wav", ".aac"}
+
+        status = self.stats_manager.get_status_handler() if self.stats_manager else None
+        bar = status.start_phase(f"Collecting tracks from {self.name()}", total=None) if status else None
+
+        for file_path in self.path.rglob("*"):
+            if file_path.suffix.lower() in audio_extensions:
+                FileSystemPlayer._audio_files.append(file_path)
+                bar.update()
+        bar.close()
+        self.logger.info(f"Found {len(FileSystemPlayer._audio_files)} audio files")
+
+    def read_track_metadata(self, file_path: Union[Path, str]) -> AudioTag:
+        """Retrieve metadata from cache or read from file"""
+        str_path = str(file_path)
+
+        # Use CacheManager's metadata_cache with force_enable
+        if self.cache_manager:
+            cached = self.cache_manager.get_metadata(self.name(), str_path, force_enable=True)
+            if cached:
+                return cached
+
+        # Read metadata from file
+        try:
+            audio_file = mutagen.File(file_path)
+            if not audio_file:
+                raise ValueError(f"Unsupported audio format: {file_path}")
+
+            if hasattr(audio_file, "tags") and audio_file.tags:
+                # For MP3 (ID3 tags)
+                tags = audio_file.tags
+                album = tags.get("TALB", [""])[0]
+                artist = tags.get("TPE1", [""])[0]
+                title = tags.get("TIT2", [""])[0]
+                track_number = tags.get("TRCK", [""])[0]
+
+                # Handle multiple POPM and TXXX:RATING tags
+                rating_tags = {key: value for key, value in tags.items() if key.startswith("POPM") or key == "TXXX:Rating"}
+                if rating_tags:
+                    # magic happens here
+                    pass
+                else:
+                    rating = 0
+            elif hasattr(audio_file, "get"):
+                # For FLAC, OGG, etc.
+                album = audio_file.get("album", [""])[0]
+                artist = audio_file.get("artist", [""])[0]
+                title = audio_file.get("title", [""])[0]
+                track_number = audio_file.get("tracknumber", [""])[0]
+                rating = audio_file.get("rating", [""])[0]
+            else:
+                return None
+
+            tag = AudioTag(
+                artist=artist,
+                album=album,
+                title=title,
+                file_path=str_path,
+                rating=self.get_normed_rating(rating),
+                ID=str_path,
+                track=int(track_number.split("/")[0]) if track_number else 1,
+            )
+
+            if self.cache_manager:
+                self.cache_manager.set_metadata(self.name(), tag.ID, tag, force_enable=True)
+
+            return tag
+        except Exception as e:
+            self.logger.error(f"Error reading metadata from {file_path}: {e}")
+            return None
+
+    def _resolve_conflicting_ratings(self, ratings: dict) -> float:
+        """Resolve conflicting ratings based on the configured strategy."""
+        if self.conflict_resolution_strategy == ConflictResolutionStrategy.PRIORITIZED_ORDER:
+            for tag in self.tag_priority_order:
+                if tag in ratings:
+                    return ratings[tag]
+        elif self.conflict_resolution_strategy == ConflictResolutionStrategy.HIGHEST:
+            return max(ratings.values())
+        elif self.conflict_resolution_strategy == ConflictResolutionStrategy.LOWEST:
+            return min(ratings.values())
+        elif self.conflict_resolution_strategy == ConflictResolutionStrategy.AVERAGE:
+            return sum(ratings.values()) / len(ratings)
+        return 0
+
+    def _write_rating_tags(self, audio_file, rating: float) -> None:
+        """Write rating tags to the audio file based on the configured strategy."""
+        if self.tag_write_strategy == TagWriteStrategy.WRITE_ALL:
+            for tag in self.tag_priority_order:
+                audio_file[tag] = rating
+        elif self.tag_write_strategy == TagWriteStrategy.WRITE_EXISTING:
+            existing_tags = {tag: audio_file[tag] for tag in self.tag_priority_order if tag in audio_file}
+            if existing_tags:
+                for tag in existing_tags:
+                    audio_file[tag] = rating
+            else:
+                audio_file[self.standard_tag] = rating
+        elif self.tag_write_strategy == TagWriteStrategy.WRITE_STANDARD:
+            audio_file[self.standard_tag] = rating
+        elif self.tag_write_strategy == TagWriteStrategy.OVERWRITE_STANDARD:
+            for tag in list(audio_file.keys()):
+                if tag.startswith("POPM") or tag == "TXXX:Rating":
+                    del audio_file[tag]
+            audio_file[self.standard_tag] = rating
+        audio_file.save()
+
+    def _search_native_tracks(self) -> None:
+        # you can't search for tracks in a filesystem, so they need converted to AudioTags first
+        raise NotImplementedError("Search not implemented for FileSystemPlayer")
+
+    def search_tracks(self, key: str, value: Union[bool, str]) -> List[AudioTag]:
+        """Search for audio files matching criteria"""
+
+        self.logger.debug(f"Searching tracks with {key}={value}")
+        if not value:
+            self.logger.error("Search value cannot be empty")
+            raise ValueError("value can not be empty.")
+
+        tracks = []
+
+        if key == "id":
+            tracks = [self.cache_manager.metadata_cache.get_metadata(self.name(), value, force_enable=True)]
+        elif key == "title":
+            mask = self.cache_manager.metadata_cache.cache[key].apply(lambda x: fuzz.ratio(str(x).lower(), str(value).lower()) >= self.SEARCH_THRESHOLD)
+            tracks = self.cache_manager.get_tracks_by_filter(mask)
+        elif key == "rating":
+            if value is True:
+                value = 0
+            mask = (
+                (self.cache_manager.metadata_cache.cache["player_name"] == self.name())
+                & (self.cache_manager.metadata_cache.cache["rating"].notna())
+                & (self.cache_manager.metadata_cache.cache["rating"] > float(value))
+            )
+            tracks = self.cache_manager.get_tracks_by_filter(mask)
+
+        self.logger.debug(f"Found {len(tracks)} tracks for {key}={value}")
+
+        return tracks
+
+    def _match_rating(self, rating: float, value: Union[bool, str]) -> bool:
+        """Check if a rating matches the given criteria"""
+        if value is True:
+            return rating > 0
+        if isinstance(value, str):
+            op, threshold = value[:2].strip(), float(value[2:].strip())
+            return eval(f"{rating} {op} {threshold}")
+        return False
+
+    def update_rating(self, track: AudioTag, rating: float) -> None:
+        """Update rating for a track"""
+        if self.dry_run:
+            self.logger.info(f"DRY RUN: Would update rating for {track} to {self.get_5star_rating(rating)}")
+            return
+
+        self.logger.debug(f"Updating rating for {track} to {self.get_5star_rating(rating)}")
+        file_path = Path(track.file_path)
+        if not file_path.exists():
+            self.logger.error(f"File not found: {file_path}")
+            return
+
+        try:
+            audio_file = mutagen.File(file_path, easy=False)
+            if not audio_file:
+                raise ValueError(f"Unsupported audio format: {file_path}")
+
+            # Convert normalized rating to native scale for each format
+            native_rating = self.get_native_rating(rating)
+
+            if isinstance(audio_file, mutagen.mp3.MP3):
+                # Handle MP3 files
+                from mutagen.id3 import POPM
+
+                if not audio_file.tags:
+                    audio_file.add_tags()
+                # Convert to 0-255 for POPM
+                popm_rating = int(min(255, native_rating / self.rating_maximum * 255))
+                audio_file.tags.add(POPM(email="plex-music-rating-sync", rating=popm_rating))
+
+            elif isinstance(audio_file, mutagen.flac.FLAC) or isinstance(audio_file, mutagen.oggvorbis.OggVorbis):
+                # Handle FLAC/OGG files
+                audio_file["RATING"] = [str(int(native_rating))]
+
+            elif isinstance(audio_file, mutagen.mp4.MP4):
+                # Handle M4A/MP4 files
+                # iTunes-style 0-100 rating
+                itunes_rating = int(native_rating / self.rating_maximum * 100)
+                audio_file["----:com.apple.iTunes:RATING"] = [str(itunes_rating).encode("utf-8")]
+
+            # Save changes
+            audio_file.save()
+            self.logger.info(f"Successfully updated rating for {track}")
+
+            # Update cache using CacheManager
+            track.rating = rating
+            if self.cache_manager:
+                self.cache_manager.metadata_cache.set(self.name(), track.ID, track, force_enable=True)
+
+        except Exception as e:
+            self.logger.error(f"Failed to update rating: {e}")
+            raise
+
+    def _create_native_playlist(self, title: str, tracks: List[AudioTag]) -> Optional[Path]:
+        """Create a new M3U playlist file"""
+        if not tracks:
+            return None
+
+        if not self.playlist_path.exists():
+            self.playlist_path.mkdir(parents=True, exist_ok=True)
+
+        playlist_file = self.playlist_path / f"{title}.m3u"
+
+        try:
+            status = self.stats_manager.get_status_handler() if self.stats_manager else None
+            bar = status.start_phase("Creating playlist", total=len(tracks)) if status else None
+
+            with open(playlist_file, "w", encoding="utf-8") as f:
+                f.write("#EXTM3U\n")
+                for track in tracks:
+                    f.write(f"#EXTINF:-1,{track.artist} - {track.title}\n")
+                    f.write(f"{track.file_path}\n")
+                    bar.update()
+            bar.close()
+            self.logger.info(f"Created playlist: {playlist_file}")
+            return playlist_file
+        except Exception as e:
+            self.logger.error(f"Failed to create playlist: {e}")
+            return None
+
+    def _get_native_playlists(self) -> List[Path]:
+        """Get all M3U playlists in the playlist directory"""
+        if not self.playlist_path or not self.playlist_path.exists():
+            return []
+
+        return list(self.playlist_path.glob("*.m3u"))
+
+    def _find_native_playlist(self, title: str) -> Optional[Path]:
+        """Find a playlist by title"""
+        if not self.playlist_path or not self.playlist_path.exists():
+            return None
+
+        playlist_file = self.playlist_path / f"{title}.m3u"
+        return playlist_file if playlist_file.exists() else None
+
+    def _convert_native_playlist(self, native_playlist: Path) -> Optional[Playlist]:
+        """Convert a playlist file to a Playlist object"""
+        if not native_playlist.exists():
+            return None
+
+        playlist = Playlist(native_playlist.stem, native_playlist=native_playlist, player=self)
+        playlist.is_auto_playlist = False
+
+        try:
+            # Parse M3U file
+            with open(native_playlist, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+            i = 0
+            while i < len(lines):
+                line = lines[i].strip()
+
+                # Skip empty lines and comments (except EXTINF)
+                if not line or (line.startswith("#") and not line.startswith("#EXTINF")):
+                    i += 1
+                    continue
+
+                # Handle file paths
+                if not line.startswith("#"):
+                    track_path = Path(line)
+                    if track_path.exists():
+                        track = self.read_track_metadata(track_path)
+                        playlist.tracks.append(track)
+                i += 1
+
+            return playlist
+
+        except Exception as e:
+            self.logger.error(f"Error parsing playlist {native_playlist}: {e}")
+            return playlist
+
+    def _add_track_to_playlist(self, native_playlist: Path, native_track: Path) -> None:
+        """Add a track to a playlist
+
+        :param native_playlist: Path to playlist file
+        :param native_track: Path to track file
+        """
+        if not native_playlist.exists():
+            self.logger.error(f"Playlist not found: {native_playlist}")
+            return
+
+        track = self.read_track_metadata(native_track)
+
+        try:
+            with open(native_playlist, "a", encoding="utf-8") as f:
+                f.write(f"#EXTINF:-1,{track.artist} - {track.title}\n")
+                f.write(f"{native_track}\n")
+        except Exception as e:
+            self.logger.error(f"Failed to add track to playlist: {e}")
+            raise
+
+    def _remove_track_from_playlist(self, native_playlist: Path, native_track: Path) -> None:
+        """Remove a track from a playlist
+
+        :param native_playlist: Path to playlist file
+        :param native_track: Path to track file
+        """
+        if not native_playlist.exists():
+            self.logger.error(f"Playlist not found: {native_playlist}")
+            return
+
+        try:
+            # Read current playlist content
+            with open(native_playlist, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+            # Filter out the track and its EXTINF line
+            with open(native_playlist, "w", encoding="utf-8") as f:
+                i = 0
+                while i < len(lines):
+                    line = lines[i].strip()
+
+                    # Check if this line is the track to remove
+                    if line == str(native_track):
+                        # Skip this line and the previous EXTINF line if it exists
+                        if i > 0 and lines[i - 1].startswith("#EXTINF"):
+                            i += 1
+                            continue
+
+                    # Write line to file
+                    f.write(lines[i])
+                    i += 1
+
+        except Exception as e:
+            self.logger.error(f"Failed to remove track from playlist: {e}")
+            raise

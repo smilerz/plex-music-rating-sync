@@ -123,15 +123,15 @@ class TrackPair(SyncPair):
         return attr if attr is not None else default
 
     @staticmethod
-    def track_details(player_abbr: str, track: AudioTag) -> None:
+    def track_details(player: MediaPlayer, track: AudioTag) -> None:
         """Print formatted track details."""
         track_number = TrackPair._safe_get(track.track)
-        track_rating = TrackPair._safe_get(track.rating)
+        track_rating = player.get_5star(TrackPair._safe_get(track.rating))
         artist = TrackPair.truncate(TrackPair._safe_get(track.artist), TruncateDefaults.MAX_ARTIST_LENGTH)
         album = TrackPair.truncate(TrackPair._safe_get(track.album), TruncateDefaults.MAX_ALBUM_LENGTH)
         title = TrackPair.truncate(TrackPair._safe_get(track.title), TruncateDefaults.MAX_TITLE_LENGTH)
         file_path = TrackPair.truncate(TrackPair._safe_get(track.file_path), TruncateDefaults.MAX_FILE_PATH_LENGTH, from_end=False)
-        player_rating = f"{player_abbr}[{track_rating}]"
+        player_rating = f"{player.abbr}[{track_rating}]"
         return (
             f"{player_rating:<7} {track_number:>{5}} {artist:<{TruncateDefaults.MAX_ARTIST_LENGTH}} "
             f"{album:<{TruncateDefaults.MAX_ALBUM_LENGTH}} {title:<{TruncateDefaults.MAX_TITLE_LENGTH}} "
@@ -150,16 +150,16 @@ class TrackPair(SyncPair):
             print(NO_MATCHES_HEADER)
             print(f"{'-' * 92}")
             for pair in sync_pairs:
-                print(TrackPair.track_details(pair.source_player.abbr, pair.source))
+                print(TrackPair.track_details(pair.source_player, pair.source))
         else:
             print(MATCHES_HEADER)
             print(f"{'-' * 137}")
 
             for pair in sync_pairs:
-                print(TrackPair.track_details(pair.source_player.abbr, pair.source))
+                print(TrackPair.track_details(pair.source_player, pair.source))
 
                 if pair.destination:
-                    print(TrackPair.track_details(pair.destination_player.abbr, pair.destination))
+                    print(TrackPair.track_details(pair.destination_player, pair.destination))
 
                 print("-" * 137)
 
@@ -304,7 +304,11 @@ class TrackPair(SyncPair):
             self.sync_state = SyncState.NEEDS_UPDATE
         elif self.rating_source != self.rating_destination:
             self.sync_state = SyncState.CONFLICTING
-            self.logger.warning(f"Found match with conflicting ratings: {self.source} (Source: {self.rating_source} | Destination: {self.rating_destination})")
+            self.logger.warning(
+                f"Found match with conflicting ratings: {self.source} "
+                f"(Source: {self.source_player.get_5star(self.rating_source)} | "
+                f"Destination: {self.destination_player.get_5star(self.rating_destination)})"
+            )
 
         self.score = score
         return self.score
@@ -332,18 +336,21 @@ class TrackPair(SyncPair):
 
         if not choice:
             print(f"\nResolving conflict {counter} of {total}:")
-            print("\n".join(f"\t[{key}]: {value}" for key, value in ConflictResolutionOptions.PROMPT.items()))
+            print("".join(f"\t[{key}]: {value}" for key, value in ConflictResolutionOptions.PROMPT.items()))
             return False
 
         if choice == "1":
+            self.logger.info(f"Applying source rating {self.source_player.get_5star(self.rating_source)}  to destination track {self.destination}")
             self.destination_player.update_rating(self.destination, self.rating_source)
             return True
         elif choice == "2":
+            self.logger.info(f"Applying destination rating {self.destination_player.get_5star(self.rating_destination)} " f"to source track {self.source}")
             self.source_player.update_rating(self.source, self.rating_destination)
             return True
         elif choice == "3":
             new_rating = self._get_new_rating()
             if new_rating is not None:
+                self.logger.info(f"Applying new rating {self.source_player.get_5star(new_rating)}  to both source and destination tracks")
                 self.destination_player.update_rating(self.destination, new_rating)
                 self.source_player.update_rating(self.source, new_rating)
                 return True
@@ -387,7 +394,7 @@ class TrackPair(SyncPair):
 
     def sync(self, force: bool = False, source_to_destination: bool = False) -> bool:
         """Synchronizes the source and destination replicas.:return: True if synchronization was successful, False otherwise"""
-        if self.rating_destination <= 0.0 or force:
+        if not self.rating_destination or self.rating_destination <= 0.0 or force:
             if source_to_destination:
                 self.destination_player.update_rating(self.destination, self.rating_source)
             else:

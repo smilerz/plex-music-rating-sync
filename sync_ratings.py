@@ -8,7 +8,7 @@ import configargparse
 
 from cache_manager import CacheManager
 from log_manager import LoggingManager
-from MediaPlayer import MediaMonkey, MediaPlayer, PlexPlayer
+from MediaPlayer import FileSystemPlayer, MediaMonkey, MediaPlayer, PlexPlayer
 from stats_manager import StatsManager
 from sync_items import AudioTag
 from sync_pair import PlaylistPair, SyncState, TrackPair
@@ -44,7 +44,7 @@ class PlexSync:
     def _create_player(self, player_type: str) -> MediaPlayer:
         """Create and configure a media player instance"""
         player_type = player_type.lower()
-        player_map = {"plex": PlexPlayer, "mediamonkey": MediaMonkey}
+        player_map = {"plex": PlexPlayer, "mediamonkey": MediaMonkey, "filesystem": FileSystemPlayer}
 
         if player_type not in player_map:
             self.logger.error(f"Invalid player type: {player_type}")
@@ -60,16 +60,31 @@ class PlexSync:
         logging_manager = LoggingManager()
         self.logger = logging_manager.setup_logging(self.options.log)
 
+    def _connect_player(self, player: MediaPlayer) -> None:
+        """Connect a player with appropriate parameters based on player type."""
+        if isinstance(player, PlexPlayer):
+            if not self.options.token and not self.options.passwd:
+                self.logger.error("Plex token or password is required for Plex player")
+                raise
+            if not self.options.server or not self.options.username:
+                self.logger.error("Plex server and username are required for Plex player")
+                raise
+            player.connect(server=self.options.server, username=self.options.username, password=self.options.passwd, token=self.options.token)
+        elif isinstance(player, FileSystemPlayer):
+            if not (path := self.options.path) or not (playlist_path := self.options.playlist_path):
+                self.logger.error("Path and playlist path are required for filesystem player")
+                raise
+            player.connect(path=path, playlist_path=playlist_path)
+        else:
+            player.connect()
+
     def sync(self) -> None:
         if self.options.clear_cache:
             self.cache_manager.invalidate()
 
         # Connect players with appropriate parameters based on player type
         for player in [self.source_player, self.destination_player]:
-            if isinstance(player, PlexPlayer):
-                player.connect(server=self.options.server, username=self.options.username, password=self.options.passwd, token=self.options.token)
-            else:
-                player.connect()
+            self._connect_player(player)
 
         for sync_item in self.options.sync:
             if sync_item.lower() == "tracks":
@@ -191,7 +206,7 @@ class PlexSync:
                         break
                 break
             elif choice == "4":
-                TrackPair.display_pair6_details("Conflicting Matches", pairs_conflicting)
+                TrackPair.display_pair_details("Conflicting Matches", pairs_conflicting)
             elif choice == "5":
                 self._display_track_details(sync_pairs)
             elif choice == "6":
@@ -281,14 +296,17 @@ def parse_args() -> configargparse.Namespace:
     parser.add_argument("--destination", type=str, default="plex", help="Destination player ([plex] or mediamonkey)")
     parser.add_argument("--sync", nargs="*", default=["tracks"], help="Selects which items to sync: one or more of [tracks, playlists]")
     parser.add_argument("--log", default="warning", help="Sets the logging level (critical, error, [warning], info, debug)")
-    parser.add_argument("--passwd", type=str, help="The password for the plex user. NOT RECOMMENDED TO USE!")
     parser.add_argument("--server", type=str, required=True, help="The name of the plex media server")
     parser.add_argument("--username", type=str, required=True, help="The plex username")
+    parser.add_argument("--passwd", type=str, help="The password for the plex user. NOT RECOMMENDED TO USE!")
     parser.add_argument(
         "--token",
         type=str,
         help="Plex API token.  See https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/ for information on how to find your token",
     )
+    parser.add_argument("--path", type=str, help="Path to music directory for filesystem player")
+    parser.add_argument("--playlist-path", type=str, help="Path to playlists directory for filesystem player")
+    parser.add_argument("--album-playlist", action="store_true", help="Sync album playlists")
     parser.add_argument(
         "--cache-mode",
         type=str,
@@ -297,6 +315,14 @@ def parse_args() -> configargparse.Namespace:
         help="Cache mode: [metadata] (in-memory only), matches (both), matches-only (persistent matches), disabled",
     )
     parser.add_argument("--clear-cache", action="store_true", help="Clear existing cache files before starting")
+    parser.add_argument(
+        "--tag-write-strategy", type=str, choices=["write_all", "write_existing", "write_standard", "overwrite_standard"], help="Strategy for writing rating tags to files"
+    )
+    parser.add_argument("--standard-tag", type=str, choices=["MEDIAMONKEY", "WINDOWSMEDIAPLAYER", "MUSICBEE", "WINAMP", "TEXT"], help="Canonical tag to use for writing ratings")
+    parser.add_argument(
+        "--conflict-resolution-strategy", type=str, choices=["prioritized_order", "highest", "lowest", "average"], help="Strategy for resolving conflicting rating values"
+    )
+    parser.add_argument("--tag-priority-order", type=str, nargs="+", help="Ordered list of tag identifiers for resolving conflicts")
     return parser.parse_args()
 
 
