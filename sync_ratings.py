@@ -71,10 +71,10 @@ class PlexSync:
                 raise
             player.connect(server=self.options.server, username=self.options.username, password=self.options.passwd, token=self.options.token)
         elif isinstance(player, FileSystemPlayer):
-            if not (path := self.options.path) or not (playlist_path := self.options.playlist_path):
-                self.logger.error("Path and playlist path are required for filesystem player")
+            if not self.options.path:
+                self.logger.error("Path is required for filesystem player")
                 raise
-            player.connect(path=path, playlist_path=playlist_path)
+            player.connect(**vars(self.options))
         else:
             player.connect()
 
@@ -232,6 +232,9 @@ class PlexSync:
         # Start discovery phase
         print(f"Discovering playlists from {self.source_player.name()}")
         playlists = self.source_player.read_playlists()
+        if not playlists:
+            self.logger.warning("No playlists found")
+            return
 
         playlist_pairs = [PlaylistPair(self.source_player, self.destination_player, pl) for pl in playlists if not pl.is_auto_playlist]
         self.stats_manager.increment("playlists_processed", len(playlist_pairs))

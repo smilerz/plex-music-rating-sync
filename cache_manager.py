@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, List, Optional
 
 import pandas as pd
 
-from MediaPlayer import MediaMonkey, PlexPlayer
+from MediaPlayer import FileSystemPlayer, MediaMonkey, PlexPlayer
 from sync_items import AudioTag
 
 if TYPE_CHECKING:
@@ -18,15 +18,6 @@ class Cache:
     """Generic Cache class to handle common operations for caching."""
 
     def __init__(self, filepath: str, columns: list, dtype: dict, save_threshold: int = 100) -> None:
-        """
-        Initialize the Cache.
-
-        Args:
-            filepath: Path to the cache file.
-            columns: List of required columns for the cache.
-            dtype: Dictionary specifying the data types for the columns.
-            save_threshold: Number of updates before triggering an auto-save.
-        """
         self.filepath = filepath
         self.columns = columns
         self.dtype = dtype
@@ -107,7 +98,7 @@ class Cache:
 class CacheManager:
     """Handles caching for metadata and track matches, supporting multiple caching modes."""
 
-    KNOWN_PLAYERS = [MediaMonkey, PlexPlayer]
+    KNOWN_PLAYERS = [MediaMonkey, PlexPlayer, FileSystemPlayer]
     MATCH_CACHE_FILE = "matches_cache.pkl"
     METADATA_CACHE_FILE = "metadata_cache.pkl"
     SAVE_THRESHOLD = 100

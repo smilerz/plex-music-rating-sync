@@ -63,18 +63,30 @@ class StatsManager:
         }
         self.status_handler = StatusBarHandler()
 
-    def increment(self, stat_name: str, amount: int = 1) -> None:
-        """Increment a stat counter"""
-        if stat_name in self.stats:
-            self.stats[stat_name] += amount
+    def _resolve_nested_key(self, key: str) -> dict:
+        """Resolve nested keys (e.g., 'key:subkey:sub-subkey') into the stats dictionary."""
+        keys = key.split("::")
+        current = self.stats
+        for k in keys[:-1]:
+            if k not in current:
+                current[k] = {}
+            current = current[k]
+        return current, keys[-1]
 
-    def get(self, stat_name: str) -> int:
-        """Get current value of a stat"""
-        return self.stats.get(stat_name, 0)
+    def increment(self, key: str, amount: int = 1) -> None:
+        """Increment a stat counter, supporting nested keys."""
+        current, final_key = self._resolve_nested_key(key)
+        current[final_key] = current.get(final_key, 0) + amount
 
-    def set(self, stat_name: str, value: int) -> None:
-        """Get current value of a stat"""
-        self.stats[stat_name] = value
+    def get(self, key: str) -> int:
+        """Get current value of a stat, supporting nested keys."""
+        current, final_key = self._resolve_nested_key(key)
+        return current.get(final_key, 0)
+
+    def set(self, key: str, value: int) -> None:
+        """Set the value of a stat, supporting nested keys."""
+        current, final_key = self._resolve_nested_key(key)
+        current[final_key] = value
 
     def get_status_handler(self) -> StatusBarHandler:
         """Returns the status bar handler instance"""

@@ -126,7 +126,7 @@ class TrackPair(SyncPair):
     def track_details(player: MediaPlayer, track: AudioTag) -> None:
         """Print formatted track details."""
         track_number = TrackPair._safe_get(track.track)
-        track_rating = player.get_5star(TrackPair._safe_get(track.rating))
+        track_rating = player.get_5star_rating(TrackPair._safe_get(track.rating))
         artist = TrackPair.truncate(TrackPair._safe_get(track.artist), TruncateDefaults.MAX_ARTIST_LENGTH)
         album = TrackPair.truncate(TrackPair._safe_get(track.album), TruncateDefaults.MAX_ALBUM_LENGTH)
         title = TrackPair.truncate(TrackPair._safe_get(track.title), TruncateDefaults.MAX_TITLE_LENGTH)
@@ -306,8 +306,8 @@ class TrackPair(SyncPair):
             self.sync_state = SyncState.CONFLICTING
             self.logger.warning(
                 f"Found match with conflicting ratings: {self.source} "
-                f"(Source: {self.source_player.get_5star(self.rating_source)} | "
-                f"Destination: {self.destination_player.get_5star(self.rating_destination)})"
+                f"(Source: {self.source_player.get_5star_rating(self.rating_source)} | "
+                f"Destination: {self.destination_player.get_5star_rating(self.rating_destination)})"
             )
 
         self.score = score
@@ -340,17 +340,17 @@ class TrackPair(SyncPair):
             return False
 
         if choice == "1":
-            self.logger.info(f"Applying source rating {self.source_player.get_5star(self.rating_source)}  to destination track {self.destination}")
+            self.logger.info(f"Applying source rating {self.source_player.get_5star_rating(self.rating_source)}  to destination track {self.destination}")
             self.destination_player.update_rating(self.destination, self.rating_source)
             return True
         elif choice == "2":
-            self.logger.info(f"Applying destination rating {self.destination_player.get_5star(self.rating_destination)} " f"to source track {self.source}")
+            self.logger.info(f"Applying destination rating {self.destination_player.get_5star_rating(self.rating_destination)} " f"to source track {self.source}")
             self.source_player.update_rating(self.source, self.rating_destination)
             return True
         elif choice == "3":
             new_rating = self._get_new_rating()
             if new_rating is not None:
-                self.logger.info(f"Applying new rating {self.source_player.get_5star(new_rating)}  to both source and destination tracks")
+                self.logger.info(f"Applying new rating {self.source_player.get_5star_rating(new_rating)}  to both source and destination tracks")
                 self.destination_player.update_rating(self.destination, new_rating)
                 self.source_player.update_rating(self.source, new_rating)
                 return True
