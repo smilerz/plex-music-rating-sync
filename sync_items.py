@@ -2,6 +2,7 @@ import logging
 from typing import List, Optional, Union
 
 
+# TODO: evaluate if storing native object on Playlist is necessary
 class AudioTag(object):
     def __init__(self, artist: str = "", album: str = "", title: str = "", **kwargs):
         self.ID = kwargs.get("ID", None)
