@@ -2,7 +2,6 @@ import abc
 import getpass
 import logging
 import time
-from enum import Enum
 from pathlib import Path
 from typing import Any, List, Optional, Tuple, Union
 
@@ -608,7 +607,6 @@ class FileSystemPlayer(MediaPlayer):
         self.logger = logging.getLogger("PlexSync.FileSystem")
         self.abbr = "FS"
         super().__init__()
-        self.conflicts = []  # Store conflicts for unresolved ratings
 
     @staticmethod
     def name() -> str:
@@ -692,56 +690,6 @@ class FileSystemPlayer(MediaPlayer):
         else:
             return 1.0  # 5.0 stars
 
-    def _handle_rating_tags(self, ratings: dict, track: AudioTag) -> Optional[float]:
-        """Handle rating tags by validating configuration and routing to resolution or tracking conflicts."""
-        if not ratings:
-            return None
-
-        # Normalize TXXX:Rating if present
-        if "TXXX:Rating" in ratings.keys():
-            try:
-                ratings["TXXX:Rating"] = self.get_native_rating(float(ratings["TXXX:Rating"]) / 5)
-            except ValueError:
-                self.logger.warning(f"Invalid TXXX:Rating format: {ratings["TXXX:Rating"]}")
-                ratings["TXXX:Rating"] = None
-
-        # Track which tags are used
-        for tag in ratings:
-            if found_player := RatingTag.from_value(tag):
-                found_player = found_player.player_name if isinstance(found_player, Enum) else found_player
-                self.mgr.stats.increment(f"FileSystemPlayer::tags_used::{found_player}")
-
-        # Check for conflicts
-        unique_ratings = set(ratings.values())
-        if len(unique_ratings) == 1:
-            # No conflict, return the single score
-            return self.get_normed_rating(next(iter(unique_ratings)))
-
-        # Handle conflicts
-        return self._resolve_conflicting_ratings(ratings, track)
-
-    def _resolve_conflicting_ratings(self, ratings: dict, track: AudioTag) -> Optional[float]:
-        """Resolve conflicting ratings based on the configured strategy."""
-        if not self.conflict_resolution_strategy or (self.conflict_resolution_strategy == ConflictResolutionStrategy.PRIORITIZED_ORDER and not self.tag_priority_order):
-            # Store conflict if resolution is not possible
-            self.conflicts.append({"track": track, "tags": ratings})
-            self.mgr.stats.increment("FileSystemPlayer::tag_rating_conflict")
-            return None
-
-        # Resolve conflicts based on strategy
-        if self.conflict_resolution_strategy == ConflictResolutionStrategy.PRIORITIZED_ORDER:
-            for tag in self.tag_priority_order:
-                if tag in ratings:
-                    return self.get_normed_rating(ratings[tag])
-        elif self.conflict_resolution_strategy == ConflictResolutionStrategy.HIGHEST:
-            return self.get_normed_rating(max(ratings.values()))
-        elif self.conflict_resolution_strategy == ConflictResolutionStrategy.LOWEST:
-            return self.get_normed_rating(min(ratings.values()))
-        elif self.conflict_resolution_strategy == ConflictResolutionStrategy.AVERAGE:
-            average_rating = sum(ratings.values()) / len(ratings)
-            return self.get_normed_rating(round(average_rating * 2) / 2)  # Round to nearest 0.5-star equivalent
-        return None
-
     def _read_track_metadata(self, file_path: Union[Path, str]) -> AudioTag:
         """Retrieve metadata from cache or read from file."""
         str_path = str(file_path)
@@ -767,7 +715,7 @@ class FileSystemPlayer(MediaPlayer):
 
                 # Handle multiple POPM and TXXX:RATING tags
                 rating_tags = {key: tags[key].rating for key in tags if key.startswith("POPM") or key == "TXXX:Rating"}
-                rating = self._handle_rating_tags(
+                rating = self.fsp._handle_rating_tags(
                     rating_tags,
                     track=AudioTag(
                         artist=artist,
@@ -1051,7 +999,7 @@ class FileSystemPlayer(MediaPlayer):
         """Generate a summary of rating tag usage, conflicts, and strategies."""
         total_files = len(self.fsp._audio_files)
         tag_usage = self.mgr.stats.get("FileSystemPlayer::tags_used")
-        conflicts = len(self.conflicts)
+        conflicts = len(self.fsp.conflicts)
 
         # Format the summary
         summary = ["\n", "-" * 50, f"Scanned {total_files} files.\n"]
@@ -1076,7 +1024,7 @@ class FileSystemPlayer(MediaPlayer):
         tags_used = self.mgr.stats.get("FileSystemPlayer::tags_used")
         unique_tags = set(tags_used.keys()) - set(IGNORED_TAGS)
         has_multiple_tags = len(unique_tags) > 1
-        has_conflicts = len(self.conflicts) > 0
+        has_conflicts = len(self.fsp.conflicts) > 0
 
         # Skip prompts if unnecessary
         if not has_multiple_tags and not has_conflicts:
@@ -1100,7 +1048,7 @@ class FileSystemPlayer(MediaPlayer):
                     elif choice_num == len(ConflictResolutionStrategy) + 1:
                         # Show conflicts
                         print("\nFiles with conflicting ratings:")
-                        for conflict in self.conflicts:
+                        for conflict in self.fsp.conflicts:
                             track = conflict["track"]
                             print(f"\n{track.artist} | {track.album} | {track.title}")
                             for tag, rating in conflict["tags"].items():

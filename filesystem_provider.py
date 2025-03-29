@@ -3,6 +3,8 @@ from enum import Enum
 from pathlib import Path
 from typing import List, Optional, Union
 
+from sync_items import AudioTag
+
 IGNORED_TAGS = set()  # Class-level set to track ignored tags
 
 
@@ -153,9 +155,28 @@ class FileSystemProvider:
         self.logger = logging.getLogger("PlexSync.FileSystemProvider")
         self._audio_files = []
         self._playlist_files = []
+        self.conflicts = []
+
+        self.get_normed_rating = None
+        self.get_native_rating = None
+
+    # TODO: temporary solution until refactor is complete
+    def initialize_settings(self) -> None:
+        """Initialize settings for the filesystem provider."""
+        from MediaPlayer import FileSystemPlayer
+
+        self.get_normed_rating = FileSystemPlayer.get_normed_rating
+        self.get_native_rating = FileSystemPlayer.get_native_rating
+
+        self.conflict_resolution_strategy = ConflictResolutionStrategy.from_value(self.mgr.config.conflict_resolution_strategy)
+        self.tag_write_strategy = TagWriteStrategy.from_value(self.mgr.config.tag_write_strategy)
+        self.default_tag = RatingTag.from_value(self.mgr.config.default_tag)
+        self.tag_priority_order = [RatingTag.from_value(tag) for tag in self.mgr.config.tag_priority_order] if self.mgr.config.tag_priority_order else None
+        self.delete_ignored_tags = False
 
     def scan_audio_files(self) -> List[Path]:
         """Scan directory structure and cache audio files"""
+        self.initialize_settings()
         path = self.mgr.config.path
 
         if not path:
@@ -214,3 +235,53 @@ class FileSystemProvider:
 
     def delete_playlist(self, playlist_path: Path) -> None:
         raise NotImplementedError
+
+    def _handle_rating_tags(self, ratings: dict, track: AudioTag) -> Optional[float]:
+        """Handle rating tags by validating configuration and routing to resolution or tracking conflicts."""
+        if not ratings:
+            return None
+
+        # Normalize TXXX:Rating if present
+        if "TXXX:Rating" in ratings.keys():
+            try:
+                ratings["TXXX:Rating"] = self.get_native_rating(float(ratings["TXXX:Rating"]) / 5)
+            except ValueError:
+                self.logger.warning(f"Invalid TXXX:Rating format: {ratings["TXXX:Rating"]}")
+                ratings["TXXX:Rating"] = None
+
+        # Track which tags are used
+        for tag in ratings:
+            if found_player := RatingTag.from_value(tag):
+                found_player = found_player.player_name if isinstance(found_player, Enum) else found_player
+                self.mgr.stats.increment(f"FileSystemPlayer::tags_used::{found_player}")
+
+        # Check for conflicts
+        unique_ratings = set(ratings.values())
+        if len(unique_ratings) == 1:
+            # No conflict, return the single score
+            return self.get_normed_rating(next(iter(unique_ratings)))
+
+        # Handle conflicts
+        return self._resolve_conflicting_ratings(ratings, track)
+
+    def _resolve_conflicting_ratings(self, ratings: dict, track: AudioTag) -> Optional[float]:
+        """Resolve conflicting ratings based on the configured strategy."""
+        if not self.conflict_resolution_strategy or (self.conflict_resolution_strategy == ConflictResolutionStrategy.PRIORITIZED_ORDER and not self.tag_priority_order):
+            # Store conflict if resolution is not possible
+            self.conflicts.append({"track": track, "tags": ratings})
+            self.mgr.stats.increment("FileSystemPlayer::tag_rating_conflict")
+            return None
+
+        # Resolve conflicts based on strategy
+        if self.conflict_resolution_strategy == ConflictResolutionStrategy.PRIORITIZED_ORDER:
+            for tag in self.tag_priority_order:
+                if tag in ratings:
+                    return self.get_normed_rating(ratings[tag])
+        elif self.conflict_resolution_strategy == ConflictResolutionStrategy.HIGHEST:
+            return self.get_normed_rating(max(ratings.values()))
+        elif self.conflict_resolution_strategy == ConflictResolutionStrategy.LOWEST:
+            return self.get_normed_rating(min(ratings.values()))
+        elif self.conflict_resolution_strategy == ConflictResolutionStrategy.AVERAGE:
+            average_rating = sum(ratings.values()) / len(ratings)
+            return self.get_normed_rating(round(average_rating * 2) / 2)  # Round to nearest 0.5-star equivalent
+        return None
