@@ -41,31 +41,13 @@ class PlexSync:
         player.dry_run = self.mgr.config.dry
         return player
 
-    def _connect_player(self, player: MediaPlayer) -> None:
-        """Connect a player with appropriate parameters based on player type."""
-        if isinstance(player, PlexPlayer):
-            if not self.mgr.config.token and not self.mgr.config.passwd:
-                self.logger.error("Plex token or password is required for Plex player")
-                raise
-            if not self.mgr.config.server or not self.mgr.config.username:
-                self.logger.error("Plex server and username are required for Plex player")
-                raise
-            player.connect(server=self.mgr.config.server, username=self.mgr.config.username, password=self.mgr.config.passwd, token=self.mgr.config.token)
-        elif isinstance(player, FileSystemPlayer):
-            if not self.mgr.config.path:
-                self.logger.error("Path is required for filesystem player")
-                raise
-            player.connect(**vars(self.mgr.config))
-        else:
-            player.connect()
-
     def sync(self) -> None:
         if self.mgr.config.clear_cache:
             self.mgr.cache.invalidate()
 
         # Connect players with appropriate parameters based on player type
         for player in [self.source_player, self.destination_player]:
-            self._connect_player(player)
+            player.connect()
 
         for sync_item in self.mgr.config.sync:
             if sync_item.lower() == "tracks":

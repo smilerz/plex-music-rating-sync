@@ -80,12 +80,12 @@ Create a `config.ini` file based on the template `config.ini.template`:
 
 - **`tag_write_strategy`**: *Determines how rating tags are written to files.*
   - *`write_all`*: Write to all known and configured tags.
-  - *`write_existing`*: Only update tags that already exist in the file; if no rating tags exist, write to the `standard_tag`.
-  - *`write_standard`*: Only write to the `standard_tag`; do not remove other tags.
-  - *`overwrite_standard`*: Write only to the `standard_tag` and delete all other rating tags.
+  - *`write_existing`*: Only update tags that already exist in the file; if no rating tags exist, write to the `default_tag`.
+  - *`write_default`*: Only write to the `default_tag`; do not remove other tags.
+  - *`overwrite_default`*: Write only to the `default_tag` and delete all other rating tags.
 
-- **`standard_tag`**: *The canonical tag to use for writing when applicable.*  
-  - *Required for `write_standard` and `overwrite_standard`; used as a fallback in `write_existing` if no tags exist.*
+- **`default_tag`**: *The canonical tag to use for writing when applicable.*  
+  - *Required for `write_default` and `overwrite_default`; used as a fallback in `write_existing` if no tags exist.*
   - *Options*: Player values such as `MEDIAMONKEY`, `WINDOWSMEDIAPLAYER`, `MUSICBEE`, `WINAMP`, `TEXT`.
   - *Unknown/custom tags (e.g., `POPM:foobar@example.com`) are also allowed.*
 
@@ -136,8 +136,8 @@ optional arguments:
                       - disabled: No caching
   --clear-cache         Clear existing cache files before starting
   --tag-write-strategy  Strategy for writing rating tags to files.
-                        Options: write_all, write_existing, write_standard, overwrite_standard.
-  --standard-tag        Canonical tag to use for writing ratings.
+                        Options: write_all, write_existing, write_default, overwrite_default.
+  --default-tag        Canonical tag to use for writing ratings.
                         Options: Player values such as MEDIAMONKEY, WINDOWSMEDIAPLAYER, MUSICBEE, WINAMP, TEXT.
   --conflict-resolution-strategy
                         Strategy for resolving conflicting rating values.

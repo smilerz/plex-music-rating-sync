@@ -13,7 +13,7 @@ from fuzzywuzzy import fuzz
 from plexapi.exceptions import BadRequest, NotFound
 from plexapi.myplex import MyPlexAccount
 
-from filesystem_provider import IGNORED_TAGS, ConflictResolutionStrategy, RatingTag, TagWriteStrategy
+from filesystem_provider import IGNORED_TAGS, ConflictResolutionStrategy, FileSystemProvider, RatingTag, TagWriteStrategy
 from sync_items import AudioTag, Playlist
 
 NativePlaylist = Any
@@ -146,7 +146,7 @@ class MediaPlayer(abc.ABC):
             if playlist:
                 playlists.append(playlist)
 
-                return playlists
+        return playlists
 
     def find_playlist(self, title: str) -> Optional[Playlist]:
         """Find playlist by title
@@ -389,7 +389,18 @@ class PlexPlayer(MediaPlayer):
         except TypeError:
             return " - ".join([track.artist, track.album, track.title])
 
-    def connect(self, server: str, username: str, password: str = "", token: str = "") -> None:
+    def connect(self) -> None:
+        server = self.mgr.config.server
+        username = self.mgr.config.username
+        password = self.mgr.config.passwd
+        token = self.mgr.config.token
+        if not self.mgr.config.token and not self.mgr.config.passwd:
+            self.logger.error("Plex token or password is required for Plex player")
+            raise
+        if not self.mgr.config.server or not self.mgr.config.username:
+            self.logger.error("Plex server and username are required for Plex player")
+            raise
+
         self.logger.info(f"Connecting to Plex server {server} as {username}")
         self.account = self._authenticate(server, username, password, token)
 
@@ -591,9 +602,9 @@ class FileSystemPlayer(MediaPlayer):
     album_empty_alias = "[Unknown Album]"
     SEARCH_THRESHOLD = 75
     DEFAULT_RATING_TAG = RatingTag.WINDOWSMEDIAPLAYER
-    _audio_files = None
 
     def __init__(self):
+        self.fsp = None
         self.logger = logging.getLogger("PlexSync.FileSystem")
         self.abbr = "FS"
         super().__init__()
@@ -603,35 +614,35 @@ class FileSystemPlayer(MediaPlayer):
     def name() -> str:
         return "FileSystemPlayer"
 
-    def connect(self, **kwargs) -> None:
+    def connect(self) -> None:
         """Connect to filesystem music library with additional options."""
-        self.path = Path(kwargs.get("path"))
-        playlist_path = kwargs.get("playlist_path", None)
-        if not self.path.exists():
-            raise FileNotFoundError(f"Music directory not found: {self.path}")
+        self.fsp = FileSystemProvider()
 
-        self.logger.info(f"Connected to filesystem music library at {self.path}")
-        self.playlist_path = Path(playlist_path) if playlist_path else self.path
-        self.playlist_path.mkdir(exist_ok=True)
-        self.logger.info(f"Using playlists directory: {self.playlist_path}")
+        if "tracks" in self.mgr.config.sync:
+            self.fsp.scan_audio_files()
+        if "playlists" in self.mgr.config.sync:
+            self.fsp.scan_playlist_files()
 
-        self.tag_write_strategy = TagWriteStrategy.from_value(kwargs.get("tag_write_strategy"))
-        self.standard_tag = RatingTag.resolve_tags(kwargs.get("standard_tag"))
-        self.conflict_resolution_strategy = ConflictResolutionStrategy.from_value(kwargs.get("conflict_resolution_strategy"))
-        self.tag_priority_order = RatingTag.resolve_tags(kwargs.get("tag_priority_order"))
+        self.tag_write_strategy = TagWriteStrategy.from_value(self.mgr.config.tag_write_strategy)
+        self.default_tag = RatingTag.resolve_tags(self.mgr.config.default_tag)
+        self.conflict_resolution_strategy = ConflictResolutionStrategy.from_value(self.mgr.config.conflict_resolution_strategy)
+        self.tag_priority_order = RatingTag.resolve_tags(self.mgr.config.tag_priority_order)
         self.delete_ignored_tags = False
 
         bar = None
-        if FileSystemPlayer._audio_files is None:
-            self._scan_audio_files()
-            for file_path in self._audio_files:
-                if not bar:
-                    bar = self.mgr.status.start_phase(f"Reading track metadata from {self.name()}", total=len(FileSystemPlayer._audio_files))
-                self._read_track_metadata(file_path)
-                bar.update()
-            bar.close() if bar else None
-            print(self._generate_summary())
-            self._configure_global_settings()
+        if self.fsp._audio_files is None:
+            self.fsp.scan_audio_files()
+
+        for file_path in self.fsp._audio_files:
+            if not bar:
+                bar = self.mgr.status.start_phase(f"Reading track metadata from {self.name()}", total=len(self.fsp._audio_files))
+            self._read_track_metadata(file_path)
+            bar.update()
+        bar.close() if bar else None
+        print(self._generate_summary())
+        self._configure_global_settings()
+
+        # TODO: add playlist scanning
 
     def get_native_rating(self, normed_rating: Optional[float]) -> int:  # noqa
         if normed_rating is None or normed_rating <= 0:
@@ -680,21 +691,6 @@ class FileSystemPlayer(MediaPlayer):
             return 0.9  # 4.5 stars
         else:
             return 1.0  # 5.0 stars
-
-    def _scan_audio_files(self) -> None:
-        """Scan directory structure and cache audio files"""
-        FileSystemPlayer._audio_files = []
-        self.logger.info(f"Scanning {self.path} for audio files...")
-        audio_extensions = {".mp3", ".flac", ".ogg", ".m4a", ".wav", ".aac"}
-
-        bar = self.mgr.status.start_phase(f"Collecting tracks from {self.name()}", total=None)
-
-        for file_path in self.path.rglob("*"):
-            if file_path.suffix.lower() in audio_extensions:
-                FileSystemPlayer._audio_files.append(file_path)
-                bar.update()
-        bar.close()
-        self.logger.info(f"Found {len(FileSystemPlayer._audio_files)} audio files")
 
     def _handle_rating_tags(self, ratings: dict, track: AudioTag) -> Optional[float]:
         """Handle rating tags by validating configuration and routing to resolution or tracking conflicts."""
@@ -823,14 +819,14 @@ class FileSystemPlayer(MediaPlayer):
                 for tag in existing_tags:
                     audio_file[tag] = rating
             else:
-                audio_file[self.standard_tag] = rating
-        elif self.tag_write_strategy == TagWriteStrategy.WRITE_STANDARD:
-            audio_file[self.standard_tag] = rating
-        elif self.tag_write_strategy == TagWriteStrategy.OVERWRITE_STANDARD:
+                audio_file[self.default_tag] = rating
+        elif self.tag_write_strategy == TagWriteStrategy.WRITE_DEFAULT:
+            audio_file[self.default_tag] = rating
+        elif self.tag_write_strategy == TagWriteStrategy.OVERWRITE_DEFAULT:
             for tag in list(audio_file.keys()):
                 if tag.startswith("POPM") or tag == "TXXX:Rating":
                     del audio_file[tag]
-            audio_file[self.standard_tag] = rating
+            audio_file[self.default_tag] = rating
         audio_file.save()
 
     def _search_tracks(self, key: str, value: Union[bool, str]) -> List[AudioTag]:
@@ -948,18 +944,16 @@ class FileSystemPlayer(MediaPlayer):
 
     def _get_playlists(self) -> List[Path]:
         """Get all M3U playlists in the playlist directory"""
-        if not self.playlist_path or not self.playlist_path.exists():
+        if not self.fsp.playlist_path or not self.fsp.playlist_path.exists():
             return []
 
-        return list(self.playlist_path.glob("*.m3u"))
+        return list(self.fsp.playlist_path.glob("*.m3u"))
 
     def _find_playlist(self, title: str) -> Optional[Path]:
         """Find a playlist by title"""
-        if not self.playlist_path or not self.playlist_path.exists():
+        if not self.fsp.playlist_path or not self.fsp.playlist_path.exists():
             return None
-
-        playlist_file = self.playlist_path / f"{title}.m3u"
-        return playlist_file if playlist_file.exists() else None
+        return None
 
     def _convert_playlist(self, native_playlist: Path) -> Optional[Playlist]:
         """Convert a playlist file to a Playlist object"""
@@ -979,7 +973,7 @@ class FileSystemPlayer(MediaPlayer):
                 line = lines[i].strip()
 
                 # Skip empty lines and comments (except EXTINF)
-                if not line or (line.startswith("#") and not line.startswith("#EXTINF")):
+                if not line or (line.startswith("#") and not line.startswith1("#EXTINF")):
                     i += 1
                     continue
 
@@ -1055,7 +1049,7 @@ class FileSystemPlayer(MediaPlayer):
 
     def _generate_summary(self) -> str:
         """Generate a summary of rating tag usage, conflicts, and strategies."""
-        total_files = len(FileSystemPlayer._audio_files)
+        total_files = len(self.fsp._audio_files)
         tag_usage = self.mgr.stats.get("FileSystemPlayer::tags_used")
         conflicts = len(self.conflicts)
 
@@ -1175,17 +1169,20 @@ class FileSystemPlayer(MediaPlayer):
                     break
                 print("Invalid choice. Please try again.")
 
-        # Step 5: Prompt for standard tag
-        if self.tag_write_strategy and self.tag_write_strategy.requires_standard_tag():
+        # Step 5: Prompt for default tag
+        if self.tag_write_strategy and self.tag_write_strategy.requires_default_tag():
             valid_tags = RatingTag.resolve_tags(list(set(available_tags.keys()) - IGNORED_TAGS))
 
             while True:
-                print("\nWhich tag should be treated as the standard for writing ratings?")
+                if len(valid_tags) == 1:
+                    self.default_tag = valid_tags[0]
+                    break
+                print("\nWhich tag should be treated as the default for writing ratings?")
                 for idx, tag in enumerate(valid_tags, start=1):
                     print(f"  {idx}) {tag}")
                 choice = input(f"Enter choice [1-{len(valid_tags)}]: ").strip()
                 if choice.isdigit() and 1 <= int(choice) <= len(valid_tags):
-                    self.standard_tag = valid_tags[int(choice) - 1]
+                    self.default_tag = valid_tags[int(choice) - 1]
                     break
                 print("Invalid choice. Please try again.")
 
@@ -1213,13 +1210,13 @@ class FileSystemPlayer(MediaPlayer):
         def get_tag_identifier(tag: RatingTag) -> str:
             if tag.name.startswith("UNKNOWN"):
                 return tag.tag  # Use the actual tag for unknown/dynamic tags
-            return tag.name  # Use enum name for standard tags
+            return tag.name  # Use enum name for defined tags
 
         config_data = {
             "tag_write_strategy": self.tag_write_strategy.value if self.tag_write_strategy else None,
-            "standard_tag": self.standard_tag.tag if self.standard_tag else None,
+            "defaultd_tag": self.default_tag.tag if self.default_tag else None,
             "conflict_resolution_strategy": self.conflict_resolution_strategy.value if self.conflict_resolution_strategy else None,
-            # Use enum name for standard tags, tag value for UNKNOWN tags
+            # Use enum name for defined tags, tag value for UNKNOWN tags
             "tag_priority_order": [get_tag_identifier(tag) for tag in self.tag_priority_order] if self.tag_priority_order else None,
             "delete_ignored_tags": self.delete_ignored_tags,
         }
