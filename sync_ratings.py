@@ -6,7 +6,6 @@ from typing import List
 
 from manager import manager
 from manager.cache_manager import CacheManager
-from manager.stats_manager import StatsManager
 from MediaPlayer import FileSystemPlayer, MediaMonkey, MediaPlayer, PlexPlayer
 from sync_items import AudioTag
 from sync_pair import PlaylistPair, SyncState, TrackPair
@@ -19,8 +18,7 @@ class PlexSync:
         self.mgr = manager
         self.logger = self.mgr.logger
 
-        self.stats_manager = StatsManager()
-        self.cache_manager = CacheManager(self.mgr.config.cache_mode, self.stats_manager)
+        self.cache_manager = CacheManager(self.mgr.config.cache_mode)
 
         try:
             self.source_player = self._create_player(self.mgr.config.source)
@@ -42,7 +40,7 @@ class PlexSync:
             self.logger.error(f"Supported players: {', '.join(player_map.keys())}")
             raise ValueError(f"Invalid player type: {player_type}")
 
-        player = player_map[player_type](cache_manager=self.cache_manager, stats_manager=self.stats_manager)
+        player = player_map[player_type](cache_manager=self.cache_manager)
         player.dry_run = self.mgr.config.dry
         return player
 
@@ -85,10 +83,10 @@ class PlexSync:
     def _get_match_summary(self) -> str:
         """Generate a summary of match quality statistics."""
         return (
-            f"100%: {self.stats_manager.get('perfect_matches')} | "
-            f"Good: {self.stats_manager.get('good_matches')} | "
-            f"Poor: {self.stats_manager.get('poor_matches')} | "
-            f"None: {self.stats_manager.get('no_matches')}"
+            f"100%: {self.mgr.stats.get('perfect_matches')} | "
+            f"Good: {self.mgr.stats.get('good_matches')} | "
+            f"Poor: {self.mgr.stats.get('poor_matches')} | "
+            f"None: {self.mgr.stats.get('no_matches')}"
         )
 
     def _match_tracks(self, tracks: List[AudioTag]) -> List[TrackPair]:
@@ -175,7 +173,7 @@ class PlexSync:
 
     def _resolve_conflicts(self, pairs_conflicting: List[TrackPair], sync_pairs: List[TrackPair]) -> None:
         """Resolve conflicts between source and destination ratings"""
-        self.stats_manager.set("tracks_conflicts", len(pairs_conflicting))
+        self.mgr.stats.set("tracks_conflicts", len(pairs_conflicting))
 
         while True:
             choice = self._display_conflict_options()
@@ -203,7 +201,7 @@ class PlexSync:
     def sync_tracks(self) -> None:
         tracks = self.source_player.search_tracks(key="rating", value=True)
 
-        self.stats_manager.increment("tracks_processed", len(tracks))
+        self.mgr.stats.increment("tracks_processed", len(tracks))
         self.logger.info(f"Attempting to match {len(tracks)} tracks")
 
         sync_pairs = self._match_tracks(tracks)
@@ -223,7 +221,7 @@ class PlexSync:
             return
 
         playlist_pairs = [PlaylistPair(self.source_player, self.destination_player, pl) for pl in playlists if not pl.is_auto_playlist]
-        self.stats_manager.increment("playlists_processed", len(playlist_pairs))
+        self.mgr.stats.increment("playlists_processed", len(playlist_pairs))
 
         if self.mgr.config.dry:
             self.logger.info("Running a DRY RUN. No changes will be propagated!")
@@ -231,18 +229,22 @@ class PlexSync:
         self.logger.info(f"Matching {self.source_player.name()} playlists with {self.destination_player.name()}")
 
         # Start playlist matching phase
-        bar = self.mgr.status.start_phase("Matching playlists", total=len(playlist_pairs))
+        bar = None
         for pair in playlist_pairs:
+            if bar is None:
+                bar = self.mgr.status.start_phase("Matching playlists", total=len(playlist_pairs))
             pair.match()
             bar.update()
-        bar.close()
+        bar.close() if bar else None
 
         # Start playlist sync phase
-        bar = self.mgr.status.start_phase("Syncing playlists", total=len(playlist_pairs))
+        bar = None
         for pair in playlist_pairs:
+            if bar is None:
+                bar = self.mgr.status.start_phase("Syncing playlists", total=len(playlist_pairs))
             pair.sync()
             bar.update()
-        bar.close()
+        bar.close() if bar else None
 
     def print_summary(self) -> None:
         elapsed = time.time() - self.start_time
@@ -254,24 +256,24 @@ class PlexSync:
 
         if "tracks" in self.mgr.config.sync:
             print("Tracks:")
-            print(f"- Processed: {self.stats_manager.get('tracks_processed')}")
-            print(f"- Matched: {self.stats_manager.get('tracks_matched')}")
-            print(f"- Updated: {self.stats_manager.get('tracks_updated')}")
-            print(f"- Conflicts: {self.stats_manager.get('tracks_conflicts')}")
+            print(f"- Processed: {self.mgr.stats.get('tracks_processed')}")
+            print(f"- Matched: {self.mgr.stats.get('tracks_matched')}")
+            print(f"- Updated: {self.mgr.stats.get('tracks_updated')}")
+            print(f"- Conflicts: {self.mgr.stats.get('tracks_conflicts')}")
 
             print("\nMatch Quality:")
-            print(f"- Perfect matches (100%): {self.stats_manager.get('perfect_matches')}")
-            print(f"- Good matches (80-99%): {self.stats_manager.get('good_matches')}")
-            print(f"- Poor matches (30-79%): {self.stats_manager.get('poor_matches')}")
-            print(f"- No matches (<30%): {self.stats_manager.get('no_matches')}")
+            print(f"- Perfect matches (100%): {self.mgr.stats.get('perfect_matches')}")
+            print(f"- Good matches (80-99%): {self.mgr.stats.get('good_matches')}")
+            print(f"- Poor matches (30-79%): {self.mgr.stats.get('poor_matches')}")
+            print(f"- No matches (<30%): {self.mgr.stats.get('no_matches')}")
             if self.mgr.config.log == "DEBUG":
-                print(f"- Cache hits: {self.stats_manager.get('cache_hits')}")
+                print(f"- Cache hits: {self.mgr.stats.get('cache_hits')}")
 
         if "playlists" in self.mgr.config.sync:
             print("\nPlaylists:")
-            print(f"- Processed: {self.stats_manager.get('playlists_processed')}")
-            print(f"- Matched: {self.stats_manager.get('playlists_matched')}")
-            print(f"- Updated: {self.stats_manager.get('playlists_updated')}")
+            print(f"- Processed: {self.mgr.stats.get('playlists_processed')}")
+            print(f"- Matched: {self.mgr.stats.get('playlists_matched')}")
+            print(f"- Updated: {self.mgr.stats.get('playlists_updated')}")
 
         if self.mgr.config.dry:
             print("\nThis was a DRY RUN - no changes were actually made.")
@@ -280,6 +282,7 @@ class PlexSync:
 
 if __name__ == "__main__":
     locale.setlocale(locale.LC_ALL, "")
+    manager.initialize()
     args = manager.config
     sync_agent = PlexSync()
     if args.clear_cache:

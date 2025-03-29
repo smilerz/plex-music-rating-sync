@@ -13,10 +13,9 @@ class Manager:
     def __new__(self) -> "Manager":
         if self._instance is None:
             self._instance = super(Manager, self).__new__(self)
-            self._instance._initialize()
         return self._instance
 
-    def _initialize(self) -> None:
+    def initialize(self) -> None:
         from .cache_manager import CacheManager
         from .config_manager import ConfigManager
         from .log_manager import LogManager
@@ -26,7 +25,7 @@ class Manager:
         self.log = LogManager()
         self.stats = StatsManager()
         self.status = StatusManager()
-        self.cache = CacheManager(mode=self.config.cache_mode, stats_manager=self.stats)
+        self.cache = CacheManager(mode=self.config.cache_mode)
 
         self.logger = self.log.setup_logging(self.config.log)
 
@@ -43,7 +42,7 @@ class Manager:
         return self.cache
 
     def get_config_manager(self) -> "ConfigManager":
-        return self.args
+        return self.config
 
 
 # Singleton instance

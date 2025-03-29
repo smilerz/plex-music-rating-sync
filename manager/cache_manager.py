@@ -2,15 +2,13 @@ import logging
 import os
 import pickle
 import warnings
-from typing import TYPE_CHECKING, List, Optional
+from typing import List, Optional
 
 import pandas as pd
 
 from MediaPlayer import FileSystemPlayer, MediaMonkey, PlexPlayer
 from sync_items import AudioTag
 
-if TYPE_CHECKING:
-    from stats_manager import StatsManager
 warnings.simplefilter(action="ignore", category=pd.errors.PerformanceWarning)
 
 
@@ -103,13 +101,15 @@ class CacheManager:
     METADATA_CACHE_FILE = "metadata_cache.pkl"
     SAVE_THRESHOLD = 100
 
-    def __init__(self, mode: str, stats_manager: Optional["StatsManager"] = None) -> None:
+    def __init__(self, mode: str) -> None:
         """Initialize cache manager"""
+        from manager import manager
+
+        self.mgr = manager
         self.logger = logging.getLogger("PlexSync.CacheManager")
         self.mode = mode
-        self.stats_manager = stats_manager
-        self.metadata_cache: Optional[Cache] = None
-        self.match_cache: Optional[Cache] = None
+        self.metadata_cache = None
+        self.match_cach = None
 
         if self.mode == "disabled":
             self.logger.info("Cache disabled.")
@@ -199,8 +199,7 @@ class CacheManager:
         match = self._safe_get_value(row, dest_name)
         score = self._safe_get_value(row, "score")
         self.logger.debug(f"Match Cache hit: {match} (score: {score}) for source_id: {source_id}")
-        if self.stats_manager:
-            self.stats_manager.increment("cache_hits")
+        self.mgr.stats.increment("cache_hits")
         return match, score
 
     def set_match(self, source_id: str, dest_id: str, source_name: str, dest_name: str, score: Optional[float] = None) -> None:
@@ -248,8 +247,7 @@ class CacheManager:
         # Convert row data to AudioTag
         data = {key: self._safe_get_value(row, key) for key in row.columns}
         self.logger.debug(f"Metadata cache hit for {player_name}:{track_id}")
-        if self.stats_manager:
-            self.stats_manager.increment("cache_hits")
+        self.mgr.stats.increment("cache_hits")
         return AudioTag.from_dict(data)
 
     ### METADATA CACHING (NON-PERSISTENT) ###

@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Any, List, Optional, Union
 
 if TYPE_CHECKING:
     from cache_manager import CacheManager
-    from stats_manager import StatsManager
 
 from pathlib import Path
 from typing import Tuple
@@ -41,16 +40,13 @@ class MediaPlayer(abc.ABC):
     rating_maximum = 5
     abbr = None
 
-    def __init__(self, cache_manager: Optional["CacheManager"] = None, stats_manager: Optional["StatsManager"] = None):
+    def __init__(self, cache_manager: Optional["CacheManager"] = None):
         from manager import manager
 
         self.mgr = manager
         self.cache_manager = cache_manager
-        self.stats_manager = stats_manager
         if cache_manager:
             self.logger.debug(f"Cache manager for {self.name()} set to: {cache_manager.__class__.__name__}")
-        if stats_manager:
-            self.logger.debug(f"Stats manager for {self.name()} set to: {stats_manager.__class__.__name__}")
 
     def __hash__(self) -> int:
         return hash(self.name().lower())
@@ -232,11 +228,11 @@ class MediaPlayer(abc.ABC):
 class MediaMonkey(MediaPlayer):
     rating_maximum = 100
 
-    def __init__(self, cache_manager: Optional["CacheManager"] = None, stats_manager: Optional["StatsManager"] = None):
+    def __init__(self, cache_manager: Optional["CacheManager"] = None):
         self.logger = logging.getLogger("PlexSync.MediaMonkey")
         self.sdb = None
         self.abbr = "MM"
-        super().__init__(cache_manager, stats_manager)
+        super().__init__(cache_manager)
 
     @classmethod
     def name(self) -> str:
@@ -382,13 +378,13 @@ class PlexPlayer(MediaPlayer):
     rating_maximum = 10
     album_empty_alias = "[Unknown Album]"
 
-    def __init__(self, cache_manager: Optional["CacheManager"] = None, stats_manager: Optional["StatsManager"] = None):
+    def __init__(self, cache_manager: Optional["CacheManager"] = None):
         self.logger = logging.getLogger("PlexSync.PlexPlayer")
         self.abbr = "PP"
         self.account = None
         self.plex_api_connection = None
         self.music_library = None
-        super().__init__(cache_manager, stats_manager)
+        super().__init__(cache_manager)
 
     @staticmethod
     def name() -> str:
@@ -605,10 +601,10 @@ class FileSystemPlayer(MediaPlayer):
     DEFAULT_RATING_TAG = RatingTag.WINDOWSMEDIAPLAYER
     _audio_files = None
 
-    def __init__(self, cache_manager: Optional["CacheManager"] = None, stats_manager: Optional["StatsManager"] = None):
+    def __init__(self, cache_manager: Optional["CacheManager"] = None):
         self.logger = logging.getLogger("PlexSync.FileSystem")
         self.abbr = "FS"
-        super().__init__(cache_manager, stats_manager)
+        super().__init__(cache_manager)
         self.conflicts = []  # Store conflicts for unresolved ratings
 
     @staticmethod
@@ -725,7 +721,7 @@ class FileSystemPlayer(MediaPlayer):
         for tag in ratings:
             if found_player := RatingTag.from_value(tag):
                 found_player = found_player.player_name if isinstance(found_player, Enum) else found_player
-                self.stats_manager.increment(f"FileSystemPlayer::tags_used::{found_player}")
+                self.mgr.stats.increment(f"FileSystemPlayer::tags_used::{found_player}")
 
         # Check for conflicts
         unique_ratings = set(ratings.values())
@@ -741,7 +737,7 @@ class FileSystemPlayer(MediaPlayer):
         if not self.conflict_resolution_strategy or (self.conflict_resolution_strategy == ConflictResolutionStrategy.PRIORITIZED_ORDER and not self.tag_priority_order):
             # Store conflict if resolution is not possible
             self.conflicts.append({"track": track, "tags": ratings})
-            self.stats_manager.increment("FileSystemPlayer::tag_rating_conflict")
+            self.mgr.stats.increment("FileSystemPlayer::tag_rating_conflict")
             return None
 
         # Resolve conflicts based on strategy
@@ -1073,7 +1069,7 @@ class FileSystemPlayer(MediaPlayer):
     def _generate_summary(self) -> str:
         """Generate a summary of rating tag usage, conflicts, and strategies."""
         total_files = len(FileSystemPlayer._audio_files)
-        tag_usage = self.stats_manager.get("FileSystemPlayer::tags_used")
+        tag_usage = self.mgr.stats.get("FileSystemPlayer::tags_used")
         conflicts = len(self.conflicts)
 
         # Format the summary
@@ -1096,7 +1092,7 @@ class FileSystemPlayer(MediaPlayer):
     def _configure_global_settings(self) -> None:
         """Prompt the user for global settings based on tag usage and conflicts."""
         global IGNORED_TAGS
-        tags_used = self.stats_manager.get("FileSystemPlayer::tags_used")
+        tags_used = self.mgr.stats.get("FileSystemPlayer::tags_used")
         unique_tags = set(tags_used.keys()) - set(IGNORED_TAGS)
         has_multiple_tags = len(unique_tags) > 1
         has_conflicts = len(self.conflicts) > 0
