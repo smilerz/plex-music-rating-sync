@@ -6,10 +6,11 @@ from typing import List
 
 import configargparse
 
-from cache_manager import CacheManager
-from log_manager import LoggingManager
+from manager import manager
+from manager.cache_manager import CacheManager
+from manager.log_manager import LogManager
+from manager.stats_manager import StatsManager
 from MediaPlayer import FileSystemPlayer, MediaMonkey, MediaPlayer, PlexPlayer
-from stats_manager import StatsManager
 from sync_items import AudioTag
 from sync_pair import PlaylistPair, SyncState, TrackPair
 
@@ -57,7 +58,7 @@ class PlexSync:
 
     def setup_logging(self) -> None:
         """Initializes custom logging with log rotation and multi-level console output."""
-        logging_manager = LoggingManager()
+        logging_manager = LogManager()
         self.logger = logging_manager.setup_logging(self.options.log)
 
     def _connect_player(self, player: MediaPlayer) -> None:
@@ -292,46 +293,9 @@ class PlexSync:
         print("-" * 50)
 
 
-def parse_args() -> configargparse.Namespace:
-    parser = configargparse.ArgumentParser(default_config_files=["./config.ini"], description="Synchronizes ID3 music ratings with a Plex media-server")
-    parser.add_argument("--dry", action="store_true", help="Does not apply any changes")
-    parser.add_argument("--source", type=str, default="mediamonkey", help="Source player (plex or [mediamonkey])")
-    parser.add_argument("--destination", type=str, default="plex", help="Destination player ([plex] or mediamonkey)")
-    parser.add_argument("--sync", nargs="*", default=["tracks"], help="Selects which items to sync: one or more of [tracks, playlists]")
-    parser.add_argument("--log", default="warning", help="Sets the logging level (critical, error, [warning], info, debug)")
-    parser.add_argument("--server", type=str, required=True, help="The name of the plex media server")
-    parser.add_argument("--username", type=str, required=True, help="The plex username")
-    parser.add_argument("--passwd", type=str, help="The password for the plex user. NOT RECOMMENDED TO USE!")
-    parser.add_argument(
-        "--token",
-        type=str,
-        help="Plex API token.  See https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/ for information on how to find your token",
-    )
-    parser.add_argument("--path", type=str, help="Path to music directory for filesystem player")
-    parser.add_argument("--playlist-path", type=str, help="Path to playlists directory for filesystem player")
-    parser.add_argument("--album-playlist", action="store_true", help="Sync album playlists")
-    parser.add_argument(
-        "--cache-mode",
-        type=str,
-        choices=["metadata", "matches", "matches-only", "disabled"],
-        default="metadata",
-        help="Cache mode: [metadata] (in-memory only), matches (both), matches-only (persistent matches), disabled",
-    )
-    parser.add_argument("--clear-cache", action="store_true", help="Clear existing cache files before starting")
-    parser.add_argument(
-        "--tag-write-strategy", type=str, choices=["write_all", "write_existing", "write_standard", "overwrite_standard"], help="Strategy for writing rating tags to files"
-    )
-    parser.add_argument("--standard-tag", type=str, choices=["MEDIAMONKEY", "WINDOWSMEDIAPLAYER", "MUSICBEE", "WINAMP", "TEXT"], help="Canonical tag to use for writing ratings")
-    parser.add_argument(
-        "--conflict-resolution-strategy", type=str, choices=["prioritized_order", "highest", "lowest", "average"], help="Strategy for resolving conflicting rating values"
-    )
-    parser.add_argument("--tag-priority-order", type=str, nargs="+", help="Ordered list of tag identifiers for resolving conflicts")
-    return parser.parse_args()
-
-
 if __name__ == "__main__":
     locale.setlocale(locale.LC_ALL, "")
-    args = parse_args()
+    args = manager.config
     sync_agent = PlexSync(args)
     if args.clear_cache:
         sync_agent.cache_manager.invalidate()

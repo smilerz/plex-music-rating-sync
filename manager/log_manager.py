@@ -39,7 +39,7 @@ class LevelBasedFormatter(logging.Formatter):
         return super().format(record)
 
 
-class LoggingManager:
+class LogManager:
     LOG_LEVELS = {
         "CRITICAL": logging.CRITICAL,
         "ERROR": logging.ERROR,

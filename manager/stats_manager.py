@@ -3,7 +3,8 @@ from typing import Optional
 from tqdm import tqdm
 
 
-class StatusBarHandler:
+# TODO refactor to be StatusManager and remove the need for a separate StatusBarHandler
+class StatusManager:
     """Manages multiple tqdm progress bars, allowing parallel phase tracking and returning bar objects for direct manipulation."""
 
     def __init__(self):
@@ -12,7 +13,7 @@ class StatusBarHandler:
     class ManagedProgressBar(tqdm):
         """Custom progress bar that removes itself from handler when closed"""
 
-        def __init__(self, handler: "StatusBarHandler", desc: str, **kwargs):
+        def __init__(self, handler: "StatusManager", desc: str, **kwargs):
             super().__init__(**kwargs)
             self.handler = handler
             self.desc = desc
@@ -61,7 +62,7 @@ class StatsManager:
             "no_matches": 0,  # <30% match score or no match found
             "cache_hits": 0,  # Tracks found in cache
         }
-        self.status_handler = StatusBarHandler()
+        self.status_handler = StatusManager()
 
     def _resolve_nested_key(self, key: str) -> dict:
         """Resolve nested keys (e.g., 'key:subkey:sub-subkey') into the stats dictionary."""
@@ -88,6 +89,6 @@ class StatsManager:
         current, final_key = self._resolve_nested_key(key)
         current[final_key] = value
 
-    def get_status_handler(self) -> StatusBarHandler:
+    def get_status_handler(self) -> StatusManager:
         """Returns the status bar handler instance"""
         return self.status_handler
