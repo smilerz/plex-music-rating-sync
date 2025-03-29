@@ -10,11 +10,11 @@ if TYPE_CHECKING:
 class Manager:
     _instance = None
 
-    def __new__(cls) -> "Manager":
-        if cls._instance is None:
-            cls._instance = super(Manager, cls).__new__(cls)
-            cls._instance._initialize()
-        return cls._instance
+    def __new__(self) -> "Manager":
+        if self._instance is None:
+            self._instance = super(Manager, self).__new__(self)
+            self._instance._initialize()
+        return self._instance
 
     def _initialize(self) -> None:
         from .cache_manager import CacheManager
@@ -27,6 +27,8 @@ class Manager:
         self.stats = StatsManager()
         self.status = StatusManager()
         self.cache = CacheManager(mode=self.config.cache_mode, stats_manager=self.stats)
+
+        self.logger = self.log.setup_logging(self.config.log)
 
     def get_log_manager(self) -> "LogManager":
         return self.log

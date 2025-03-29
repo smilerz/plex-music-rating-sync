@@ -4,11 +4,8 @@ import time
 from datetime import timedelta
 from typing import List
 
-import configargparse
-
 from manager import manager
 from manager.cache_manager import CacheManager
-from manager.log_manager import LogManager
 from manager.stats_manager import StatsManager
 from MediaPlayer import FileSystemPlayer, MediaMonkey, MediaPlayer, PlexPlayer
 from sync_items import AudioTag
@@ -16,18 +13,17 @@ from sync_pair import PlaylistPair, SyncState, TrackPair
 
 
 class PlexSync:
-    def __init__(self, options: configargparse.Namespace) -> None:
-        self.logger = None
-        self.options = options
-        self.setup_logging()
+    def __init__(self) -> None:
+        self.mgr = manager
+        self.logger = self.mgr.logger
 
         self.stats_manager = StatsManager()
-        self.cache_manager = CacheManager(options.cache_mode, self.stats_manager)
+        self.cache_manager = CacheManager(self.mgr.config.cache_mode, self.stats_manager)
         self._status = None
 
         try:
-            self.source_player = self._create_player(self.options.source)
-            self.destination_player = self._create_player(self.options.destination)
+            self.source_player = self._create_player(self.mgr.config.source)
+            self.destination_player = self._create_player(self.mgr.config.destination)
         except ValueError:
             exit(1)
 
@@ -53,41 +49,36 @@ class PlexSync:
             raise ValueError(f"Invalid player type: {player_type}")
 
         player = player_map[player_type](cache_manager=self.cache_manager, stats_manager=self.stats_manager)
-        player.dry_run = self.options.dry
+        player.dry_run = self.mgr.config.dry
         return player
-
-    def setup_logging(self) -> None:
-        """Initializes custom logging with log rotation and multi-level console output."""
-        logging_manager = LogManager()
-        self.logger = logging_manager.setup_logging(self.options.log)
 
     def _connect_player(self, player: MediaPlayer) -> None:
         """Connect a player with appropriate parameters based on player type."""
         if isinstance(player, PlexPlayer):
-            if not self.options.token and not self.options.passwd:
+            if not self.mgr.config.token and not self.mgr.config.passwd:
                 self.logger.error("Plex token or password is required for Plex player")
                 raise
-            if not self.options.server or not self.options.username:
+            if not self.mgr.config.server or not self.mgr.config.username:
                 self.logger.error("Plex server and username are required for Plex player")
                 raise
-            player.connect(server=self.options.server, username=self.options.username, password=self.options.passwd, token=self.options.token)
+            player.connect(server=self.mgr.config.server, username=self.mgr.config.username, password=self.mgr.config.passwd, token=self.mgr.config.token)
         elif isinstance(player, FileSystemPlayer):
-            if not self.options.path:
+            if not self.mgr.config.path:
                 self.logger.error("Path is required for filesystem player")
                 raise
-            player.connect(**vars(self.options))
+            player.connect(**vars(self.mgr.config))
         else:
             player.connect()
 
     def sync(self) -> None:
-        if self.options.clear_cache:
+        if self.mgr.config.clear_cache:
             self.cache_manager.invalidate()
 
         # Connect players with appropriate parameters based on player type
         for player in [self.source_player, self.destination_player]:
             self._connect_player(player)
 
-        for sync_item in self.options.sync:
+        for sync_item in self.mgr.config.sync:
             if sync_item.lower() == "tracks":
                 self.logger.info(f"Starting to sync track ratings from {self.source_player.name()} to {self.destination_player.name()}")
                 self.sync_tracks()
@@ -240,7 +231,7 @@ class PlexSync:
         playlist_pairs = [PlaylistPair(self.source_player, self.destination_player, pl) for pl in playlists if not pl.is_auto_playlist]
         self.stats_manager.increment("playlists_processed", len(playlist_pairs))
 
-        if self.options.dry:
+        if self.mgr.config.dry:
             self.logger.info("Running a DRY RUN. No changes will be propagated!")
 
         self.logger.info(f"Matching {self.source_player.name()} playlists with {self.destination_player.name()}")
@@ -267,7 +258,7 @@ class PlexSync:
         print("-" * 50)
         print(f"Total time: {elapsed_time}")
 
-        if "tracks" in self.options.sync:
+        if "tracks" in self.mgr.config.sync:
             print("Tracks:")
             print(f"- Processed: {self.stats_manager.get('tracks_processed')}")
             print(f"- Matched: {self.stats_manager.get('tracks_matched')}")
@@ -279,16 +270,16 @@ class PlexSync:
             print(f"- Good matches (80-99%): {self.stats_manager.get('good_matches')}")
             print(f"- Poor matches (30-79%): {self.stats_manager.get('poor_matches')}")
             print(f"- No matches (<30%): {self.stats_manager.get('no_matches')}")
-            if self.options.log == "DEBUG":
+            if self.mgr.config.log == "DEBUG":
                 print(f"- Cache hits: {self.stats_manager.get('cache_hits')}")
 
-        if "playlists" in self.options.sync:
+        if "playlists" in self.mgr.config.sync:
             print("\nPlaylists:")
             print(f"- Processed: {self.stats_manager.get('playlists_processed')}")
             print(f"- Matched: {self.stats_manager.get('playlists_matched')}")
             print(f"- Updated: {self.stats_manager.get('playlists_updated')}")
 
-        if self.options.dry:
+        if self.mgr.config.dry:
             print("\nThis was a DRY RUN - no changes were actually made.")
         print("-" * 50)
 
@@ -296,7 +287,7 @@ class PlexSync:
 if __name__ == "__main__":
     locale.setlocale(locale.LC_ALL, "")
     args = manager.config
-    sync_agent = PlexSync(args)
+    sync_agent = PlexSync()
     if args.clear_cache:
         sync_agent.cache_manager.invalidate()
     sync_agent.sync()
