@@ -148,11 +148,12 @@ class ConflictResolutionStrategy(Enum):
 class FileSystemAdapter:
     """Adapter class for handling filesystem operations for audio files and playlists."""
 
-    def __init__(self, path: Path, playlist_path: Optional[Path] = None, stats_manager=None, cache_manager=None):
+    def __init__(self, path: Path, playlist_path: Optional[Path] = None):
+        from manager import manager
+
+        self.mgr = manager
         self.path = path
         self.playlist_path = playlist_path or path
-        self.stats_manager = stats_manager
-        self.cache_manager = cache_manager
         self.logger = logging.getLogger("PlexSync.FileSystemAdapter")
         self._audio_files = []
 
@@ -174,8 +175,7 @@ class FileSystemAdapter:
         self.logger.info(f"Scanning {self.path} for audio files...")
         audio_extensions = {".mp3", ".flac", ".ogg", ".m4a", ".wav", ".aac"}
 
-        status = self.stats_manager.get_status_handler() if self.stats_manager else None
-        bar = status.start_phase("Collecting audio files", total=None) if status else None
+        bar = self.mgr.status.start_phase("Collecting audio files", total=None)
 
         for file_path in self.path.rglob("*"):
             if file_path.suffix.lower() in audio_extensions:
@@ -214,9 +214,12 @@ class FileSystemAdapter:
 class FileSystemMetadataMapper:
     """Maps unstructured filesystem metadata into structured data and manages interactions with FileSystemPlayer."""
 
-    def __init__(self, file_system_adapter: FileSystemAdapter):
+    def __init__(self):
+        from manager import manager
+
+        self.mgr = manager
         self.logger = logging.getLogger("PlexSync.FileSystemMetadataMapper")
-        self.file_system_adapter = file_system_adapter
+        self.file_system_adapter = FileSystemAdapter(path=self.mgr.config.path, playlist_path=self.mgr.config.playlist_path)
         self.indexed_tracks: Dict[str, AudioTag] = {}  # Metadata cache
         self.indexed_playlists: Dict[str, Playlist] = {}  # Playlist cache
         self.conflicts = []  # Store unresolved rating conflicts

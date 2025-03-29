@@ -411,6 +411,9 @@ class PlaylistPair(SyncPair):
     def __init__(self, source_player: MediaPlayer, destination_player: MediaPlayer, source_playlist: Playlist) -> None:
         """Initialize playlist pair with consistent naming"""
         super(PlaylistPair, self).__init__(source_player, destination_player)
+        from manager import manager
+
+        self.mgr = manager
         self.logger = logging.getLogger("PlexSync.PlaylistPair")
         self.source = source_playlist
         self.stats_manager = source_player.stats_manager
@@ -455,8 +458,7 @@ class PlaylistPair(SyncPair):
         """Update an existing playlist on the destination player with missing tracks."""
         updates = []
         if len(track_pairs) > 0:
-            status = self.stats_manager.get_status_handler()
-            bar = status.start_phase(f"Updating playlist '{self.source.name}'", total=len(track_pairs))
+            bar = self.mgr.status.start_phase(f"Updating playlist '{self.source.name}'", total=len(track_pairs))
             for pair in track_pairs:
                 if not self.destination.has_track(pair.destination):
                     updates.append((pair.destination, True))

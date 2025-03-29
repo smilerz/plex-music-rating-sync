@@ -42,6 +42,9 @@ class MediaPlayer(abc.ABC):
     abbr = None
 
     def __init__(self, cache_manager: Optional["CacheManager"] = None, stats_manager: Optional["StatsManager"] = None):
+        from manager import manager
+
+        self.mgr = manager
         self.cache_manager = cache_manager
         self.stats_manager = stats_manager
         if cache_manager:
@@ -120,8 +123,7 @@ class MediaPlayer(abc.ABC):
         if playlist._native_playlist:
             if len(updates) > 0:
                 self.logger.info(f"Syncing {len(updates)} changes to playlist '{playlist.name}'")
-                status = self.stats_manager.get_status_handler()
-                bar = status.start_phase("Syncing playlist updates", total=len(updates))
+                bar = self.mgr.status.start_phase("Syncing playlist updates", total=len(updates))
                 for track, present in updates:
                     self.update_playlist(playlist._native_playlist, track, present)
                     bar.update()
@@ -257,8 +259,7 @@ class MediaMonkey(MediaPlayer):
         self.logger.info(f"Creating playlist {title} with {len(tracks)} tracks")
         playlist = self.sdb.PlaylistByTitle("").CreateChildPlaylist(title)
         if len(tracks) > 0:
-            status = self.stats_manager.get_status_handler()
-            bar = status.start_phase("Adding tracks to playlist", total=len(tracks))
+            bar = self.mgr.status.start_phase("Adding tracks to playlist", total=len(tracks))
             for track in tracks:
                 song = self.sdb.Database.QuerySongs("ID=" + str(track.ID))
                 playlist.AddTrack(song.Item)
@@ -343,17 +344,16 @@ class MediaMonkey(MediaPlayer):
 
         results = []
         counter = 0
-        status = None
+        bar = None
         while not it.EOF:
             results.append(self._read_track_metadata(it.Item))
             it.Next()
             counter += 1
             if counter >= 50:
-                if not status:
-                    status = self.stats_manager.get_status_handler()
-                    bar = status.start_phase(f"Collecting tracks from {self.name()}", initial=counter, total=None)
+                if not bar:
+                    bar = self.mgr.status.start_phase(f"Collecting tracks from {self.name()}", initial=counter, total=None)
                 bar.update()
-        bar.close() if status else None
+        bar.close() if bar else None
         return results
 
     def update_rating(self, track: AudioTag, rating: float) -> None:
@@ -562,17 +562,15 @@ class PlexPlayer(MediaPlayer):
             raise KeyError(f"Invalid search mode {key}.")
 
         tracks = []
-        status = None
         if len(matches) >= 500:
-            status = self.stats_manager.get_status_handler()
-            bar = status.start_phase(f"Reading track metadata from {self.name()}", total=len(matches))
+            bar = self.mgr.status.start_phase(f"Reading track metadata from {self.name()}", total=len(matches))
 
         for match in matches:
-            bar.update() if status else None
+            bar.update()
             track = self._read_track_metadata(match)
             tracks.append(track)
 
-        bar.close() if status else None
+        bar.close() if bar else None
         return tracks
 
     def update_rating(self, track: [PlexTrack, AudioTag], rating: float) -> None:
@@ -635,16 +633,15 @@ class FileSystemPlayer(MediaPlayer):
         self.tag_priority_order = RatingTag.resolve_tags(kwargs.get("tag_priority_order"))
         self.delete_ignored_tags = False
 
-        status = None
+        bar = None
         if FileSystemPlayer._audio_files is None:
             self._scan_audio_files()
             for file_path in self._audio_files:
-                if not status:
-                    status = self.stats_manager.get_status_handler()
-                    bar = status.start_phase(f"Reading track metadata from {self.name()}", total=len(FileSystemPlayer._audio_files))
+                if not bar:
+                    bar = self.mgr.status.start_phase(f"Reading track metadata from {self.name()}", total=len(FileSystemPlayer._audio_files))
                 self._read_track_metadata(file_path)
                 bar.update()
-            bar.close() if status else None
+            bar.close() if bar else None
             print(self._generate_summary())
             self._configure_global_settings()
 
@@ -702,8 +699,7 @@ class FileSystemPlayer(MediaPlayer):
         self.logger.info(f"Scanning {self.path} for audio files...")
         audio_extensions = {".mp3", ".flac", ".ogg", ".m4a", ".wav", ".aac"}
 
-        status = self.stats_manager.get_status_handler() if self.stats_manager else None
-        bar = status.start_phase(f"Collecting tracks from {self.name()}", total=None) if status else None
+        bar = self.mgr.status.start_phase(f"Collecting tracks from {self.name()}", total=None)
 
         for file_path in self.path.rglob("*"):
             if file_path.suffix.lower() in audio_extensions:
@@ -950,8 +946,7 @@ class FileSystemPlayer(MediaPlayer):
         playlist_file = self.playlist_path / f"{title}.m3u"
 
         try:
-            status = self.stats_manager.get_status_handler() if self.stats_manager else None
-            bar = status.start_phase(f"Creating playlist '{title}'", total=len(tracks)) if status else None
+            bar = self.mgr.status.start_phase(f"Creating playlist '{title}'", total=len(tracks))
 
             with open(playlist_file, "w", encoding="utf-8") as f:
                 f.write("#EXTM3U\n")
@@ -1232,7 +1227,7 @@ class FileSystemPlayer(MediaPlayer):
         config_path = Path("config.ini")
 
         # Function to get the appropriate identifier for a RatingTag
-        def get_tag_identifier(tag):
+        def get_tag_identifier(tag: RatingTag) -> str:
             if tag.name.startswith("UNKNOWN"):
                 return tag.tag  # Use the actual tag for unknown/dynamic tags
             return tag.name  # Use enum name for standard tags

@@ -14,12 +14,13 @@ from sync_pair import PlaylistPair, SyncState, TrackPair
 
 class PlexSync:
     def __init__(self) -> None:
+        from manager import manager
+
         self.mgr = manager
         self.logger = self.mgr.logger
 
         self.stats_manager = StatsManager()
         self.cache_manager = CacheManager(self.mgr.config.cache_mode, self.stats_manager)
-        self._status = None
 
         try:
             self.source_player = self._create_player(self.mgr.config.source)
@@ -30,13 +31,6 @@ class PlexSync:
         self.conflicts = []
         self.updates = []
         self.start_time = time.time()
-
-    @property
-    def status(self) -> object:
-        """Lazily initialize status handler when needed"""
-        if self._status is None:
-            self._status = self.stats_manager.get_status_handler()
-        return self._status
 
     def _create_player(self, player_type: str) -> MediaPlayer:
         """Create and configure a media player instance"""
@@ -106,7 +100,7 @@ class PlexSync:
         Returns:
             List[TrackPair]: List of matched track pairs
         """
-        bar = self.status.start_phase("Matching tracks", total=len(tracks))
+        bar = self.mgr.status.start_phase("Matching tracks", total=len(tracks))
         sync_pairs = []
         for track in tracks:
             pair = TrackPair(self.source_player, self.destination_player, track)
@@ -126,7 +120,7 @@ class PlexSync:
         pairs_need_update = [pair for pair in sync_pairs if pair.sync_state is SyncState.NEEDS_UPDATE]
         self.logger.info(f"Synchronizing {len(pairs_need_update)} matching tracks without conflicts")
 
-        bar = self.status.start_phase("Syncing tracks", total=len(pairs_need_update))
+        bar = self.mgr.status.start_phase("Syncing tracks", total=len(pairs_need_update))
         for pair in pairs_need_update:
             pair.sync()
             bar.update()
@@ -156,7 +150,7 @@ class PlexSync:
         if not pairs_conflicting:
             return
 
-        bar = self.status.start_phase("Resolving conflicts", total=len(pairs_conflicting))
+        bar = self.mgr.status.start_phase("Resolving conflicts", total=len(pairs_conflicting))
         for pair in pairs_conflicting:
             pair.sync(force=True, source_to_destination=source_to_destination)
             bar.update()
@@ -237,14 +231,14 @@ class PlexSync:
         self.logger.info(f"Matching {self.source_player.name()} playlists with {self.destination_player.name()}")
 
         # Start playlist matching phase
-        bar = self.status.start_phase("Matching playlists", total=len(playlist_pairs))
+        bar = self.mgr.status.start_phase("Matching playlists", total=len(playlist_pairs))
         for pair in playlist_pairs:
             pair.match()
             bar.update()
         bar.close()
 
         # Start playlist sync phase
-        bar = self.status.start_phase("Syncing playlists", total=len(playlist_pairs))
+        bar = self.mgr.status.start_phase("Syncing playlists", total=len(playlist_pairs))
         for pair in playlist_pairs:
             pair.sync()
             bar.update()
