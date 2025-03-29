@@ -5,7 +5,6 @@ from datetime import timedelta
 from typing import List
 
 from manager import manager
-from manager.cache_manager import CacheManager
 from MediaPlayer import FileSystemPlayer, MediaMonkey, MediaPlayer, PlexPlayer
 from sync_items import AudioTag
 from sync_pair import PlaylistPair, SyncState, TrackPair
@@ -17,8 +16,6 @@ class PlexSync:
 
         self.mgr = manager
         self.logger = self.mgr.logger
-
-        self.cache_manager = CacheManager(self.mgr.config.cache_mode)
 
         try:
             self.source_player = self._create_player(self.mgr.config.source)
@@ -40,7 +37,7 @@ class PlexSync:
             self.logger.error(f"Supported players: {', '.join(player_map.keys())}")
             raise ValueError(f"Invalid player type: {player_type}")
 
-        player = player_map[player_type](cache_manager=self.cache_manager)
+        player = player_map[player_type]()
         player.dry_run = self.mgr.config.dry
         return player
 
@@ -64,7 +61,7 @@ class PlexSync:
 
     def sync(self) -> None:
         if self.mgr.config.clear_cache:
-            self.cache_manager.invalidate()
+            self.mgr.cache.invalidate()
 
         # Connect players with appropriate parameters based on player type
         for player in [self.source_player, self.destination_player]:
@@ -282,11 +279,14 @@ class PlexSync:
 
 if __name__ == "__main__":
     locale.setlocale(locale.LC_ALL, "")
+
     manager.initialize()
     args = manager.config
-    sync_agent = PlexSync()
     if args.clear_cache:
-        sync_agent.cache_manager.invalidate()
+        manager.cache.invalidate()
+
+    sync_agent = PlexSync()
     sync_agent.sync()
     sync_agent.print_summary()
-    sync_agent.cache_manager.cleanup()
+
+    manager.cache.cleanup()

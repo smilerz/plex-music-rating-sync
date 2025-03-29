@@ -101,13 +101,13 @@ class CacheManager:
     METADATA_CACHE_FILE = "metadata_cache.pkl"
     SAVE_THRESHOLD = 100
 
-    def __init__(self, mode: str) -> None:
+    def __init__(self) -> None:
         """Initialize cache manager"""
         from manager import manager
 
         self.mgr = manager
         self.logger = logging.getLogger("PlexSync.CacheManager")
-        self.mode = mode
+        self.mode = self.mgr.config.cache_mode
         self.metadata_cache = None
         self.match_cach = None
 

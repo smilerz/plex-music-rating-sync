@@ -194,10 +194,10 @@ class TrackPair(SyncPair):
         Returns:
             The matched AudioTag with full metadata if needed, otherwise None.
         """
-        if not self.source_player.cache_manager:
+        if not self.mgr.cache.match_cache:
             return None
 
-        cached_id, cached_score = self.source_player.cache_manager.get_match(self.source.ID, source_name=self.source_player.name(), dest_name=self.destination_player.name())
+        cached_id, cached_score = self.mgr.cache.get_match(self.source.ID, source_name=self.source_player.name(), dest_name=self.destination_player.name())
 
         if not cached_id:
             return None
@@ -209,7 +209,7 @@ class TrackPair(SyncPair):
 
             if cached_score is None:
                 cached_score = self.similarity(destination_track)
-                self.source_player.cache_manager.set_match(self.source.ID, destination_track.ID, self.source_player.name(), self.destination_player.name(), cached_score)
+                self.mgr.cache.set_match(self.source.ID, destination_track.ID, self.source_player.name(), self.destination_player.name(), cached_score)
 
             self.score = cached_score
             return destination_track
@@ -250,10 +250,10 @@ class TrackPair(SyncPair):
             best_match: The best matching track found.
             score: The similarity score of the match (optional).
         """
-        if not self.source_player.cache_manager:
+        if not self.mgr.cache.match_cache:
             return
 
-        self.source_player.cache_manager.set_match(self.source.ID, best_match.ID, self.source_player.name(), self.destination_player.name(), score)
+        self.mgr.cache.set_match(self.source.ID, best_match.ID, self.source_player.name(), self.destination_player.name(), score)
 
     def find_best_match(self, candidates: Optional[List[AudioTag]] = None, match_threshold: int = MatchThresholds.MINIMUM_ACCEPTABLE) -> Tuple[Optional[AudioTag], int]:
         """Find the best matching track from candidates or by searching."""

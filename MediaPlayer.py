@@ -3,13 +3,8 @@ import getpass
 import logging
 import time
 from enum import Enum
-from typing import TYPE_CHECKING, Any, List, Optional, Union
-
-if TYPE_CHECKING:
-    from cache_manager import CacheManager
-
 from pathlib import Path
-from typing import Tuple
+from typing import Any, List, Optional, Tuple, Union
 
 import mutagen
 import plexapi.audio
@@ -40,13 +35,10 @@ class MediaPlayer(abc.ABC):
     rating_maximum = 5
     abbr = None
 
-    def __init__(self, cache_manager: Optional["CacheManager"] = None):
+    def __init__(self):
         from manager import manager
 
         self.mgr = manager
-        self.cache_manager = cache_manager
-        if cache_manager:
-            self.logger.debug(f"Cache manager for {self.name()} set to: {cache_manager.__class__.__name__}")
 
     def __hash__(self) -> int:
         return hash(self.name().lower())
@@ -228,11 +220,11 @@ class MediaPlayer(abc.ABC):
 class MediaMonkey(MediaPlayer):
     rating_maximum = 100
 
-    def __init__(self, cache_manager: Optional["CacheManager"] = None):
+    def __init__(self):
         self.logger = logging.getLogger("PlexSync.MediaMonkey")
         self.sdb = None
         self.abbr = "MM"
-        super().__init__(cache_manager)
+        super().__init__()
 
     @classmethod
     def name(self) -> str:
@@ -303,7 +295,7 @@ class MediaMonkey(MediaPlayer):
         return playlist
 
     def _read_track_metadata(self, track: MediaMonkeyTrack) -> AudioTag:
-        cached = self.cache_manager.get_metadata(self.name(), track.ID)
+        cached = self.mgr.cache.get_metadata(self.name(), track.ID)
         if cached is not None:
             return cached
 
@@ -316,7 +308,7 @@ class MediaMonkey(MediaPlayer):
             ID=track.ID,
             track=track.TrackOrder,
         )
-        self.cache_manager.set_metadata(self.name(), tag.ID, tag)
+        self.mgr.cache.set_metadata(self.name(), tag.ID, tag)
 
         return tag
 
@@ -378,13 +370,13 @@ class PlexPlayer(MediaPlayer):
     rating_maximum = 10
     album_empty_alias = "[Unknown Album]"
 
-    def __init__(self, cache_manager: Optional["CacheManager"] = None):
+    def __init__(self):
         self.logger = logging.getLogger("PlexSync.PlexPlayer")
         self.abbr = "PP"
         self.account = None
         self.plex_api_connection = None
         self.music_library = None
-        super().__init__(cache_manager)
+        super().__init__()
 
     @staticmethod
     def name() -> str:
@@ -601,10 +593,10 @@ class FileSystemPlayer(MediaPlayer):
     DEFAULT_RATING_TAG = RatingTag.WINDOWSMEDIAPLAYER
     _audio_files = None
 
-    def __init__(self, cache_manager: Optional["CacheManager"] = None):
+    def __init__(self):
         self.logger = logging.getLogger("PlexSync.FileSystem")
         self.abbr = "FS"
-        super().__init__(cache_manager)
+        super().__init__()
         self.conflicts = []  # Store conflicts for unresolved ratings
 
     @staticmethod
@@ -758,12 +750,10 @@ class FileSystemPlayer(MediaPlayer):
         """Retrieve metadata from cache or read from file."""
         str_path = str(file_path)
 
-        # Use CacheManager's metadata_cache with force_enable
-        if self.cache_manager:
-            cached = self.cache_manager.get_metadata(self.name(), str_path, force_enable=True)
-            if cached:
-                self.logger.debug(f"Cache hit for {file_path}")
-                return cached
+        cached = self.mgr.cache.get_metadata(self.name(), str_path, force_enable=True)
+        if cached:
+            self.logger.debug(f"Cache hit for {file_path}")
+            return cached
 
         # Read metadata from file
         try:
@@ -814,8 +804,7 @@ class FileSystemPlayer(MediaPlayer):
                 track=int(track_number.split("/")[0]) if track_number else 1,
             )
 
-            if self.cache_manager:
-                self.cache_manager.set_metadata(self.name(), tag.ID, tag, force_enable=True)
+            self.mgr.cache.set_metadata(self.name(), tag.ID, tag, force_enable=True)
 
             self.logger.debug(f"Successfully read metadata for {file_path}")
             return tag
@@ -850,19 +839,19 @@ class FileSystemPlayer(MediaPlayer):
         tracks = []
 
         if key == "id":
-            tracks = [self.cache_manager.metadata_cache.get_metadata(self.name(), value, force_enable=True)]
+            tracks = [self.mgr.cache.metadata_cache.get_metadata(self.name(), value, force_enable=True)]
         elif key == "title":
-            mask = self.cache_manager.metadata_cache.cache[key].apply(lambda x: fuzz.ratio(str(x).lower(), str(value).lower()) >= self.SEARCH_THRESHOLD)
-            tracks = self.cache_manager.get_tracks_by_filter(mask)
+            mask = self.mgr.cache.metadata_cache.cache[key].apply(lambda x: fuzz.ratio(str(x).lower(), str(value).lower()) >= self.SEARCH_THRESHOLD)
+            tracks = self.mgr.cache.get_tracks_by_filter(mask)
         elif key == "rating":
             if value is True:
                 value = 0
             mask = (
-                (self.cache_manager.metadata_cache.cache["player_name"] == self.name())
-                & (self.cache_manager.metadata_cache.cache["rating"].notna())
-                & (self.cache_manager.metadata_cache.cache["rating"] > float(value))
+                (self.mgr.cache.metadata_cache.cache["player_name"] == self.name())
+                & (self.mgr.cache.metadata_cache.cache["rating"].notna())
+                & (self.mgr.cache.metadata_cache.cache["rating"] > float(value))
             )
-            tracks = self.cache_manager.get_tracks_by_filter(mask)
+            tracks = self.mgr.cache.get_tracks_by_filter(mask)
 
         self.logger.debug(f"Found {len(tracks)} tracks for {key}={value}")
 
@@ -921,10 +910,8 @@ class FileSystemPlayer(MediaPlayer):
             audio_file.save()
             self.logger.info(f"Successfully updated rating for {track}")
 
-            # Update cache using CacheManager
             track.rating = rating
-            if self.cache_manager:
-                self.cache_manager.metadata_cache.set(self.name(), track.ID, track, force_enable=True)
+            self.mgr.cache.metadata_cache.set(self.name(), track.ID, track, force_enable=True)
 
         except Exception as e:
             self.logger.error(f"Failed to update rating: {e}")

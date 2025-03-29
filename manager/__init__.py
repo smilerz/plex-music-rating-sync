@@ -25,7 +25,7 @@ class Manager:
         self.log = LogManager()
         self.stats = StatsManager()
         self.status = StatusManager()
-        self.cache = CacheManager(mode=self.config.cache_mode)
+        self.cache = CacheManager()
 
         self.logger = self.log.setup_logging(self.config.log)
 
