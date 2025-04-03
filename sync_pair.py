@@ -45,12 +45,12 @@ class TruncateDefaults:
 
 
 NO_MATCHES_HEADER = (
-    f"{'':<2} {'Source Artist':<{TruncateDefaults.MAX_ARTIST_LENGTH}} "
+    f"{'':<7} {'':5} {'Source Artist':<{TruncateDefaults.MAX_ARTIST_LENGTH}} "
     f"{'Source Album':<{TruncateDefaults.MAX_ALBUM_LENGTH}} "
     f"{'Source Title':<{TruncateDefaults.MAX_TITLE_LENGTH}} {'Score/Status':<15}"
 )
 MATCHES_HEADER = (
-    f"{'':<2} {'Track #':>5} {'Artist':<{TruncateDefaults.MAX_ARTIST_LENGTH}} "
+    f"{'':<7} {'Track':<5} {'Artist':<{TruncateDefaults.MAX_ARTIST_LENGTH}} "
     f"{'Album':<{TruncateDefaults.MAX_ALBUM_LENGTH}} "
     f"{'Title':<{TruncateDefaults.MAX_TITLE_LENGTH}} "
     f"{'File Path':<{TruncateDefaults.MAX_FILE_PATH_LENGTH}}"
@@ -127,7 +127,7 @@ class TrackPair(SyncPair):
     @staticmethod
     def track_details(player: MediaPlayer, track: AudioTag) -> None:
         """Print formatted track details."""
-        track_number = TrackPair._safe_get(track.track)
+        track_number = int(TrackPair._safe_get(track.track, 0))
         track_rating = player.get_5star_rating(TrackPair._safe_get(track.rating))
         artist = TrackPair.truncate(TrackPair._safe_get(track.artist), TruncateDefaults.MAX_ARTIST_LENGTH)
         album = TrackPair.truncate(TrackPair._safe_get(track.album), TruncateDefaults.MAX_ALBUM_LENGTH)
@@ -135,13 +135,13 @@ class TrackPair(SyncPair):
         file_path = TrackPair.truncate(TrackPair._safe_get(track.file_path), TruncateDefaults.MAX_FILE_PATH_LENGTH, from_end=False)
         player_rating = f"{player.abbr}[{track_rating}]"
         return (
-            f"{player_rating:<7} {track_number:>{5}} {artist:<{TruncateDefaults.MAX_ARTIST_LENGTH}} "
+            f"{player_rating:<7} {track_number:{5}} {artist:<{TruncateDefaults.MAX_ARTIST_LENGTH}} "
             f"{album:<{TruncateDefaults.MAX_ALBUM_LENGTH}} {title:<{TruncateDefaults.MAX_TITLE_LENGTH}} "
             f"{file_path:<{TruncateDefaults.MAX_FILE_PATH_LENGTH}}"
         )
 
     @staticmethod
-    def display_pair_details(category: str, sync_pairs: List["TrackPair"]) -> None:
+    def display_pair_details(category: str, sync_pairs: [List["TrackPair"]]) -> None:
         """Display track details in a tabular format."""
         if not sync_pairs:
             print(f"\nNo tracks found for {category}.\n")
@@ -162,10 +162,7 @@ class TrackPair(SyncPair):
 
                 if pair.destination:
                     print(TrackPair.track_details(pair.destination_player, pair.destination))
-
                 print("-" * 137)
-
-        print("\n")
 
     def albums_similarity(self, destination: Optional[AudioTag] = None) -> int:
         """
@@ -218,13 +215,13 @@ class TrackPair(SyncPair):
     def _search_candidates(self) -> List[AudioTag]:
         """Search for track candidates matching the source track in the destination player."""
         if not self.source.title:
-            self.logger.error(f"Source track has no title:\n{TrackPair.track_details(self.source_player.abbr, self.source)}")
+            self.logger.error(f"Source track has no title:\n{TrackPair.track_details(self.source_player, self.source)}")
             return []
         try:
             candidates = self.destination_player.search_tracks(key="title", value=self.source.title)
             return candidates
         except ValueError as e:
-            self.logger.error(f"Search failed\n'{TrackPair.track_details(self.source_player.abbr, self.source)}.")
+            self.logger.error(f"Search failed\n'{TrackPair.track_details(self.source_player, self.source)}.")
             raise e
 
     def _get_best_match(self, candidates: List[AudioTag], match_threshold: int = MatchThresholds.MINIMUM_ACCEPTABLE) -> Tuple[Optional[AudioTag], int]:
@@ -338,7 +335,8 @@ class TrackPair(SyncPair):
 
         if not choice:
             print(f"\nResolving conflict {counter} of {total}:")
-            print("".join(f"\t[{key}]: {value}" for key, value in ConflictResolutionOptions.PROMPT.items()))
+            self.display_pair_details("Conflicting Tracks", [self])
+            print("".join(f"\t[{key}]: {value}\n" for key, value in ConflictResolutionOptions.PROMPT.items()))
             return False
 
         if choice == "1":

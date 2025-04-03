@@ -5,14 +5,13 @@ import time
 from pathlib import Path
 from typing import Any, List, Optional, Tuple, Union
 
-import mutagen
 import plexapi.audio
 import plexapi.playlist
 from fuzzywuzzy import fuzz
 from plexapi.exceptions import BadRequest, NotFound
 from plexapi.myplex import MyPlexAccount
 
-from filesystem_provider import IGNORED_TAGS, ConflictResolutionStrategy, FileSystemProvider, RatingTag, TagWriteStrategy
+from filesystem_provider import FileSystemProvider, RatingTag
 from sync_items import AudioTag, Playlist
 
 NativePlaylist = Any
@@ -166,7 +165,7 @@ class MediaPlayer(abc.ABC):
 
     @staticmethod
     def get_5star_rating(rating: float) -> float:
-        return rating * 5
+        return rating * 5 if rating else 0.0
 
     def get_native_rating(self, normed_rating: float) -> float:
         return normed_rating * self.rating_maximum
@@ -545,7 +544,7 @@ class PlexPlayer(MediaPlayer):
             self.logger.debug(f"Playlist {title} not found")
             return None
 
-    def _search_tracks(self, key: str, value: Union[bool, str]) -> List[PlexTrack]:
+    def _search_tracks(self, key: str, value: Union[bool, str], return_native: bool = False) -> List[PlexTrack]:
         if key == "title":
             matches = self.music_library.searchTracks(title=value)
             self.logger.debug(f"Found tracks for query title={value}")
@@ -558,13 +557,16 @@ class PlexPlayer(MediaPlayer):
             matches = [self.music_library.fetchItem(int(value))]
         else:
             raise KeyError(f"Invalid search mode {key}.")
+        if return_native:
+            return matches
 
         tracks = []
+        bar = None
         if len(matches) >= 500:
             bar = self.mgr.status.start_phase(f"Reading track metadata from {self.name()}", total=len(matches))
 
         for match in matches:
-            bar.update()
+            bar.update() if bar else None
             track = self._read_track_metadata(match)
             tracks.append(track)
 
@@ -580,7 +582,7 @@ class PlexPlayer(MediaPlayer):
 
         try:
             if isinstance(track, AudioTag):
-                song = self._search_tracks("id", track.ID)[0]
+                song = self._search_tracks("id", track.ID, return_native=True)[0]
                 song.edit(**{"userRating.value": self.get_native_rating(rating)})
             else:
                 track.edit(**{"userRating.value": self.get_native_rating(rating)})
@@ -601,6 +603,19 @@ class FileSystemPlayer(MediaPlayer):
     album_empty_alias = "[Unknown Album]"
     SEARCH_THRESHOLD = 75
     DEFAULT_RATING_TAG = RatingTag.WINDOWSMEDIAPLAYER
+    _rating_map = [
+        (0.0, 0),
+        (0.1, 13),
+        (0.2, 32),
+        (0.3, 54),
+        (0.4, 64),
+        (0.5, 118),
+        (0.6, 128),
+        (0.7, 186),
+        (0.8, 196),
+        (0.9, 242),
+        (1.0, 255),
+    ]
 
     def __init__(self):
         self.fsp = None
@@ -616,79 +631,55 @@ class FileSystemPlayer(MediaPlayer):
         """Connect to filesystem music library with additional options."""
         self.fsp = FileSystemProvider()
 
-        if "tracks" in self.mgr.config.sync:
-            self.fsp.scan_audio_files()
+        self.fsp.scan_audio_files()
         if "playlists" in self.mgr.config.sync:
             self.fsp.scan_playlist_files()
 
-        self.tag_write_strategy = TagWriteStrategy.from_value(self.mgr.config.tag_write_strategy)
-        self.default_tag = RatingTag.resolve_tags(self.mgr.config.default_tag)
-        self.conflict_resolution_strategy = ConflictResolutionStrategy.from_value(self.mgr.config.conflict_resolution_strategy)
-        self.tag_priority_order = RatingTag.resolve_tags(self.mgr.config.tag_priority_order)
-        self.delete_ignored_tags = False
-
-        bar = None
-        if self.fsp._audio_files is None:
-            self.fsp.scan_audio_files()
-
+        bar = self.mgr.status.start_phase(f"Reading track metadata from {self.name()}", total=len(self.fsp._audio_files))
         for file_path in self.fsp._audio_files:
-            if not bar:
-                bar = self.mgr.status.start_phase(f"Reading track metadata from {self.name()}", total=len(self.fsp._audio_files))
             self._read_track_metadata(file_path)
             bar.update()
-        bar.close() if bar else None
-        print(self._generate_summary())
-        self._configure_global_settings()
+        bar.close()
 
+        finalizing_tracks = self.fsp.finalize_scan()
+        bar = self.mgr.status.start_phase(f"Finalizing track indexing from {self.name()}", total=len(finalizing_tracks)) if finalizing_tracks else None
+        for track in finalizing_tracks:
+            self.mgr.cache.set_metadata(self.name(), track.ID, track)
+            bar.update()
+        bar.close() if bar else None
         # TODO: add playlist scanning
 
-    def get_native_rating(self, normed_rating: Optional[float]) -> int:  # noqa
+    @staticmethod
+    def get_native_rating(normed_rating: Optional[float]) -> int:
         if normed_rating is None or normed_rating <= 0:
             return 0
-        elif normed_rating <= 0.1:
-            return 16  # 0.5 stars
-        elif normed_rating <= 0.2:
-            return 48  # 1.0 star
-        elif normed_rating <= 0.3:
-            return 80  # 1.5 stars
-        elif normed_rating <= 0.4:
-            return 112  # 2.0 stars
-        elif normed_rating <= 0.5:
-            return 144  # 2.5 stars
-        elif normed_rating <= 0.6:
-            return 176  # 3.0 stars
-        elif normed_rating <= 0.7:
-            return 208  # 3.5 stars
-        elif normed_rating <= 0.8:
-            return 232  # 4.0 stars
-        elif normed_rating <= 0.9:
-            return 247  # 4.5 stars
-        else:
-            return 255  # 5.0 stars
 
-    def get_normed_rating(self, popm_rating: Optional[int]) -> Optional[float]:  # noqa
+        best_diff = float("inf")
+        best_popm = 0
+
+        for normed, popm in FileSystemPlayer._rating_map:
+            diff = abs(normed_rating - normed)
+            if diff < best_diff:
+                best_diff = diff
+                best_popm = popm
+
+        return best_popm
+
+    @staticmethod
+    def get_normed_rating(popm_rating: Optional[int]) -> Optional[float]:
         if popm_rating is None or popm_rating == 0:
-            return None
-        elif popm_rating <= 22:
-            return 0.1  # 0.5 stars
-        elif popm_rating <= 63:
-            return 0.2  # 1.0 star
-        elif popm_rating <= 95:
-            return 0.3  # 1.5 stars
-        elif popm_rating <= 127:
-            return 0.4  # 2.0 stars
-        elif popm_rating <= 159:
-            return 0.5  # 2.5 stars
-        elif popm_rating <= 191:
-            return 0.6  # 3.0 stars
-        elif popm_rating <= 223:
-            return 0.7  # 3.5 stars
-        elif popm_rating <= 239:
-            return 0.8  # 4.0 stars
-        elif popm_rating <= 252:
-            return 0.9  # 4.5 stars
-        else:
-            return 1.0  # 5.0 stars
+            return 0
+
+        best_diff = float("inf")
+        best_normed = 0.0
+
+        for normed, popm in FileSystemPlayer._rating_map:
+            diff = abs(popm_rating - popm)
+            if diff < best_diff:
+                best_diff = diff
+                best_normed = normed
+
+        return best_normed
 
     def _read_track_metadata(self, file_path: Union[Path, str]) -> AudioTag:
         """Retrieve metadata from cache or read from file."""
@@ -699,83 +690,9 @@ class FileSystemPlayer(MediaPlayer):
             self.logger.debug(f"Cache hit for {file_path}")
             return cached
 
-        # Read metadata from file
-        try:
-            audio_file = mutagen.File(file_path)
-            if not audio_file:
-                raise ValueError(f"Unsupported audio format: {file_path}")
-
-            if hasattr(audio_file, "tags") and audio_file.tags:
-                # For MP3 (ID3 tags)
-                tags = audio_file.tags
-                album = tags.get("TALB", [""])[0]
-                artist = tags.get("TPE1", [""])[0]
-                title = tags.get("TIT2", [""])[0]
-                track_number = tags.get("TRCK", [""])[0]
-
-                # Handle multiple POPM and TXXX:RATING tags
-                rating_tags = {key: tags[key].rating for key in tags if key.startswith("POPM") or key == "TXXX:Rating"}
-                rating = self.fsp._handle_rating_tags(
-                    rating_tags,
-                    track=AudioTag(
-                        artist=artist,
-                        album=album,
-                        title=title,
-                        file_path=str_path,
-                        rating=None,
-                        ID=str_path,
-                        track=int(track_number.split("/")[0]) if track_number else None,
-                    ),
-                )
-            elif hasattr(audio_file, "get"):
-                # For FLAC, OGG, etc.
-                album = audio_file.get("album", [""])[0]
-                artist = audio_file.get("artist", [""])[0]
-                title = audio_file.get("title", [""])[0]
-                track_number = audio_file.get("tracknumber", [""])[0]
-                rating = audio_file.get("rating", [""])[0]
-            else:
-                self.logger.warning(f"No metadata found for {file_path}")
-                return None
-
-            tag = AudioTag(
-                artist=artist,
-                album=album,
-                title=title,
-                file_path=str_path,
-                rating=rating,
-                ID=str_path,
-                track=int(track_number.split("/")[0]) if track_number else 1,
-            )
-
-            self.mgr.cache.set_metadata(self.name(), tag.ID, tag, force_enable=True)
-
-            self.logger.debug(f"Successfully read metadata for {file_path}")
-            return tag
-        except Exception as e:
-            self.logger.error(f"Error reading metadata from {file_path}: {e}")
-            return None
-
-    def _write_rating_tags(self, audio_file: mutagen.FileType, rating: float) -> None:
-        """Write rating tags to the audio file based on the configured strategy."""
-        if self.tag_write_strategy == TagWriteStrategy.WRITE_ALL:
-            for tag in self.tag_priority_order:
-                audio_file[tag] = rating
-        elif self.tag_write_strategy == TagWriteStrategy.WRITE_EXISTING:
-            existing_tags = {tag: audio_file[tag] for tag in self.tag_priority_order if tag in audio_file}
-            if existing_tags:
-                for tag in existing_tags:
-                    audio_file[tag] = rating
-            else:
-                audio_file[self.default_tag] = rating
-        elif self.tag_write_strategy == TagWriteStrategy.WRITE_DEFAULT:
-            audio_file[self.default_tag] = rating
-        elif self.tag_write_strategy == TagWriteStrategy.OVERWRITE_DEFAULT:
-            for tag in list(audio_file.keys()):
-                if tag.startswith("POPM") or tag == "TXXX:Rating":
-                    del audio_file[tag]
-            audio_file[self.default_tag] = rating
-        audio_file.save()
+        tag = self.fsp.read_metadata_from_file(file_path)
+        self.mgr.cache.set_metadata(self.name(), tag.ID, tag, force_enable=True) if tag else None
+        return tag
 
     def _search_tracks(self, key: str, value: Union[bool, str]) -> List[AudioTag]:
         """Search for audio files matching criteria"""
@@ -801,62 +718,18 @@ class FileSystemPlayer(MediaPlayer):
 
         return tracks
 
-    def _match_rating(self, rating: float, value: Union[bool, str]) -> bool:
-        """Check if a rating matches the given criteria"""
-        if value is True:
-            return rating > 0
-        if isinstance(value, str):
-            op, threshold = value[:2].strip(), float(value[2:].strip())
-            return eval(f"{rating} {op} {threshold}")
-        return False
-
     def update_rating(self, track: AudioTag, rating: float) -> None:
-        """Update rating for a track"""
+        """Update rating for a track."""
         if self.dry_run:
             self.logger.info(f"DRY RUN: Would update rating for {track} to {self.get_5star_rating(rating)}")
             return
 
         self.logger.debug(f"Updating rating for {track} to {self.get_5star_rating(rating)}")
-        file_path = Path(track.file_path)
-        if not file_path.exists():
-            self.logger.error(f"File not found: {file_path}")
-            return
-
         try:
-            audio_file = mutagen.File(file_path, easy=False)
-            if not audio_file:
-                raise ValueError(f"Unsupported audio format: {file_path}")
-
-            # Convert normalized rating to native scale for each format
-            native_rating = self.get_native_rating(rating)
-
-            if isinstance(audio_file, mutagen.mp3.MP3):
-                # Handle MP3 files
-                from mutagen.id3 import POPM
-
-                if not audio_file.tags:
-                    audio_file.add_tags()
-                # Convert to 0-255 for POPM
-                popm_rating = int(min(255, native_rating / self.rating_maximum * 255))
-                audio_file.tags.add(POPM(email="plex-music-rating-sync", rating=popm_rating))
-
-            elif isinstance(audio_file, mutagen.flac.FLAC) or isinstance(audio_file, mutagen.oggvorbis.OggVorbis):
-                # Handle FLAC/OGG files
-                audio_file["RATING"] = [str(int(native_rating))]
-
-            elif isinstance(audio_file, mutagen.mp4.MP4):
-                # Handle M4A/MP4 files
-                # iTunes-style 0-100 rating
-                itunes_rating = int(native_rating / self.rating_maximum * 100)
-                audio_file["----:com.apple.iTunes:RATING"] = [str(itunes_rating).encode("utf-8")]
-
-            # Save changes
-            audio_file.save()
-            self.logger.info(f"Successfully updated rating for {track}")
-
+            self.fsp.update_metadata_in_file(file_path=track.file_path, rating=self.get_native_rating(rating))  # Delegates to update_metadata_in_file
             track.rating = rating
-            self.mgr.cache.metadata_cache.set(self.name(), track.ID, track, force_enable=True)
-
+            self.mgr.cache.set_metadata(self.name(), track.ID, track, force_enable=True)
+            self.logger.info(f"Successfully updated rating for {track}")
         except Exception as e:
             self.logger.error(f"Failed to update rating: {e}")
             raise
@@ -994,184 +867,3 @@ class FileSystemPlayer(MediaPlayer):
         except Exception as e:
             self.logger.error(f"Failed to remove track from playlist: {e}")
             raise
-
-    def _generate_summary(self) -> str:
-        """Generate a summary of rating tag usage, conflicts, and strategies."""
-        total_files = len(self.fsp._audio_files)
-        tag_usage = self.mgr.stats.get("FileSystemPlayer::tags_used")
-        conflicts = len(self.fsp.conflicts)
-
-        # Format the summary
-        summary = ["\n", "-" * 50, f"Scanned {total_files} files.\n"]
-        if tag_usage:
-            summary.append("Ratings Found:")
-            for tag, count in tag_usage.items():
-                summary.append(f"- {tag}: {count}")
-        if conflicts > 0:
-            summary.append(f"Files with conflicting ratings: {conflicts}")
-
-        # Include strategies if set
-        if self.conflict_resolution_strategy:
-            summary.append(f"\nConflict Resolution Strategy: {self.conflict_resolution_strategy.value}")
-        if self.tag_write_strategy:
-            summary.append(f"Tag Write Strategy: {self.tag_write_strategy.value}")
-
-        return "\n".join(summary)
-
-    def _configure_global_settings(self) -> None:
-        """Prompt the user for global settings based on tag usage and conflicts."""
-        global IGNORED_TAGS
-        tags_used = self.mgr.stats.get("FileSystemPlayer::tags_used")
-        unique_tags = set(tags_used.keys()) - set(IGNORED_TAGS)
-        has_multiple_tags = len(unique_tags) > 1
-        has_conflicts = len(self.fsp.conflicts) > 0
-
-        # Skip prompts if unnecessary
-        if not has_multiple_tags and not has_conflicts:
-            return
-
-        # Step 1: Prompt for conflict resolution strategy
-        if has_conflicts:
-            while True:
-                print("-" * 50 + "\nRatings from multiple players found.  How should conflicts be resolved?")
-                for idx, strategy in enumerate(ConflictResolutionStrategy, start=1):
-                    print(f"  {idx}) {strategy.value.replace('_', ' ').capitalize()}")
-                print(f"  {len(ConflictResolutionStrategy) + 1}) Show conflicts")
-                print(f"  {len(ConflictResolutionStrategy) + 2}) Ignore files with conflicts")
-                choice = input(f"Enter choice [1-{len(ConflictResolutionStrategy) + 2}]: ").strip()
-
-                if choice.isdigit():
-                    choice_num = int(choice)
-                    if 1 <= choice_num <= len(ConflictResolutionStrategy):
-                        self.conflict_resolution_strategy = list(ConflictResolutionStrategy)[choice_num - 1]
-                        break
-                    elif choice_num == len(ConflictResolutionStrategy) + 1:
-                        # Show conflicts
-                        print("\nFiles with conflicting ratings:")
-                        for conflict in self.fsp.conflicts:
-                            track = conflict["track"]
-                            print(f"\n{track.artist} | {track.album} | {track.title}")
-                            for tag, rating in conflict["tags"].items():
-                                tag_name = RatingTag.from_value(tag).player_name if RatingTag.from_value(tag) else tag
-                                stars = self.get_5star_rating(self.get_normed_rating(rating))
-                                print(f"\t{tag_name:<30} : {stars:<5}")
-                        print("")
-                        continue
-                    elif choice_num == len(ConflictResolutionStrategy) + 2:
-                        # Ignore files with conflicts
-                        print("Conflicts will be ignored.")
-                        break
-                print("Invalid choice. Please try again.")
-
-        # Step 2: Prompt for tag priority order (if required)
-        ignored_tags = set()
-        if self.conflict_resolution_strategy == ConflictResolutionStrategy.PRIORITIZED_ORDER and has_conflicts and self.tag_priority_order is None:
-            available_tags = {tag: (RatingTag.from_value(tag).player_name if isinstance(RatingTag.from_value(tag), RatingTag) else tag) for tag in unique_tags}
-            tag_list = list(available_tags.keys())
-
-            while True:
-                print("\nEnter media player priority order (highest priority first) by selecting numbers separated by commas.")
-                print("Available media players:")
-                for idx, tag in enumerate(tag_list, start=1):
-                    print(f"  {idx}) {RatingTag.from_value(tag)}")
-                priority_order = input("Your input: ").strip()
-                try:
-                    selected_indices = [int(i) for i in priority_order.split(",")]
-                    if all(1 <= idx <= len(tag_list) for idx in selected_indices):
-                        selected_tags = [tag_list[idx - 1] for idx in selected_indices]
-                        self.tag_priority_order = RatingTag.resolve_tags(selected_tags)
-                        ignored_tags = set(tag_list) - set(selected_tags)
-                        break
-                except ValueError:
-                    pass
-                print("Invalid input. Please enter valid numbers separated by commas.")
-
-        # Step 3: Ask about deleting ignored ratings
-        if ignored_tags or IGNORED_TAGS:
-            IGNORED_TAGS = ignored_tags.union(IGNORED_TAGS)
-            if IGNORED_TAGS:
-                print("\nSome media players have been ignored:")
-                for tag in IGNORED_TAGS:
-                    tag_name = RatingTag.from_value(tag).player_name if RatingTag.from_value(tag) else tag
-                    print(f"  - {tag_name}")
-
-                while True:
-                    choice = input("Delete these ratings? (yes/no): ").strip().lower()
-                    if choice in ("yes", "y"):
-                        self.delete_ignored_tags = True
-                        break
-                    elif choice in ("no", "n"):
-                        self.delete_ignored_tags = False
-                        break
-                    print("Invalid choice. Please enter 'yes' or 'no'.")
-
-        # Step 4: Prompt for tag write strategy
-        if has_multiple_tags:
-            while True:
-                print("\nHow should ratings be written to files?")
-                for idx, strategy in enumerate(TagWriteStrategy, start=1):
-                    print(f"  {idx}) {strategy}")
-                choice = input(f"Enter choice [1-{len(TagWriteStrategy)}]: ").strip()
-                if choice.isdigit() and 1 <= int(choice) <= len(TagWriteStrategy):
-                    self.tag_write_strategy = list(TagWriteStrategy)[int(choice) - 1]
-                    break
-                print("Invalid choice. Please try again.")
-
-        # Step 5: Prompt for default tag
-        if self.tag_write_strategy and self.tag_write_strategy.requires_default_tag():
-            valid_tags = RatingTag.resolve_tags(list(set(available_tags.keys()) - IGNORED_TAGS))
-
-            while True:
-                if len(valid_tags) == 1:
-                    self.default_tag = valid_tags[0]
-                    break
-                print("\nWhich tag should be treated as the default for writing ratings?")
-                for idx, tag in enumerate(valid_tags, start=1):
-                    print(f"  {idx}) {tag}")
-                choice = input(f"Enter choice [1-{len(valid_tags)}]: ").strip()
-                if choice.isdigit() and 1 <= int(choice) <= len(valid_tags):
-                    self.default_tag = valid_tags[int(choice) - 1]
-                    break
-                print("Invalid choice. Please try again.")
-
-        # Step 6: Prompt to save configuration
-        save_config = False
-        while True:
-            print("\nWould you like to save these settings to config.ini for future runs?")
-            choice = input("Your choice [yes/no]: ").strip().lower()
-            if choice in {"y", "yes"}:
-                save_config = True
-                break
-            elif choice in {"n", "no"}:
-                break
-            print("Invalid choice. Please enter 'y' or 'n'.")
-
-        if save_config:
-            self.save_config()
-
-    # TODO: make sure this is in the right config.ini sections
-    def save_config(self) -> None:
-        """Save the configuration to config.ini."""
-        config_path = Path("config.ini")
-
-        # Function to get the appropriate identifier for a RatingTag
-        def get_tag_identifier(tag: RatingTag) -> str:
-            if tag.name.startswith("UNKNOWN"):
-                return tag.tag  # Use the actual tag for unknown/dynamic tags
-            return tag.name  # Use enum name for defined tags
-
-        config_data = {
-            "tag_write_strategy": self.tag_write_strategy.value if self.tag_write_strategy else None,
-            "defaultd_tag": self.default_tag.tag if self.default_tag else None,
-            "conflict_resolution_strategy": self.conflict_resolution_strategy.value if self.conflict_resolution_strategy else None,
-            # Use enum name for defined tags, tag value for UNKNOWN tags
-            "tag_priority_order": [get_tag_identifier(tag) for tag in self.tag_priority_order] if self.tag_priority_order else None,
-            "delete_ignored_tags": self.delete_ignored_tags,
-        }
-
-        with config_path.open("a", encoding="utf-8") as f:
-            f.write("[filesystem]\n")
-            for key, value in config_data.items():
-                if value is not None:
-                    f.write(f"{key} = {value}\n")
-        print(f"Configuration saved to {config_path}")

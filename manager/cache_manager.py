@@ -138,7 +138,7 @@ class CacheManager:
             self.metadata_cache = Cache(
                 filepath=self.METADATA_CACHE_FILE,
                 columns=self._get_metadata_cache_columns(),
-                dtype={col: pd.StringDtype() if col == "ID" else "object" for col in self._get_metadata_cache_columns()},
+                dtype=object,
                 save_threshold=self.SAVE_THRESHOLD,
             )
             self.metadata_cache.load()
@@ -271,7 +271,9 @@ class CacheManager:
         if not existing_row.empty:
             # Update the existing row
             row_index = existing_row.index[0]
-            self.metadata_cache.cache.update(pd.DataFrame(metadata.to_dict(), index=[row_index]))
+            metadata_dict = metadata.to_dict()
+            metadata_dict["ID"] = str(metadata_dict["ID"]) if metadata_dict["ID"] is not None else None
+            self.metadata_cache.cache.update(pd.DataFrame(metadata_dict, index=[row_index]))
         else:
             # Find the next available empty row (first row where all columns are NaN)
             empty_row_idx = self.metadata_cache.cache.index[self.metadata_cache.cache.isna().all(axis=1)][0] if self.metadata_cache.cache.isna().all(axis=1).any() else None
@@ -281,15 +283,16 @@ class CacheManager:
                 self.metadata_cache.resize()
                 empty_row_idx = self.metadata_cache.cache.index[self.metadata_cache.cache.isna().all(axis=1)][0]
 
-        # Store new metadata in the available row
-        for key, value in metadata.to_dict().items():
-            if key in self.metadata_cache.cache.columns:
-                if key == "ID" and value is not None:
-                    self.metadata_cache.cache.loc[empty_row_idx, key] = str(value)
-                elif value is None:
-                    self.metadata_cache.cache.loc[empty_row_idx, key] = pd.NA
-                else:
-                    self.metadata_cache.cache.loc[empty_row_idx, key] = value
+            # Store new metadata in the available row
+            self.metadata_cache.cache.loc[empty_row_idx, "player_name"] = player_name
+            for key, value in metadata.to_dict().items():
+                if key in self.metadata_cache.cache.columns:
+                    if key == "ID" and value is not None:
+                        self.metadata_cache.cache.loc[empty_row_idx, key] = str(value)
+                    elif value is None:
+                        self.metadata_cache.cache.loc[empty_row_idx, key] = pd.NA
+                    else:
+                        self.metadata_cache.cache.loc[empty_row_idx, key] = value
         self.metadata_cache.update_count += 1
         self.metadata_cache.auto_save()
 

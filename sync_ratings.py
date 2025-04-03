@@ -104,11 +104,9 @@ class PlexSync:
         bar.close()
 
     def _display_conflict_options(self) -> str:
-        """Display conflict resolution options and get user choice.
-
-        Returns:
-            str: The selected option
-        """
+        """Display conflict resolution options and get user choice."""
+        # TODO: add only update perfect and only update good & perfect matches, selection would loop back to this menu
+        #     it add would replace selected option with All and replace the word all in option two with selected option
         prompt = {
             "1": f"Keep all ratings from {self.source_player.name()} and update {self.destination_player.name()}",
             "2": f"Keep all ratings from {self.destination_player.name()} and update {self.source_player.name()}",
@@ -135,15 +133,15 @@ class PlexSync:
 
     def _display_track_details(self, sync_pairs: List[TrackPair]) -> None:
         """Display track match details based on user selection."""
-        valid_choices = {"U", "G", "P", "N"}
+        valid_choices = {"A", "G", "P", "N"}
         while True:
-            sub_choice = input("Select tracks to display: [U]pdated, [G]ood, [P]oor, [N]one: ").strip().upper()
+            sub_choice = input("Select tracks to display: To Be [A]ll Conflicts, [G]ood Matches, [P]oor Matches, [N]o Matches: ").strip().upper()
             if sub_choice in valid_choices:
                 break
             print("Invalid choice. Please select [A], [G], [P], or [N].")
 
         filters = {
-            "U": lambda pair: pair.score is not None and pair.sync_state is not SyncState.UP_TO_DATE,
+            "A": lambda pair: pair.score is not None and pair.sync_state is not SyncState.UP_TO_DATE,
             "G": lambda pair: pair.score is not None and pair.score >= 80,
             "P": lambda pair: pair.score is not None and 30 <= pair.score < 80,
             "N": lambda pair: pair.score is None or pair.score < 30,
