@@ -34,6 +34,20 @@ class AudioTag(object):
         """Create AudioTag from cached dictionary"""
         return self(**data)
 
+    @classmethod
+    def from_id3(self, id3: object, file_path: str) -> "AudioTag":
+        """Create AudioTag from ID3 object"""
+        track = id3.get("TRCK", None).text[0]
+        return self(
+            artist=id3.get("TPE1", "").text[0],
+            album=id3.get("TALB", "").text[0],
+            title=id3.get("TIT2", "").text[0],
+            file_path=str(file_path),
+            rating=None,
+            ID=str(file_path),
+            track=int(track.split("/")[0] if "/" in track else track),
+        )
+
 
 class Playlist(object):
     def __init__(self, name: str, parent_name: str = "", native_playlist: Optional[object] = None, player: Optional[object] = None):
