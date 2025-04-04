@@ -11,7 +11,7 @@ from fuzzywuzzy import fuzz
 from plexapi.exceptions import BadRequest, NotFound
 from plexapi.myplex import MyPlexAccount
 
-from filesystem_provider import FileSystemProvider, RatingTag
+from filesystem_provider import FileSystemProvider
 from sync_items import AudioTag, Playlist
 
 NativePlaylist = Any
@@ -601,21 +601,8 @@ class PlexPlayer(MediaPlayer):
 class FileSystemPlayer(MediaPlayer):
     rating_maximum = 10
     album_empty_alias = "[Unknown Album]"
-    SEARCH_THRESHOLD = 75
-    DEFAULT_RATING_TAG = RatingTag.WINDOWSMEDIAPLAYER
-    _rating_map = [
-        (0.0, 0),
-        (0.1, 13),
-        (0.2, 32),
-        (0.3, 54),
-        (0.4, 64),
-        (0.5, 118),
-        (0.6, 128),
-        (0.7, 186),
-        (0.8, 196),
-        (0.9, 242),
-        (1.0, 255),
-    ]
+    SEARCH_THRESHOLD = 75  # Fuzzy search threshold for track title matching
+    DEFAULT_RATING_TAG = "WINDOWSMEDIAPLAYER"
 
     def __init__(self):
         self.fsp = None
@@ -649,37 +636,11 @@ class FileSystemPlayer(MediaPlayer):
         bar.close() if bar else None
         # TODO: add playlist scanning
 
-    @staticmethod
-    def get_native_rating(normed_rating: Optional[float]) -> int:
-        if normed_rating is None or normed_rating <= 0:
-            return 0
+    def get_native_rating(self, normed_rating: Optional[float]) -> int:
+        raise NotImplementedError
 
-        best_diff = float("inf")
-        best_popm = 0
-
-        for normed, popm in FileSystemPlayer._rating_map:
-            diff = abs(normed_rating - normed)
-            if diff < best_diff:
-                best_diff = diff
-                best_popm = popm
-
-        return best_popm
-
-    @staticmethod
-    def get_normed_rating(popm_rating: Optional[int]) -> Optional[float]:
-        if popm_rating is None or popm_rating == 0:
-            return 0
-
-        best_diff = float("inf")
-        best_normed = 0.0
-
-        for normed, popm in FileSystemPlayer._rating_map:
-            diff = abs(popm_rating - popm)
-            if diff < best_diff:
-                best_diff = diff
-                best_normed = normed
-
-        return best_normed
+    def get_normed_rating(self, popm_rating: Optional[int]) -> Optional[float]:
+        raise NotImplementedError
 
     def _read_track_metadata(self, file_path: Union[Path, str]) -> AudioTag:
         """Retrieve metadata from cache or read from file."""
@@ -707,11 +668,10 @@ class FileSystemPlayer(MediaPlayer):
         elif key == "rating":
             if value is True:
                 value = 0
-            mask = (
-                (self.mgr.cache.metadata_cache.cache["player_name"] == self.name())
-                & (self.mgr.cache.metadata_cache.cache["rating"].notna())
-                & (self.mgr.cache.metadata_cache.cache["rating"] > float(value))
-            )
+                rating_mask = self.mgr.cache.metadata_cache.cache["rating"].notna()
+            else:
+                rating_mask = self.mgr.cache.metadata_cache.cache["rating"] > float(self.get_normed_rating(value))
+            mask = (self.mgr.cache.metadata_cache.cache["player_name"] == self.name()) & rating_mask & (self.mgr.cache.metadata_cache.cache["rating"] > float(value))
             tracks = self.mgr.cache.get_tracks_by_filter(mask)
 
         self.logger.debug(f"Found {len(tracks)} tracks for {key}={value}")
@@ -721,12 +681,12 @@ class FileSystemPlayer(MediaPlayer):
     def update_rating(self, track: AudioTag, rating: float) -> None:
         """Update rating for a track."""
         if self.dry_run:
-            self.logger.info(f"DRY RUN: Would update rating for {track} to {self.get_5star_rating(rating)}")
+            self.logger.info(f"DRY RUN: Would update rating for {track} to {rating})")
             return
 
-        self.logger.debug(f"Updating rating for {track} to {self.get_5star_rating(rating)}")
+        self.logger.debug(f"Updating rating for {track} to {rating}")
         try:
-            self.fsp.update_metadata_in_file(file_path=track.file_path, rating=self.get_native_rating(rating))  # Delegates to update_metadata_in_file
+            self.fsp.update_metadata_in_file(file_path=track.file_path, rating=rating)
             track.rating = rating
             self.mgr.cache.set_metadata(self.name(), track.ID, track, force_enable=True)
             self.logger.info(f"Successfully updated rating for {track}")
@@ -736,134 +696,24 @@ class FileSystemPlayer(MediaPlayer):
 
     def _create_playlist(self, title: str, tracks: List[AudioTag]) -> Optional[Path]:
         """Create a new M3U playlist file"""
-        if not tracks:
-            self.logger.warning(f"No tracks provided to create playlist '{title}'")
-            return None
-
-        if not self.playlist_path.exists():
-            self.playlist_path.mkdir(parents=True, exist_ok=True)
-
-        playlist_file = self.playlist_path / f"{title}.m3u"
-
-        try:
-            bar = self.mgr.status.start_phase(f"Creating playlist '{title}'", total=len(tracks))
-
-            with open(playlist_file, "w", encoding="utf-8") as f:
-                f.write("#EXTM3U\n")
-                for track in tracks:
-                    f.write(f"#EXTINF:-1,{track.artist} - {track.title}\n")
-                    f.write(f"{track.file_path}\n")
-                    if bar:
-                        bar.update()
-            if bar:
-                bar.close()
-            self.logger.info(f"Created playlist: {playlist_file}")
-            return playlist_file
-        except Exception as e:
-            self.logger.error(f"Failed to create playlist '{title}': {e}")
-            return None
+        raise NotImplementedError
 
     def _get_playlists(self) -> List[Path]:
         """Get all M3U playlists in the playlist directory"""
-        if not self.fsp.playlist_path or not self.fsp.playlist_path.exists():
-            return []
-
-        return list(self.fsp.playlist_path.glob("*.m3u"))
+        raise NotImplementedError
 
     def _find_playlist(self, title: str) -> Optional[Path]:
         """Find a playlist by title"""
-        if not self.fsp.playlist_path or not self.fsp.playlist_path.exists():
-            return None
-        return None
+        raise NotImplementedError
 
     def _convert_playlist(self, native_playlist: Path) -> Optional[Playlist]:
         """Convert a playlist file to a Playlist object"""
-        if not native_playlist.exists():
-            return None
-
-        playlist = Playlist(native_playlist.stem, native_playlist=native_playlist, player=self)
-        playlist.is_auto_playlist = False
-
-        try:
-            # Parse M3U file
-            with open(native_playlist, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-
-            i = 0
-            while i < len(lines):
-                line = lines[i].strip()
-
-                # Skip empty lines and comments (except EXTINF)
-                if not line or (line.startswith("#") and not line.startswith1("#EXTINF")):
-                    i += 1
-                    continue
-
-                # Handle file paths
-                if not line.startswith("#"):
-                    track_path = Path(line)
-                    if track_path.exists():
-                        track = self._read_track_metadata(track_path)
-                        playlist.tracks.append(track)
-                i += 1
-
-            return playlist
-
-        except Exception as e:
-            self.logger.error(f"Error parsing playlist {native_playlist}: {e}")
-            return playlist
+        raise NotImplementedError
 
     def _add_track_to_playlist(self, native_playlist: Path, native_track: Path) -> None:
-        """Add a track to a playlist
-
-        :param native_playlist: Path to playlist file
-        :param native_track: Path to track file
-        """
-        if not native_playlist.exists():
-            self.logger.error(f"Playlist not found: {native_playlist}")
-            return
-
-        track = self._read_track_metadata(native_track)
-
-        try:
-            with open(native_playlist, "a", encoding="utf-8") as f:
-                f.write(f"#EXTINF:-1,{track.artist} - {track.title}\n")
-                f.write(f"{native_track}\n")
-        except Exception as e:
-            self.logger.error(f"Failed to add track to playlist: {e}")
-            raise
+        """Add a track to a playlist"""
+        raise NotImplementedError
 
     def _remove_track_from_playlist(self, native_playlist: Path, native_track: Path) -> None:
-        """Remove a track from a playlist
-
-        :param native_playlist: Path to playlist file
-        :param native_track: Path to track file
-        """
-        if not native_playlist.exists():
-            self.logger.error(f"Playlist not found: {native_playlist}")
-            return
-
-        try:
-            # Read current playlist content
-            with open(native_playlist, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-
-            # Filter out the track and its EXTINF line
-            with open(native_playlist, "w", encoding="utf-8") as f:
-                i = 0
-                while i < len(lines):
-                    line = lines[i].strip()
-
-                    # Check if this line is the track to remove
-                    if line == str(native_track):
-                        # Skip this line and the previous EXTINF line if it exists
-                        if i > 0 and lines[i - 1].startswith("#EXTINF"):
-                            i += 1
-                            continue
-
-                    # Write line to file
-                    f.write(lines[i])
-                    i += 1
-
-        except Exception as e:
-            self.logger.error(f"Failed to remove track from playlist: {e}")
-            raise
+        """Remove a track from a playlist"""
+        raise NotImplementedError
