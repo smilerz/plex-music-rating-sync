@@ -48,6 +48,20 @@ class AudioTag(object):
             track=int(track.split("/")[0] if "/" in track else track),
         )
 
+    @classmethod
+    def from_vorbis(self, vorbis: object, file_path: str) -> "AudioTag":
+        """Create AudioTag from vorbis object"""
+        track = vorbis.get("TRACKNUMBER", None)[0]
+        return self(
+            artist=vorbis.get("ARTIST", "")[0],
+            album=vorbis.get("ALBUM", "")[0],
+            title=vorbis.get("TITLE", "")[0],
+            file_path=str(file_path),
+            rating=None,
+            ID=str(file_path),
+            track=int(track.split("/")[0] if "/" in track else track),
+        )
+
 
 class Playlist(object):
     def __init__(self, name: str, parent_name: str = "", native_playlist: Optional[object] = None, player: Optional[object] = None):
