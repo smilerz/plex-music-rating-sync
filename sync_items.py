@@ -13,6 +13,7 @@ class AudioTag(object):
         self.genre = kwargs.get("genre", "")
         self.file_path = kwargs.get("file_path", None)
         self.track = kwargs.get("track", None)
+        self.duration = kwargs.get("duration", -1)
 
     def __str__(self) -> str:
         return " - ".join([self.artist, self.album, self.title])
@@ -23,7 +24,7 @@ class AudioTag(object):
     @staticmethod
     def get_fields() -> List[str]:
         """Get list of fields that should be cached"""
-        return ["ID", "album", "artist", "title", "rating", "genre", "file_path", "track"]
+        return ["ID", "album", "artist", "title", "rating", "genre", "file_path", "track", "duration"]
 
     def to_dict(self) -> dict:
         """Convert to dictionary for caching"""
@@ -36,8 +37,9 @@ class AudioTag(object):
 
     @classmethod
     def from_id3(self, id3: object, file_path: str) -> "AudioTag":
-        """Create AudioTag from ID3 object"""
+        """Create AudioTag from ID3 object."""
         track = id3.get("TRCK", None).text[0]
+        duration = id3.info.length if hasattr(id3, "info") and hasattr(id3.info, "length") else -1
         return self(
             artist=id3.get("TPE1", "").text[0],
             album=id3.get("TALB", "").text[0],
@@ -46,12 +48,14 @@ class AudioTag(object):
             rating=None,
             ID=str(file_path),
             track=int(track.split("/")[0] if "/" in track else track),
+            duration=int(duration),
         )
 
     @classmethod
     def from_vorbis(self, vorbis: object, file_path: str) -> "AudioTag":
-        """Create AudioTag from vorbis object"""
+        """Create AudioTag from Vorbis object."""
         track = vorbis.get("TRACKNUMBER", None)[0]
+        duration = vorbis.info.length if hasattr(vorbis, "info") and hasattr(vorbis.info, "length") else -1
         return self(
             artist=vorbis.get("ARTIST", "")[0],
             album=vorbis.get("ALBUM", "")[0],
@@ -60,6 +64,7 @@ class AudioTag(object):
             rating=None,
             ID=str(file_path),
             track=int(track.split("/")[0] if "/" in track else track),
+            duration=int(duration),
         )
 
 
@@ -70,6 +75,7 @@ class Playlist(object):
         self.name = parent_name + name
         self.tracks = []
         self.is_auto_playlist = False
+        self.is_extm3u = True
         self._native_playlist = native_playlist
         self._player = player
         self._pending_changes = False

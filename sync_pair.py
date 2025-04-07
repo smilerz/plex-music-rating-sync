@@ -144,7 +144,7 @@ class TrackPair(SyncPair):
     def display_pair_details(category: str, sync_pairs: [List["TrackPair"]]) -> None:
         """Display track details in a tabular format."""
         if not sync_pairs:
-            print(f"\nNo tracks found for {category}.\n")
+            print("\nNo tracks found.")
             return
 
         print(f"\n{category}:\n{'-' * 50}")

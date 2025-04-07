@@ -9,7 +9,7 @@ from mutagen.flac import FLAC
 from mutagen.id3 import POPM, TXXX, ID3FileType
 from mutagen.oggvorbis import OggVorbis
 
-from sync_items import AudioTag
+from sync_items import AudioTag, Playlist
 
 
 class TagWriteStrategy(Enum):
@@ -66,6 +66,11 @@ class ConflictResolutionStrategy(Enum):
 
 
 class AudioFileManager(abc.ABC):
+    @staticmethod
+    def get_5star_rating(rating: Optional[float]) -> float:
+        """Convert a normalized 0-1 scale rating to a 0-5 scale for display purposes."""
+        return round(rating * 5, 1) if rating is not None else 0.0
+
     @abc.abstractmethod
     def read_tags(self, audio_file: mutagen.FileType) -> dict:
         """
@@ -87,11 +92,6 @@ class VorbisManager(AudioFileManager):
     def __init__(self):
         self.logger = logging.getLogger("PlexSync.VorbisManager")
 
-    @staticmethod
-    def get_5star_rating(rating: Optional[float]) -> float:
-        """Convert a normalized 0-1 scale rating to a 0-5 scale for display purposes."""
-        return round(rating * 5, 1) if rating is not None else 0.0
-
     def read_tags(self, audio_file: mutagen.FileType) -> AudioTag:
         """Read metadata and ratings from Vorbis comments."""
         track = AudioTag.from_vorbis(audio_file, audio_file.filename)
@@ -109,9 +109,10 @@ class VorbisManager(AudioFileManager):
     def write_tags(self, audio_file: mutagen.FileType, metadata: dict, rating: Optional[float] = None) -> mutagen.FileType:
         """Write metadata and ratings to Vorbis comments."""
         # Update metadata
-        for key, value in metadata.items():
-            if value:
-                audio_file[key] = value
+        if metadata:
+            for key, value in metadata.items():
+                if value:
+                    audio_file[key] = value
 
         # Write ratings to both FMPS_RATING and RATING
         if rating is not None:
@@ -151,7 +152,7 @@ class VorbisManager(AudioFileManager):
             return rating
 
         # Prompt user to resolve conflict
-        print(f"Conflict detected between FMPS_RATING ({self.get_5star_rating(fmps_rating)}) and RATING ({self.get_5star_rating(rating)}).")
+        print(f"\nConflict detected between FMPS_RATING ({self.get_5star_rating(fmps_rating)}) and RATING ({self.get_5star_rating(rating)}).")
         while True:
             choice = input("Select the correct rating (0-5, half-star increments allowed): ").strip()
             try:
@@ -288,7 +289,7 @@ class ID3Manager(AudioFileManager):
     # ------------------------------
     # Tag Reading/Writing
     # ------------------------------
-    def read_tags(self, audio_file: mutagen.FileType) -> dict:
+    def read_tags(self, audio_file: mutagen.FileType) -> AudioTag:
         id3_data = audio_file.tags
         rating_tags = {}
         for tag, frame in id3_data.items():
@@ -534,16 +535,19 @@ class FileSystemProvider:
         self._audio_files = []
         self._playlist_files = []
 
-    def _save_track(self, audio_file: mutagen.FileType) -> bool:
-        """Helper function to save changes to an audio file."""
-        try:
-            audio_file.save(v2_version=3)
-            self.logger.info(f"Successfully saved changes to {audio_file.filename}")
-            return True
-        except Exception as e:
-            self.logger.error(f"Failed to save file {audio_file.filename}: {e}")
-            return False
+    # ------------------------------
+    # Core Manager Dispatch
+    # ------------------------------
+    def _get_manager(self, audio_file: mutagen.FileType) -> Optional[AudioFileManager]:
+        if isinstance(audio_file, ID3FileType):
+            return self.id3_mgr
+        elif isinstance(audio_file, (FLAC, OggVorbis)):
+            return self.vorbis_mgr
+        return None
 
+    # ------------------------------
+    # File Handling (Low-Level Helpers)
+    # ------------------------------
     def _open_track(self, file_path: Union[Path, str]) -> Optional[mutagen.FileType]:
         """Helper function to open an audio file using mutagen."""
         try:
@@ -555,13 +559,22 @@ class FileSystemProvider:
             self.logger.error(f"Error opening file {file_path}: {e}")
             return None
 
-    def _get_manager(self, audio_file: mutagen.FileType) -> Optional[AudioFileManager]:
-        if isinstance(audio_file, ID3FileType):
-            return self.id3_mgr
-        elif isinstance(audio_file, (FLAC, OggVorbis)):
-            return self.vorbis_mgr
-        return None
+    def _save_track(self, audio_file: mutagen.FileType) -> bool:
+        """Helper function to save changes to an audio file."""
+        try:
+            if isinstance(audio_file, ID3FileType):
+                audio_file.save(v2_version=3)
+            else:
+                audio_file.save()
+            self.logger.info(f"Successfully saved changes to {audio_file.filename}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to save file {audio_file.filename}: {e}")
+            return False
 
+    # ------------------------------
+    # File Discovery (Scanning)
+    # ------------------------------
     def scan_audio_files(self) -> List[Path]:
         """Scan directory structure for audio files"""
         path = self.mgr.config.path
@@ -604,35 +617,9 @@ class FileSystemProvider:
         self.logger.info(f"Found {len(self._audio_files)} audio files")
         self.logger.info(f"Using playlists directory: {playlist_path}")
 
-    def finalize_scan(self) -> List[AudioTag]:
-        """Finalize the scan by generating a summary and configuring global settings."""
-        print(self._generate_summary())
-        self.id3_mgr._configure_global_settings()
-        resolved_conflicts = []
-        bar = None
-        for conflict in self.id3_mgr.conflicts:
-            if len(self.id3_mgr.conflicts) > 100:
-                bar = self.mgr.status.start_phase("Resolving rating conflicts", total=len(self.id3_mgr.conflicts))
-            track = conflict["track"]
-            self.logger.debug(f"Resolving conflicting ratings for {track.artist} | {track.album} | {track.title}")
-            track.rating = self.id3_mgr._resolve_conflicting_ratings(conflict["tags"], track)
-            resolved_conflicts.append(track)
-            self.update_metadata_in_file(track.file_path, rating=self.id3_mgr.rating_to_popm(track.rating))
-            bar.update() if bar else None
-        bar.close() if bar else None
-        return resolved_conflicts
-
-    # ======= PLAYLIST OPERATIONS =======
-
-    def read_playlist(self, playlist_path: Path) -> Optional[List[Path]]:
-        raise NotImplementedError
-
-    def save_playlist(self, title: str, track_paths: List[Path]) -> Path:
-        raise NotImplementedError
-
-    def delete_playlist(self, playlist_path: Path) -> None:
-        raise NotImplementedError
-
+    # ------------------------------
+    # Metadata Access and Update
+    # ------------------------------
     def read_metadata_from_file(self, file_path: Union[Path, str]) -> Optional[AudioTag]:
         """Retrieve metadata from file."""
         audio_file = self._open_track(file_path)
@@ -656,9 +643,6 @@ class FileSystemProvider:
             return None
 
         audio_file = self._open_track(file_path)
-        if not audio_file:
-            return None
-
         manager = self._get_manager(audio_file)
         if not manager:
             self.logger.warning(f"Cannot update metadata for unsupported format: {file_path}")
@@ -671,6 +655,114 @@ class FileSystemProvider:
                 return updated_file
 
         return None
+
+    # ------------------------------
+    # Playlist Operations
+    # ------------------------------
+    def create_playlist(self, title: str, is_extm3u: bool = False) -> Path:
+        """Create a new M3U playlist file."""
+        playlist_path = self.playlist_path / f"{title}.m3u"
+        try:
+            with playlist_path.open("w", encoding="utf-8") as file:
+                if is_extm3u:
+                    file.write("#EXTM3U\n")
+                    file.write(f"#PLAYLIST:{title}\n")
+            self.logger.info(f"Created playlist: {playlist_path}")
+        except Exception as e:
+            self.logger.error(f"Failed to create playlist {playlist_path}: {e}")
+        return playlist_path
+
+    def read_playlist(self, playlist_path: Path) -> Playlist:
+        """Convert a text file into a Playlist object."""
+        playlist = Playlist(name=playlist_path.stem.replace("_", " ").title())
+        playlist.is_extm3u = False
+        try:
+            with playlist_path.open("r", encoding="utf-8") as file:
+                for line in file:
+                    line = line.strip()
+                    if line.startswith("#EXTM3U"):
+                        playlist.is_extm3u = True
+                    elif not playlist.is_extm3u:
+                        # Return early if it's not an extended M3U playlist
+                        return playlist
+                    elif line.startswith("#PLAYLIST:"):
+                        playlist.name = line.split(":", 1)[1].strip()
+                    elif line.startswith("#EXTINF:") and not playlist.name:
+                        return playlist
+        except Exception as e:
+            self.logger.error(f"Failed to read playlist {playlist_path}: {e}")
+        return playlist
+
+    def get_all_playlists(self) -> List[Playlist]:
+        """Retrieve all M3U playlists in the playlist directory as Playlist objects."""
+        playlists = []
+        for playlist_path in self.playlist_path.glob("*.m3u"):
+            playlists.append(self.read_playlist(playlist_path))
+        return playlists
+
+    # TODO:  think about how to match tracks to playlists and the cache - what to do if there is a root path conflict?
+    def get_tracks_from_playlist(self, playlist_path: Path) -> List[Path]:
+        """Retrieve all track paths from a playlist file."""
+        tracks = []
+        try:
+            with playlist_path.open("r", encoding="utf-8") as file:
+                for line in file:
+                    line = line.strip()
+                    if line and not line.startswith("#"):  # Ignore comments and directives
+                        track_path = self.path / line
+                        if track_path.exists():
+                            tracks.append(track_path)
+                        else:
+                            self.logger.warning(f"Track not found: {track_path}")
+        except Exception as e:
+            self.logger.error(f"Failed to read playlist {playlist_path}: {e}")
+        return tracks
+
+    def add_track_to_playlist(self, playlist_path: Path, track: AudioTag, is_extm3u: bool = False) -> None:
+        """Add a track to a playlist."""
+        try:
+            with playlist_path.open("a", encoding="utf-8") as file:
+                if is_extm3u:
+                    duration = track.duration if track.duration > 0 else -1
+                    file.write(f"#EXTINF:{duration},{track.artist} - {track.title}\n")
+                file.write(f"{track.file_path.relative_to(self.path)}\n")
+            self.logger.info(f"Added track {track} to playlist {playlist_path}")
+        except Exception as e:
+            self.logger.error(f"Failed to add track to playlist {playlist_path}: {e}")
+
+    def remove_track_from_playlist(self, playlist_path: Path, track: Path) -> None:
+        """Remove a track from a playlist."""
+        try:
+            lines = []
+            with playlist_path.open("r", encoding="utf-8") as file:
+                for line in file:
+                    if line.strip() != str(track.file_path.relative_to(self.path)):
+                        lines.append(line)
+            with playlist_path.open("w", encoding="utf-8") as file:
+                file.writelines(lines)
+            self.logger.info(f"Removed track {track.file_path} from playlist {playlist_path}")
+        except Exception as e:
+            self.logger.error(f"Failed to remove track from playlist {playlist_path}: {e}")
+
+    # ------------------------------
+    # Post-Scan Logic / Summary
+    # ------------------------------
+    def finalize_scan(self) -> List[AudioTag]:
+        """Finalize the scan by generating a summary and configuring global settings."""
+        print(self._generate_summary())
+        self.id3_mgr._configure_global_settings()
+        resolved_conflicts = []
+        bar = None
+        for conflict in self.id3_mgr.conflicts:
+            if len(self.id3_mgr.conflicts) > 100:
+                bar = self.mgr.status.start_phase("Resolving rating conflicts", total=len(self.id3_mgr.conflicts))
+            track = conflict["track"]
+            self.logger.debug(f"Resolving conflicting ratings for {track.artist} | {track.album} | {track.title}")
+            track.rating = self.id3_mgr._resolve_conflicting_ratings(conflict["tags"], track)
+            resolved_conflicts.append(track)
+            bar.update() if bar else None
+        bar.close() if bar else None
+        return resolved_conflicts
 
     def _generate_summary(self) -> str:
         """Generate a summary of rating tag usage, conflicts, and strategies."""

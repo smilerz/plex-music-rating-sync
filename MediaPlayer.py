@@ -123,7 +123,7 @@ class MediaPlayer(abc.ABC):
             return None
 
         self.logger.info(f"Creating playlist '{title}' with {len(tracks)} tracks")
-        native_pl = self._create_native_playlist(title, tracks)
+        native_pl = self._create_playlist(title, tracks)
         if native_pl:
             self.logger.debug(f"Successfully created playlist '{title}'")
             return Playlist(title, native_playlist=native_pl, player=self)
@@ -305,6 +305,7 @@ class MediaMonkey(MediaPlayer):
             rating=self.get_normed_rating(track.Rating),
             ID=track.ID,
             track=track.TrackOrder,
+            duration=int(track.SongLength / 1000) if track.SongLength else -1,
         )
         self.mgr.cache.set_metadata(self.name(), tag.ID, tag)
 
@@ -464,6 +465,7 @@ class PlexPlayer(MediaPlayer):
             rating=self.get_normed_rating(track.userRating),
             ID=track.key.split("/")[-1] if "/" in track.key else track.key,
             track=track.index,
+            duration=int(track.duration / 1000) if track.duration else -1,  # Convert ms to seconds
         )
 
     def _create_playlist(self, title: str, tracks: List[AudioTag]) -> Optional[PlexPlaylist]:
@@ -473,7 +475,7 @@ class PlexPlayer(MediaPlayer):
         self.logger.info("Creating playlist {title} with {len(tracks)} tracks")
         for track in tracks:
             try:
-                matches = self._search_tracks("id", track.ID)
+                matches = self._search_tracks("id", track.ID, return_native=True)
                 if matches:
                     plex_tracks.append(matches[0])
                 else:
@@ -591,7 +593,15 @@ class PlexPlayer(MediaPlayer):
             raise
         self.logger.info(f"Successfully updated rating for {track}")
 
-    def _add_track_to_playlist(self, native_playlist: PlexPlaylist, native_track: PlexTrack) -> None:
+    def _add_track_to_playlist(self, native_playlist: PlexPlaylist, track: PlexTrack) -> None:
+        try:
+            matches = self._search_tracks("id", track.ID, return_native=True)
+            if matches:
+                native_track = matches[0]
+            else:
+                self.logger.warning(f"No match found for track ID: {track.ID}")
+        except Exception as e:
+            self.logger.error(f"Failed to search for track {track.ID}: {e!s}")
         native_playlist.addItems(native_track)
 
     def _remove_track_from_playlist(self, native_playlist: PlexPlaylist, native_track: PlexTrack) -> None:
@@ -661,7 +671,7 @@ class FileSystemPlayer(MediaPlayer):
         tracks = []
 
         if key == "id":
-            tracks = [self.mgr.cache.metadata_cache.get_metadata(self.name(), value, force_enable=True)]
+            tracks = [self.mgr.cache.get_metadata(self.name(), value, force_enable=True)]
         elif key == "title":
             mask = self.mgr.cache.metadata_cache.cache[key].apply(lambda x: fuzz.ratio(str(x).lower(), str(value).lower()) >= self.SEARCH_THRESHOLD)
             tracks = self.mgr.cache.get_tracks_by_filter(mask)
@@ -683,8 +693,6 @@ class FileSystemPlayer(MediaPlayer):
         if self.dry_run:
             self.logger.info(f"DRY RUN: Would update rating for {track} to {rating})")
             return
-
-        self.logger.debug(f"Updating rating for {track} to {rating}")
         try:
             self.fsp.update_metadata_in_file(file_path=track.file_path, rating=rating)
             track.rating = rating
@@ -696,24 +704,45 @@ class FileSystemPlayer(MediaPlayer):
 
     def _create_playlist(self, title: str, tracks: List[AudioTag]) -> Optional[Path]:
         """Create a new M3U playlist file"""
-        raise NotImplementedError
+        if not tracks:
+            return None
+        self.logger.info(f"Creating playlist {title} with {len(tracks)} tracks")
+        playlist_path = self.fsp.create_playlist(title)
+        if playlist_path:
+            bar = self.mgr.status.start_phase("Adding tracks to playlist", total=len(tracks))
+            for track in tracks:
+                self.fsp.add_track_to_playlist(playlist_path, track.file_path)
+                bar.update()
+            bar.close()
+        return playlist_path
 
     def _get_playlists(self) -> List[Path]:
         """Get all M3U playlists in the playlist directory"""
-        raise NotImplementedError
+        return self.fsp.get_all_playlists()
 
     def _find_playlist(self, title: str) -> Optional[Path]:
         """Find a playlist by title"""
-        raise NotImplementedError
+        playlists = self._get_playlists()
+        for playlist in playlists:
+            if playlist.name.lower() == title.lower():
+                return playlist
+        return None
 
     def _convert_playlist(self, native_playlist: Path) -> Optional[Playlist]:
         """Convert a playlist file to a Playlist object"""
-        raise NotImplementedError
+        playlist = Playlist(native_playlist.stem, native_playlist=native_playlist, player=self)
+        tracks = self.fsp.get_tracks_from_playlist(native_playlist)
+        for track_path in tracks:
+            track = self._read_track_metadata(track_path)
+            if track:
+                playlist.tracks.append(track)
+                self.logger.debug(f"Added track {track} to playlist")
+        return playlist
 
-    def _add_track_to_playlist(self, native_playlist: Path, native_track: Path) -> None:
+    def _add_track_to_playlist(self, native_playlist: Path, track: AudioTag) -> None:
         """Add a track to a playlist"""
-        raise NotImplementedError
+        self.fsp.add_track_to_playlist(native_playlist, track)
 
     def _remove_track_from_playlist(self, native_playlist: Path, native_track: Path) -> None:
         """Remove a track from a playlist"""
-        raise NotImplementedError
+        self.fsp.remove_track_from_playlist(native_playlist, native_track)
