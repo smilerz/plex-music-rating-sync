@@ -17,6 +17,9 @@ class StatusManager:
             self.handler = handler
             self.desc = desc
 
+        def __bool__(self):
+            return True
+
         def close(self) -> None:
             """Override close to remove the bar from handler's dictionary"""
             super().close()

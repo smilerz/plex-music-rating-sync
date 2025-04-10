@@ -69,14 +69,8 @@ class PlexSync:
         )
 
     def _match_tracks(self, tracks: List[AudioTag]) -> List[TrackPair]:
-        """Match tracks between source and destination players
-
-        Args:
-            tracks: List of tracks from source player
-
-        Returns:
-            List[TrackPair]: List of matched track pairs
-        """
+        """Match tracks between source and destination players"""
+        print(f"Matching tracks between from {self.source_player} to {self.destination_player}")
         bar = self.mgr.status.start_phase("Matching tracks", total=len(tracks))
         sync_pairs = []
         for track in tracks:
@@ -89,11 +83,7 @@ class PlexSync:
         return sync_pairs
 
     def _sync_matched_tracks(self, sync_pairs: List[TrackPair]) -> None:
-        """Sync tracks that need updates
-
-        Args:
-            sync_pairs: List of matched track pairs
-        """
+        """Sync tracks that need updates"""
         pairs_need_update = [pair for pair in sync_pairs if pair.sync_state is SyncState.NEEDS_UPDATE]
         self.logger.info(f"Synchronizing {len(pairs_need_update)} matching tracks without conflicts")
 
@@ -133,20 +123,21 @@ class PlexSync:
 
     def _display_track_details(self, sync_pairs: List[TrackPair]) -> None:
         """Display track match details based on user selection."""
-        valid_choices = {"A", "G", "P", "N"}
+        valid_choices = {"G", "P", "N"}
+        choice_labels = {"G": "Good", "P": "Poor", "N": "No"}
+
         while True:
-            sub_choice = input("Select tracks to display: To Be [A]ll Conflicts, [G]ood Matches, [P]oor Matches, [N]o Matches: ").strip().upper()
+            sub_choice = input("Select tracks to display: To Be [G]ood Matches, [P]oor Matches, [N]o Matches: ").strip().upper()
             if sub_choice in valid_choices:
                 break
-            print("Invalid choice. Please select [A], [G], [P], or [N].")
+            print("Invalid choice. Please select [G], [P], or [N].")
 
         filters = {
-            "A": lambda pair: pair.score is not None and pair.sync_state is not SyncState.UP_TO_DATE,
             "G": lambda pair: pair.score is not None and pair.score >= 80,
             "P": lambda pair: pair.score is not None and 30 <= pair.score < 80,
             "N": lambda pair: pair.score is None or pair.score < 30,
         }
-        TrackPair.display_pair_details(f"{sub_choice} Matches", [pair for pair in sync_pairs if filters[sub_choice](pair)])
+        TrackPair.display_pair_details(f"{choice_labels[sub_choice]} Matches", [pair for pair in sync_pairs if filters[sub_choice](pair)])
 
     def _resolve_conflicts(self, pairs_conflicting: List[TrackPair], sync_pairs: List[TrackPair]) -> None:
         """Resolve conflicts between source and destination ratings"""
@@ -162,7 +153,8 @@ class PlexSync:
                 break
             elif choice == "3":
                 for i, pair in enumerate(pairs_conflicting, start=1):
-                    result = pair.resolve_conflict(counter=i, total=len(pairs_conflicting))
+                    print(f"\nResolving conflict {i} of {len(pairs_conflicting)}:")
+                    result = pair.resolve_conflict()
                     if not result:
                         break
                 break
@@ -179,6 +171,9 @@ class PlexSync:
         tracks = self.source_player.search_tracks(key="rating", value=True)
 
         self.mgr.stats.increment("tracks_processed", len(tracks))
+        if len(tracks) == 0:
+            self.logger.warning("No tracks found")
+            return
         self.logger.info(f"Attempting to match {len(tracks)} tracks")
 
         sync_pairs = self._match_tracks(tracks)
@@ -212,7 +207,8 @@ class PlexSync:
                 bar = self.mgr.status.start_phase("Matching playlists", total=len(playlist_pairs))
             pair.match()
             bar.update()
-        bar.close() if bar else None
+        if bar is not None:
+            bar.close()
 
         # Start playlist sync phase
         bar = None
@@ -221,7 +217,8 @@ class PlexSync:
                 bar = self.mgr.status.start_phase("Syncing playlists", total=len(playlist_pairs))
             pair.sync()
             bar.update()
-        bar.close() if bar else None
+        if bar is not None:
+            bar.close()
 
     def print_summary(self) -> None:
         elapsed = time.time() - self.start_time

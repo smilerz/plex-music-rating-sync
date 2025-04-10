@@ -235,11 +235,12 @@ class CacheManager:
 
     def get_metadata(self, player_name: str, track_id: str, force_enable: bool = False) -> Optional[AudioTag]:
         """Retrieve cached metadata by player name and track ID."""
+
         if not (force_enable or self.is_metadata_cache_enabled()) or self.metadata_cache is None or self.metadata_cache.is_empty():
             return None
 
         # Find row matching player name and track ID
-        row = self.metadata_cache.cache[(self.metadata_cache.cache["player_name"] == player_name) & (self.metadata_cache.cache["ID"] == track_id)]
+        row = self.metadata_cache.cache[(self.metadata_cache.cache["player_name"] == player_name) & (self.metadata_cache.cache["ID"] == str(track_id))]
 
         if row.empty:
             return None
@@ -266,7 +267,7 @@ class CacheManager:
             self.metadata_cache.load()
 
         # Check if metadata already exists for this track
-        existing_row = self.metadata_cache.cache[(self.metadata_cache.cache["player_name"] == player_name) & (self.metadata_cache.cache["ID"] == track_id)]
+        existing_row = self.metadata_cache.cache[(self.metadata_cache.cache["player_name"] == player_name) & (self.metadata_cache.cache["ID"] == str(track_id))]
 
         if not existing_row.empty:
             # Update the existing row
