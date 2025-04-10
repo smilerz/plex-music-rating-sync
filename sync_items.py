@@ -20,10 +20,10 @@ class AudioTag(object):
         self.album = album
         self.artist = artist
         self.title = title
-        self.rating = kwargs.get("rating", None)
-        self.genre = kwargs.get("genre", "")
-        self.file_path = kwargs.get("file_path", None)
-        self.track = kwargs.get("track", None)
+        self.rating = kwargs.get("rating")
+        self.genre = kwargs.get("genre")
+        self.file_path = kwargs.get("file_path")
+        self.track = kwargs.get("track")
         self.duration = kwargs.get("duration", -1)
 
     def __str__(self) -> str:
@@ -40,7 +40,7 @@ class AudioTag(object):
             return value
         return f"{value[:length - 3]}..." if from_end else f"...{value[-(length - 3):]}"
 
-    def details(self, player: "MediaPlayer") -> str:
+    def details(self, player: Optional["MediaPlayer"] = None) -> str:
         """Print formatted track details."""
         track_number = self.track or 0
         track_rating = player.get_5star_rating(self.rating) if self.rating else "N/A"
@@ -48,7 +48,7 @@ class AudioTag(object):
         album = self.truncate(self.album, self.MAX_ALBUM_LENGTH)
         title = self.truncate(self.title, self.MAX_TITLE_LENGTH)
         file_path = self.truncate(self.file_path, self.MAX_FILE_PATH_LENGTH, from_end=False)
-        player_rating = f"{player.abbr}[{track_rating}]"
+        player_rating = f"{player.abbr if player else "  "}[{track_rating}]"
         return (
             f"{player_rating:<7} {track_number:{5}} {artist:<{self.MAX_ARTIST_LENGTH}} "
             f"{album:<{self.MAX_ALBUM_LENGTH}} {title:<{self.MAX_TITLE_LENGTH}} "
@@ -73,18 +73,21 @@ class AudioTag(object):
     def from_id3(cls, id3: object, file_path: str, duration: int = -1) -> "AudioTag":
         from filesystem_provider import ID3Field
 
+        def _safe_get(field: str) -> str:
+            """Safely get ID3 field value."""
+            return id3.get(field).text[0] if id3.get(field) else None
+
         """Create AudioTag from ID3 object."""
-        track = id3.get(ID3Field.TRACKNUMBER, None).text[0]
-        duration = int(duration or -1)
+        track = _safe_get(ID3Field.TRACKNUMBER) or "0"
         return cls(
-            artist=id3.get(ID3Field.ARTIST, "").text[0],
-            album=id3.get(ID3Field.ALBUM, "").text[0],
-            title=id3.get(ID3Field.TITLE, "").text[0],
+            artist=_safe_get(ID3Field.ARTIST) or "",
+            album=_safe_get(ID3Field.ALBUM) or "",
+            title=_safe_get(ID3Field.TITLE) or "",
             file_path=str(file_path),
             rating=None,
             ID=str(file_path),
             track=int(track.split("/")[0] if "/" in track else track),
-            duration=int(duration),
+            duration=int(duration or -1),
         )
 
     @classmethod
@@ -95,14 +98,14 @@ class AudioTag(object):
         track = vorbis.get(VorbisField.TRACKNUMBER, None)[0]
         duration = vorbis.info.length if hasattr(vorbis, "info") and hasattr(vorbis.info, "length") else -1
         return cls(
-            artist=vorbis.get(VorbisField.ARTIST, "")[0],
-            album=vorbis.get(VorbisField.ALBUM, "")[0],
-            title=vorbis.get(VorbisField.TITLE, "")[0],
-            file_path=str(file_path),
+            artist=vorbis.get(VorbisField.ARTIST, [""])[0],
+            album=vorbis.get(VorbisField.ALBUM, [""])[0],
+            title=vorbis.get(VorbisField.TITLE, [""])[0],
+            file_path=str(file_path or ""),
             rating=None,
             ID=str(file_path),
             track=int(track.split("/")[0] if "/" in track else track),
-            duration=int(duration),
+            duration=int(duration or -1),
         )
 
 

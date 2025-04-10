@@ -5,6 +5,7 @@ from datetime import timedelta
 from typing import List
 
 from manager import manager
+from manager.config_manager import PlayerType, SyncItem
 from MediaPlayer import FileSystemPlayer, MediaMonkey, MediaPlayer, PlexPlayer
 from sync_items import AudioTag
 from sync_pair import PlaylistPair, SyncState, TrackPair
@@ -29,8 +30,7 @@ class PlexSync:
 
     def _create_player(self, player_type: str) -> MediaPlayer:
         """Create and configure a media player instance"""
-        player_type = player_type.lower()
-        player_map = {"plex": PlexPlayer, "mediamonkey": MediaMonkey, "filesystem": FileSystemPlayer}
+        player_map = {PlayerType.PLEX: PlexPlayer, PlayerType.MEDIAMONKEY: MediaMonkey, PlayerType.FILESYSTEM: FileSystemPlayer}
 
         if player_type not in player_map:
             self.logger.error(f"Invalid player type: {player_type}")
@@ -50,10 +50,10 @@ class PlexSync:
             player.connect()
 
         for sync_item in self.mgr.config.sync:
-            if sync_item.lower() == "tracks":
+            if sync_item == SyncItem.TRACKS:
                 self.logger.info(f"Starting to sync track ratings from {self.source_player.name()} to {self.destination_player.name()}")
                 self.sync_tracks()
-            elif sync_item.lower() == "playlists":
+            elif sync_item == SyncItem.PLAYLISTS:
                 self.logger.info(f"Starting to sync playlists from {self.source_player.name()} to {self.destination_player.name()}")
                 self.sync_playlists()
             else:
@@ -228,7 +228,7 @@ class PlexSync:
         print("-" * 50)
         print(f"Total time: {elapsed_time}")
 
-        if "tracks" in self.mgr.config.sync:
+        if SyncItem.TRACKS in self.mgr.config.sync:  # Use enum directly instead of string
             print("Tracks:")
             print(f"- Processed: {self.mgr.stats.get('tracks_processed')}")
             print(f"- Matched: {self.mgr.stats.get('tracks_matched')}")
@@ -243,10 +243,11 @@ class PlexSync:
             if self.mgr.config.log == "DEBUG":
                 print(f"- Cache hits: {self.mgr.stats.get('cache_hits')}")
 
-        if "playlists" in self.mgr.config.sync:
+        if SyncItem.PLAYLISTS in self.mgr.config.sync:  # Use enum directly instead of string
             print("\nPlaylists:")
             print(f"- Processed: {self.mgr.stats.get('playlists_processed')}")
             print(f"- Matched: {self.mgr.stats.get('playlists_matched')}")
+            print(f"- Created: {self.mgr.stats.get('playlists_created')}")
             print(f"- Updated: {self.mgr.stats.get('playlists_updated')}")
 
         if self.mgr.config.dry:

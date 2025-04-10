@@ -12,6 +12,7 @@ from plexapi.exceptions import BadRequest, NotFound
 from plexapi.myplex import MyPlexAccount
 
 from filesystem_provider import FileSystemProvider
+from manager.config_manager import SyncItem
 from sync_items import AudioTag, Playlist
 
 NativePlaylist = Any
@@ -711,7 +712,7 @@ class FileSystemPlayer(MediaPlayer):
         self.fsp = FileSystemProvider()
 
         self.fsp.scan_audio_files()
-        if "playlists" in self.mgr.config.sync:
+        if SyncItem.PLAYLISTS in self.mgr.config.sync:
             self.fsp.scan_playlist_files()
 
         bar = self.mgr.status.start_phase(f"Reading track metadata from {self.name()}", total=len(self.fsp._audio_files))

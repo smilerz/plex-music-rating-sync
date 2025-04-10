@@ -57,9 +57,9 @@ Optional installations:
 ## Configuration
 Create a `config.ini` file based on the template `config.ini.template`:
 - ** Required Settings **
-- `source`: Source player ("plex", "mediamonkey" or "filesystem") [default: mediamonkey]
-- `destination`: Destination player ("plex", "mediamonkey" or "filesystem") [default: plex] 
-- `sync`: Items to sync between players, one or more of [tracks, playlists] [default: tracks]
+- `source`: Source player ("plex", "mediamonkey" or "filesystem")
+- `destination`: Destination player ("plex", "mediamonkey" or "filesystem")
+- `sync`: Items to sync between players, one or more of [tracks, playlists] 
 
 ### Configuration Options for PlexPlayer
 - ** Required Settings **

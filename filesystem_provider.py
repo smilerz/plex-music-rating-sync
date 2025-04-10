@@ -10,6 +10,7 @@ from mutagen.flac import FLAC
 from mutagen.id3 import POPM, TXXX, ID3FileType
 from mutagen.oggvorbis import OggVorbis
 
+from manager.config_manager import ConflictResolutionStrategy, TagWriteStrategy
 from sync_items import AudioTag, Playlist
 
 
@@ -33,59 +34,6 @@ class VorbisField(StrEnum):
     ALBUM = "ALBUM"
     TITLE = "TITLE"
     TRACKNUMBER = "TRACKNUMBER"
-
-
-class TagWriteStrategy(Enum):
-    WRITE_ALL = ("write_all", "Update ratings for all discovered media players.")
-    WRITE_EXISTING = ("write_existing", "Only update ratings for media players in each file; fallback to default player if none exist.")
-    WRITE_DEFAULT = ("write_default", "Update ratings only for the default player; do not remove other ratings.")
-    OVERWRITE_DEFAULT = ("overwrite_default", "Update ratings only for the default player and delete all other ratings.")
-
-    def __init__(self, value: str, description: str):
-        self._value_ = value
-        self.description = description
-
-    @classmethod
-    def from_value(cls, value: Optional[str]) -> Optional["TagWriteStrategy"]:
-        if value is None:
-            return None
-        for item in cls:
-            if item.value == value:
-                return item
-        raise ValueError(f"Invalid TagWriteStrategy: {value}")
-
-    def requires_default_tag(self) -> bool:
-        """Check if the strategy requires a default tag."""
-        return self in {TagWriteStrategy.WRITE_DEFAULT, TagWriteStrategy.OVERWRITE_DEFAULT, TagWriteStrategy.WRITE_EXISTING}
-
-    def __str__(self) -> str:
-        """Return a friendly name followed by the description."""
-        friendly_name = self.name.replace("_", " ").title()
-        return f"{friendly_name:<20} : {self.description}"
-
-
-class ConflictResolutionStrategy(Enum):
-    PRIORITIZED_ORDER = ("prioritized_order", "Prioritized order of media players.")
-    HIGHEST = ("highest", "Use the highest rating.")
-    LOWEST = ("lowest", "Use the lowest rating among.")
-    AVERAGE = ("average", "Use the average of all ratings.")
-
-    def __init__(self, value: str, description: str):
-        self._value_ = value
-        self.description = description
-
-    @classmethod
-    def from_value(cls, value: Optional[str]) -> Optional["ConflictResolutionStrategy"]:
-        if value is None:
-            return None
-        for item in cls:
-            if item.value == value:
-                return item
-        raise ValueError(f"Invalid ConflictResolutionStrategy: {value}")
-
-    def description(self) -> str:
-        """Return the description of the conflict resolution strategy."""
-        return self.description
 
 
 class AudioFileManager(abc.ABC):
@@ -130,7 +78,7 @@ class VorbisManager(AudioFileManager):
         rating = self._normalize_rating(audio_file.get(VorbisField.RATING, [None])[0], field=VorbisField.RATING)
 
         # Handle conflicts between FMPS_RATING and RATING
-        final_rating = self._resolve_rating_conflict(fmps_rating, rating)
+        final_rating = self._resolve_rating_conflict(fmps_rating, rating, track_details=track.details())
         track.rating = final_rating
         self.write_tags(audio_file, rating=final_rating)
 
@@ -185,7 +133,7 @@ class VorbisManager(AudioFileManager):
     def _normalize_rating(self, raw_rating: Union[str, float], field: str) -> Optional[float]:
         """Parse a raw rating value using the inferred scale."""
         try:
-            rating = float(raw_rating)
+            rating = float(raw_rating or 0)
         except (ValueError, TypeError):
             self.logger.warning(f"Invalid rating value in {field}: {raw_rating}")
             return None
@@ -238,17 +186,15 @@ class VorbisManager(AudioFileManager):
         self.logger.warning(f"Ambiguous range: min={min_val}, max={max_val} — defaulting to 0-5 scale")
         return RatingScale.ZERO_TO_FIVE
 
-    def _resolve_rating_conflict(self, fmps_rating: Optional[float], rating: Optional[float]) -> Optional[float]:
+    def _resolve_rating_conflict(self, fmps_rating: float, rating: float, track_details: str) -> Optional[float]:
         """Resolve conflicts between FMPS_RATING and RATING."""
-        if fmps_rating is None:
-            return rating
-        if rating is None:
-            return fmps_rating
+
         if fmps_rating == rating:
             return rating
 
         # Prompt user to resolve conflict
-        print(f"\nConflict detected between FMPS_RATING ({self.get_5star_rating(fmps_rating)}) and RATING ({self.get_5star_rating(rating)}).")
+        print(f"\nConflicting rating detected: FMPS_RATING ({self.get_5star_rating(fmps_rating)}) and RATING ({self.get_5star_rating(rating)}).")
+        print(f"{track_details}")
         while True:
             choice = input("Select the correct rating (0-5, half-star increments allowed): ").strip()
             try:
@@ -289,9 +235,8 @@ class ID3Manager(AudioFileManager):
             "TEXT": {"tag": "TXXX:RATING", "player": "Text"},
         }
         self.ratingtag_to_key = {v["tag"]: k for k, v in self.rating_tags.items()}
-
-        self.conflict_resolution_strategy = ConflictResolutionStrategy.from_value(self.mgr.config.conflict_resolution_strategy)
-        self.tag_write_strategy = TagWriteStrategy.from_value(self.mgr.config.tag_write_strategy)
+        self.conflict_resolution_strategy = self.mgr.config.conflict_resolution_strategy
+        self.tag_write_strategy = self.mgr.config.tag_write_strategy
         self.default_tag = self.get_or_register_ratingtagkey(self.mgr.config.default_tag)
         self.tag_priority_order = [self.get_or_register_ratingtagkey(tag) for tag in self.mgr.config.tag_priority_order] if self.mgr.config.tag_priority_order else None
 

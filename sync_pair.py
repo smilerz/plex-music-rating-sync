@@ -374,7 +374,7 @@ class PlaylistPair(SyncPair):
         destination_tracks = [pair.destination for pair in track_pairs]
         self.destination = self.destination_player.create_playlist(self.source.name, destination_tracks)
         self.logger.info(f"Created new playlist {self.source.name} with {len(destination_tracks)} tracks")
-        self.mgr.stats.increment("playlists_updated")
+        self.mgr.stats.increment("playlists_created")
         return True
 
     def _update_existing_playlist(self, track_pairs: List[TrackPair]) -> bool:

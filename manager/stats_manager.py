@@ -58,6 +58,7 @@ class StatsManager:
             "playlists_processed": 0,
             "playlists_matched": 0,
             "playlists_updated": 0,
+            "playlists_created": 0,
             "perfect_matches": 0,  # 100% match score
             "good_matches": 0,  # 80-99% match score
             "poor_matches": 0,  # 30-79% match score

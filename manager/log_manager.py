@@ -5,6 +5,8 @@ from typing import Optional, TextIO
 
 from tqdm import tqdm
 
+from manager.config_manager import LogLevel
+
 
 class InfoFilter(logging.Filter):
     def filter(self, rec: logging.LogRecord) -> bool:
@@ -40,12 +42,12 @@ class LevelBasedFormatter(logging.Formatter):
 
 
 class LogManager:
-    LOG_LEVELS = {
-        "CRITICAL": logging.CRITICAL,
-        "ERROR": logging.ERROR,
-        "WARNING": logging.WARNING,
-        "INFO": logging.INFO,
-        "DEBUG": logging.DEBUG,
+    LOG_LEVEL_MAP = {
+        LogLevel.CRITICAL: logging.CRITICAL,
+        LogLevel.ERROR: logging.ERROR,
+        LogLevel.WARNING: logging.WARNING,
+        LogLevel.INFO: logging.INFO,
+        LogLevel.DEBUG: logging.DEBUG,
     }
     LOG_DIR: str = "logs"
     LOG_FILE: str = "sync_ratings.log"
@@ -74,7 +76,7 @@ class LogManager:
             os.rename(base_log, f"{base_log}.1")
 
     def setup_logging(self, log_level: str) -> logging.Logger:
-        """Initializes custom logging with log rotation and multi-level console output without mixing debug in console."""
+        """Initializes custom logging with log rotation and multi-level console output."""
         os.makedirs(self.log_dir, exist_ok=True)
         self._rotate_logs()
 
@@ -104,16 +106,20 @@ class LogManager:
         level = -1
         if isinstance(log_level, str):
             try:
-                level = self.LOG_LEVELS[log_level.upper()]
-            except KeyError:
+                normalized_level = log_level.lower()
+                if normalized_level in LogLevel:
+                    level = self.LOG_LEVEL_MAP[normalized_level]
+            except (KeyError, ValueError):
                 pass
         elif isinstance(log_level, int):
             if 0 <= log_level <= 50:
                 level = log_level
 
         if level < 0:
-            print("Valid logging levels specified by either key or value:\n\t" + "\n\t".join(f"{key}: {value}" for key, value in self.LOG_LEVELS.items()))
-            raise RuntimeError(f"Invalid logging level selected: {level}")
+            valid_levels = ", ".join(f"{level}" for level in LogLevel)
+            print(f"Valid logging levels: {valid_levels}")
+            raise RuntimeError(f"Invalid logging level selected: {log_level}")
+
         ch_err.setLevel(level)
         ch_std.setLevel(level)
         self.logger.info("Logging initialized with custom settings.")
