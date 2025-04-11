@@ -78,9 +78,11 @@ class VorbisManager(AudioFileManager):
         rating = self._normalize_rating(audio_file.get(VorbisField.RATING, [None])[0], field=VorbisField.RATING)
 
         # Handle conflicts between FMPS_RATING and RATING
-        final_rating = self._resolve_rating_conflict(fmps_rating, rating, track_details=track.details())
-        track.rating = final_rating
-        self.write_tags(audio_file, rating=final_rating)
+
+        if fmps_rating != rating:
+            final_rating = self._resolve_rating_conflict(fmps_rating, rating, track_details=track.details())
+            track.rating = final_rating
+            self.write_tags(audio_file, rating=final_rating).save()
 
         return track
 
@@ -189,9 +191,6 @@ class VorbisManager(AudioFileManager):
     def _resolve_rating_conflict(self, fmps_rating: float, rating: float, track_details: str) -> Optional[float]:
         """Resolve conflicts between FMPS_RATING and RATING."""
 
-        if fmps_rating == rating:
-            return rating
-
         # Prompt user to resolve conflict
         print(f"\nConflicting rating detected: FMPS_RATING ({self.get_5star_rating(fmps_rating)}) and RATING ({self.get_5star_rating(rating)}).")
         print(f"{track_details}")
@@ -204,6 +203,72 @@ class VorbisManager(AudioFileManager):
             except ValueError:
                 pass
             print("Invalid input. Please enter a number between 0 and 5 in half-star increments.")
+
+
+class RatingTagRegistry:
+    def __init__(self):
+        self._tags_by_key = {}
+        self._tags_by_tag = {}
+        self._tags_by_player = {}
+
+        initial = {
+            "WINDOWSMEDIAPLAYER": {"tag": "POPM:Windows Media Player 9 Series", "player": "Windows Media Player"},
+            "MEDIAMONKEY": {"tag": "POPM:no@email", "player": "MediaMonkey"},
+            "MUSICBEE": {"tag": "POPM:MusicBee", "player": "MusicBee"},
+            "WINAMP": {"tag": "POPM:rating@winamp.com", "player": "Winamp"},
+            "TEXT": {"tag": "TXXX:RATING", "player": "Text"},
+        }
+
+        for key, entry in initial.items():
+            self.register(key, entry["tag"], entry["player"])
+
+    def register(self, key: str, tag: str, player: str) -> None:
+        norm_key = key.upper()
+        norm_tag = tag.upper()
+        norm_player = player.lower()
+
+        self._tags_by_key[norm_key] = {"tag": tag, "player": player}
+        self._tags_by_tag[norm_tag] = norm_key
+        self._tags_by_player[norm_player] = norm_key
+
+    def get_by_tag(self, tag: str) -> Optional[str]:
+        return self._tags_by_tag.get(tag.upper())
+
+    def get_by_player(self, player: str) -> Optional[str]:
+        return self._tags_by_player.get(player.lower())
+
+    def get_tag(self, key: str) -> Optional[str]:
+        return self._tags_by_key.get(key.upper(), {}).get("tag")
+
+    def get_player(self, key: str) -> Optional[str]:
+        return self._tags_by_key.get(key.upper(), {}).get("player")
+
+    def get_key(self, input_str: str) -> Optional[str]:
+        # Try by tag, then by player
+        return self.get_by_tag(input_str) or self.get_by_player(input_str)
+
+    def known_keys(self) -> List[str]:
+        return list(self._tags_by_key.keys())
+
+    def resolve_to_tag(self, value: str) -> str:
+        """
+        Return the canonical tag (e.g. 'POPM:...') from any input:
+        - If input is already a tag, key, or player name, resolve to full tag string.
+        - Falls back to returning the original string if not found.
+        """
+        key = self.get_key(value)
+        if key:
+            tag = self.get_tag(key)
+            if tag:
+                return tag
+        # Last-resort: value might already be a tag
+        if value.upper().startswith("POPM:") or value.upper().startswith("TXXX:"):
+            return value
+        return value  # Unrecognized fallback
+
+    def display_name_for_tag(self, tag: str) -> str:
+        key = self.get_key(tag)
+        return self.get_player(key) if key else tag
 
 
 class ID3Manager(AudioFileManager):
@@ -227,18 +292,12 @@ class ID3Manager(AudioFileManager):
         self.mgr = manager
         self.discovered_rating_tags = set()
         self.conflicts = []
-        self.rating_tags = {
-            "WINDOWSMEDIAPLAYER": {"tag": "POPM:Windows Media Player 9 Series", "player": "Windows Media Player"},
-            "MEDIAMONKEY": {"tag": "POPM:no@email", "player": "MediaMonkey"},
-            "MUSICBEE": {"tag": "POPM:MusicBee", "player": "MusicBee"},
-            "WINAMP": {"tag": "POPM:rating@winamp.com", "player": "Winamp"},
-            "TEXT": {"tag": "TXXX:RATING", "player": "Text"},
-        }
-        self.ratingtag_to_key = {v["tag"]: k for k, v in self.rating_tags.items()}
+        self.tag_registry = RatingTagRegistry()
+
         self.conflict_resolution_strategy = self.mgr.config.conflict_resolution_strategy
         self.tag_write_strategy = self.mgr.config.tag_write_strategy
-        self.default_tag = self.get_or_register_ratingtagkey(self.mgr.config.default_tag)
-        self.tag_priority_order = [self.get_or_register_ratingtagkey(tag) for tag in self.mgr.config.tag_priority_order] if self.mgr.config.tag_priority_order else None
+        self.default_tag = self.mgr.config.default_tag
+        self.tag_priority_order = self.mgr.config.tag_priority_order
 
     # ------------------------------
     # Rating Normalization and Mapping
@@ -290,8 +349,14 @@ class ID3Manager(AudioFileManager):
 
         # Track which tags are used
         for tag in normalized_ratings:
-            if found_player := self.get_or_register_ratingtagkey(tag):
-                self.mgr.stats.increment(f"FileSystemPlayer::tags_used::{self.rating_tags[found_player]['player']}")
+            key = self.tag_registry.get_key(tag)
+            if not key:
+                # Register unknown tag as its own key/player/tag
+                self.tag_registry.register(tag.upper(), tag, tag)
+                key = tag.upper()
+            self.discovered_rating_tags.add(tag)
+            player_name = self.tag_registry.get_player(key)
+            self.mgr.stats.increment(f"FileSystemPlayer::tags_used::{player_name}")
 
         # Check for conflicts
         unique_ratings = set(normalized_ratings.values())
@@ -311,10 +376,10 @@ class ID3Manager(AudioFileManager):
 
         # Resolve conflicts based on strategy
         if self.conflict_resolution_strategy == ConflictResolutionStrategy.PRIORITIZED_ORDER:
-            for tag in self.tag_priority_order:
-                raw_tag = self.rating_tags[tag]["tag"]
-                if raw_tag in ratings and ratings[raw_tag] > 0:
-                    return ratings[raw_tag]
+            for key in self.tag_priority_order:
+                tag = self.tag_registry.resolve_to_tag(key)
+                if tag in ratings and ratings[tag] > 0:
+                    return ratings[tag]
         elif self.conflict_resolution_strategy == ConflictResolutionStrategy.HIGHEST:
             return max(ratings.values())
         elif self.conflict_resolution_strategy == ConflictResolutionStrategy.LOWEST:
@@ -328,6 +393,7 @@ class ID3Manager(AudioFileManager):
     # ------------------------------
     # Tag Reading/Writing
     # ------------------------------
+
     def read_tags(self, audio_file: mutagen.FileType) -> AudioTag:
         rating_tags = {}
         for tag, frame in audio_file.tags.items():
@@ -366,9 +432,10 @@ class ID3Manager(AudioFileManager):
         return audio_file
 
     def apply_rating(self, audio_file: mutagen.FileType, rating: float, valid_tags: set) -> mutagen.FileType:
-        for tag in valid_tags:
-            if not tag:
+        for raw_tag in valid_tags:
+            if not raw_tag:
                 continue
+            tag = self.tag_registry.resolve_to_tag(raw_tag)
             if tag.upper() == "TXXX:RATING":
                 txt_rating = str(self.get_5star_rating(rating))
                 if tag in audio_file.tags:
@@ -394,22 +461,6 @@ class ID3Manager(AudioFileManager):
     # ------------------------------
     # Utility Methods
     # ------------------------------
-    def get_tag_key(self, tag: str) -> Optional[str]:
-        return self.ratingtag_to_key.get(tag)
-
-    def register_unknown_tag(self, tag: str) -> str:
-        safe_key = f"UNKNOWN{len(self.rating_tags)}"
-        self.rating_tags[safe_key] = {"tag": tag, "player": tag}
-        self.ratingtag_to_key[tag] = safe_key
-        return safe_key
-
-    def get_or_register_ratingtagkey(self, tag: str) -> str:
-        if tag in self.ratingtag_to_key:
-            return self.ratingtag_to_key[tag]
-        safe_key = f"UNKNOWN{len(self.rating_tags)}"
-        self.rating_tags[safe_key] = {"tag": tag, "player": tag}
-        self.ratingtag_to_key[tag] = safe_key
-        return safe_key
 
     @staticmethod
     def popm_email(tag: str) -> Optional[str]:
@@ -418,10 +469,10 @@ class ID3Manager(AudioFileManager):
     def _configure_global_settings(self) -> None:
         """Prompt the user for global settings based on tag usage and conflicts."""
         tags_used = self.mgr.stats.get("FileSystemPlayer::tags_used")
-        unique_tags = set(tags_used.keys()) if tags_used else set()
-        self.discovered_rating_tags = set(unique_tags)
+        unique_tags = list(set(tags_used.keys()) if tags_used else set())
         has_multiple_tags = len(unique_tags) > 1
         has_conflicts = len(self.conflicts) > 0
+        needs_saved = False
 
         # Skip prompts if unnecessary
         if not has_multiple_tags and not has_conflicts:
@@ -432,7 +483,7 @@ class ID3Manager(AudioFileManager):
             while True:
                 print("-" * 50 + "\nRatings from multiple players found.  How should conflicts be resolved?")
                 for idx, strategy in enumerate(ConflictResolutionStrategy, start=1):
-                    print(f"  {idx}) {strategy.value.replace('_', ' ').capitalize()}")
+                    print(f"  {idx}) {strategy.display}")
                 print(f"  {len(ConflictResolutionStrategy) + 1}) Show conflicts")
                 print(f"  {len(ConflictResolutionStrategy) + 2}) Ignore files with conflicts")
                 choice = input(f"Enter choice [1-{len(ConflictResolutionStrategy) + 2}]: ").strip()
@@ -441,6 +492,7 @@ class ID3Manager(AudioFileManager):
                     choice_num = int(choice)
                     if 1 <= choice_num <= len(ConflictResolutionStrategy):
                         self.conflict_resolution_strategy = list(ConflictResolutionStrategy)[choice_num - 1]
+                        needs_saved = True
                         break
                     elif choice_num == len(ConflictResolutionStrategy) + 1:
                         # Show conflicts
@@ -449,8 +501,7 @@ class ID3Manager(AudioFileManager):
                             track = conflict["track"]
                             print(f"\n{track.artist} | {track.album} | {track.title}")
                             for tag, rating in conflict["tags"].items():
-                                tag_name = self.rating_tags[self.get_or_register_ratingtagkey(tag)]["player"] if self.get_or_register_ratingtagkey(tag) else tag
-                                print(f"\t{tag_name:<30} : {self.get_5star_rating(rating):<5}")
+                                print(f"\t{self.tag_registry.display_name_for_tag(tag):<30} : {self.get_5star_rating(rating):<5}")
                         print("")
                         continue
                     elif choice_num == len(ConflictResolutionStrategy) + 2:
@@ -460,95 +511,74 @@ class ID3Manager(AudioFileManager):
                 print("Invalid choice. Please try again.")
 
         # Step 2: Prompt for tag priority order (if required)
-        available_tags = {self.get_or_register_ratingtagkey(tag): self.rating_tags[self.get_or_register_ratingtagkey(tag)]["player"] for tag in unique_tags}
         if self.conflict_resolution_strategy == ConflictResolutionStrategy.PRIORITIZED_ORDER and has_conflicts and self.tag_priority_order is None:
-            tag_list = list(available_tags.keys())
-
             while True:
                 print("\nEnter media player priority order (highest priority first) by selecting numbers separated by commas.")
                 print("Available media players:")
-                for idx, tag in enumerate(tag_list, start=1):
-                    print(f"  {idx}) {available_tags[tag]}")
+                for idx, tag in enumerate(unique_tags, start=1):
+                    print(f"  {idx}) {tag}")
                 priority_order = input("Your input: ").strip()
                 try:
                     selected_indices = [int(i) for i in priority_order.split(",")]
-                    if all(1 <= idx <= len(tag_list) for idx in selected_indices):
-                        selected_tags = [tag_list[idx - 1] for idx in selected_indices]
-                        self.tag_priority_order = selected_tags
+                    if all(1 <= idx <= len(unique_tags) for idx in selected_indices):
+                        selected_tags = [unique_tags[idx - 1] for idx in selected_indices]
+                        self.tag_priority_order = [self.tag_registry.resolve_to_tag(tag) for tag in selected_tags]
+                        needs_saved = True
                         break
                 except ValueError:
                     pass
                 print("Invalid input. Please enter valid numbers separated by commas.")
 
         # Step 3: Prompt for tag write strategy
-        if has_multiple_tags:
+        if has_multiple_tags and not self.tag_write_strategy:
             while True:
                 print("\nHow should ratings be written to files?")
                 for idx, strategy in enumerate(TagWriteStrategy, start=1):
-                    print(f"  {idx}) {strategy}")
+                    print(f"  {idx}) {strategy.display}")
                 choice = input(f"Enter choice [1-{len(TagWriteStrategy)}]: ").strip()
                 if choice.isdigit() and 1 <= int(choice) <= len(TagWriteStrategy):
                     self.tag_write_strategy = list(TagWriteStrategy)[int(choice) - 1]
+                    needs_saved = True
                     break
                 print("Invalid choice. Please try again.")
 
         # Step 4: Prompt for default tag
-        if self.tag_write_strategy and self.tag_write_strategy.requires_default_tag():
-            valid_tags = list(available_tags.keys())
-
+        if self.tag_write_strategy and self.tag_write_strategy.requires_default_tag() and not self.default_tag:
             while True:
-                if len(valid_tags) == 1:
-                    self.default_tag = valid_tags[0]
+                if len(unique_tags) == 1:
+                    self.default_tag = unique_tags[0]
                     break
                 print("\nWhich tag should be treated as the default for writing ratings?")
-                for idx, tag in enumerate(valid_tags, start=1):
-                    print(f"  {idx}) {available_tags[tag]}")
-                choice = input(f"Enter choice [1-{len(valid_tags)}]: ").strip()
-                if choice.isdigit() and 1 <= int(choice) <= len(valid_tags):
-                    self.default_tag = valid_tags[int(choice) - 1]
+                for idx, tag in enumerate(unique_tags, start=1):
+                    print(f"  {idx}) {tag}")
+                choice = input(f"Enter choice [1-{len(unique_tags)}]: ").strip()
+                if choice.isdigit() and 1 <= int(choice) <= len(unique_tags):
+                    # TODO: get tag name if tag is unknown
+                    chosen = unique_tags[int(choice) - 1]
+                    self.default_tag = self.tag_registry.resolve_to_tag(chosen)
+                    needs_saved = True
                     break
                 print("Invalid choice. Please try again.")
 
-        # Step 6: Prompt to save configuration
+        # Step 5: Prompt to save configuration
         save_config = False
-        while True:
-            print("\nWould you like to save these settings to config.ini for future runs?")
-            choice = input("Your choice [yes/no]: ").strip().lower()
-            if choice in {"y", "yes"}:
-                save_config = True
-                break
-            elif choice in {"n", "no"}:
-                break
-            print("Invalid choice. Please enter 'y' or 'n'.")
+        if needs_saved:
+            while True:
+                print("\nWould you like to save these settings to config.ini for future runs?")
+                choice = input("Your choice [yes/no]: ").strip().lower()
+                if choice in {"y", "yes"}:
+                    save_config = True
+                    break
+                elif choice in {"n", "no"}:
+                    break
+                print("Invalid choice. Please enter 'y' or 'n'.")
 
-        if save_config:
-            self.save_config()
-
-    # TODO: make sure this is in the right config.ini sections
-    def save_config(self) -> None:
-        """Save the configuration to config.ini."""
-        config_path = Path("config.ini")
-
-        # Function to get the appropriate identifier for a RatingTag
-        def get_tag_identifier(safe_key: str) -> str:
-            if safe_key.startswith("UNKNOWN"):
-                return self.id3_mgr.rating_tags[safe_key]["tag"]
-            return safe_key
-
-        config_data = {
-            "tag_write_strategy": self.tag_write_strategy.value if self.tag_write_strategy else None,
-            "default_tag": self.id3_mgr.rating_tags[self.default_tag]["tag"] if self.default_tag else None,
-            "conflict_resolution_strategy": self.conflict_resolution_strategy.value if self.conflict_resolution_strategy else None,
-            # Use enum name for defined tags, tag value for UNKNOWN tags
-            "tag_priority_order": [get_tag_identifier(tag) for tag in self.tag_priority_order] if self.tag_priority_order else None,
-        }
-
-        with config_path.open("a", encoding="utf-8") as f:
-            f.write("[filesystem]\n")
-            for key, value in config_data.items():
-                if value is not None:
-                    f.write(f"{key} = {value}\n")
-        print(f"Configuration saved to {config_path}")
+            if save_config:
+                self.mgr.config.conflict_resolution_strategy = self.conflict_resolution_strategy
+                self.mgr.config.tag_write_strategy = self.tag_write_strategy
+                self.mgr.config.default_tag = self.default_tag
+                self.mgr.config.tag_priority_order = self.tag_priority_order
+                self.mgr.config.save_config()
 
 
 class FileSystemProvider:
@@ -837,8 +867,15 @@ class FileSystemProvider:
 
         # Include strategies if set
         if self.id3_mgr.conflict_resolution_strategy:
-            summary.append(f"\nConflict Resolution Strategy: {self.conflict_resolution_strategy.value}")
+            summary.append(f"\nConflict Resolution Strategy:\n\t{self.id3_mgr.conflict_resolution_strategy.display}")
+            if self.id3_mgr.tag_priority_order:
+                summary.append(f"\n\tTag Priority Order:\n\t{', '.join([self.id3_mgr.tag_registry.get_player(t) or t for t in self.id3_mgr.tag_priority_order])}")
+
         if self.id3_mgr.tag_write_strategy:
-            summary.append(f"Tag Write Strategy: {self.tag_write_strategy.value}")
+            summary.append(f"\nTag Write Strategy:\n\t{self.id3_mgr.tag_write_strategy.display}")
+
+        if self.id3_mgr.default_tag:
+            default_player = self.id3_mgr.tag_registry.get_player(self.id3_mgr.default_tag)
+            summary.append(f"\nDefault Tag:\n\t{default_player or self.id3_mgr.default_tag}")
 
         return "\n".join(summary)

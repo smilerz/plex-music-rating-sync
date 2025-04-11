@@ -9,6 +9,7 @@ dependencies = [
 	"pypiwin32",
 	"numpy",
 	"ConfigArgParse",
+    "configupdater",
     "pandas",
     "tqdm",
     "mutagen"

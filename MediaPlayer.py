@@ -22,6 +22,7 @@ MediaMonkeyTrack = Any  # COM SDBSongData object
 PlexPlaylist = Any  # plexapi.playlist.Playlist
 PlexTrack = Any  # plexapi.audio.Track
 
+# TODO: creat PromptManager
 # TODO: itunes
 # TODO: add mediamonkey 5
 # TODO: add updating Album, Artist, Title, Rating, Track, Genre

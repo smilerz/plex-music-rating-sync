@@ -34,7 +34,7 @@ class TqdmLoggingHandler(logging.Handler):
 
 class LevelBasedFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
-        if record.levelno in [logging.WARNING, logging.ERROR, logging.CRITICAL]:
+        if record.levelno in (logging.WARNING, logging.ERROR, logging.CRITICAL):
             self._style._fmt = "[%(asctime)s] %(levelname)s " "[%(name)s.%(funcName)s:%(lineno)d] %(message)s"
         else:
             self._style._fmt = "[%(asctime)s] %(levelname)s: %(message)s"

@@ -64,7 +64,7 @@ Create a `config.ini` file based on the template `config.ini.template`:
 ### Configuration Options for PlexPlayer
 - ** Required Settings **
   - `server`: The name of your Plex Media Server
-  - `user`: Your Plex username  
+  - `username`: Your Plex username  
   
 - `token`: Your Plex API token (see [Finding a token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/))
 - `passwd` The password for the plex user. NOT RECOMMENDED TO USE!
@@ -104,11 +104,12 @@ The main file is `sync_ratings.py`.
 Usage description:
 *Note: default values of command line arguments can be provided by editing config.ini*
 ```
-usage: sync_ratings.py [-h] [--dry] [--source SOURCE] [--destination DESTINATION]
-                      [--sync [SYNC ...]] [--log LOG] [--passwd PASSWD]
---server SERVER --username USERNAME [--token TOKEN]
+usage: sync_ratings.py [-h] [-c] [-d] --source SOURCE --destination DESTINATION --sync [SYNC ...] [--log LOG] [--cache-mode {metadata,matches,matches-only,disabled}]
+                       [--server SERVER] [--username USERNAME] [--passwd PASSWD] [--token TOKEN] [--path PATH] [--playlist-path PLAYLIST_PATH]
+                       [--tag-write-strategy {write_all,write_existing,write_default,overwrite_default}] [--default-tag DEFAULT_TAG]
+                       [--conflict-resolution-strategy {prioritized_order,highest,lowest,average}] [--tag-priority-order TAG_PRIORITY_ORDER [TAG_PRIORITY_ORDER ...]] 
 
-Synchronizes ID3 music ratings with a Plex media-server
+Synchronizes ID3 and Vorbis music ratings between media players
 
 required arguments:
   --source SOURCE       Source player (plex, [mediamonkey] or filesystem)
@@ -123,7 +124,8 @@ required File System arguments:
 
 optional arguments:
   -h, --help            show this help message and exit
-  --dry                 Does not apply any changes
+  -c                    Clear existing cache files before starting
+  -d, --dry             Does not apply any changes
   --sync [SYNC ...]     Selects which items to sync: one or more of [tracks, playlists]
   --log LOG             Sets the logging level (critical, error, [warning], info, debug)
   --passwd PASSWD       The password for the plex user. NOT RECOMMENDED TO USE!
@@ -134,7 +136,6 @@ optional arguments:
                       - matches: Both metadata and persistent match caching
                       - matches-only: Persistent match caching only
                       - disabled: No caching
-  --clear-cache         Clear existing cache files before starting
   --tag-write-strategy  Strategy for writing rating tags to files.
                         Options: write_all, write_existing, write_default, overwrite_default.
   --default-tag        Canonical tag to use for writing ratings.
