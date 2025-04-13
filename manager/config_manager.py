@@ -1,9 +1,11 @@
-import os
+import logging
 from enum import StrEnum
 from typing import List, Union
 
 import configargparse
-from configupdater import ConfigUpdater, Section
+from configupdater import ConfigUpdater
+
+logger = logging.getLogger(__name__)
 
 
 class ConfigEnum(StrEnum):
@@ -84,6 +86,7 @@ class TagWriteStrategy(ConfigEnum):
         }
 
 
+# TODO: make choice an option?  update AudioFileManager to filter acceptable options
 class ConflictResolutionStrategy(ConfigEnum):
     PRIORITIZED_ORDER = "prioritized_order"
     HIGHEST = "highest"
@@ -155,12 +158,10 @@ class ConfigManager:
     def _initialize_attributes(self) -> None:
         """Set attributes from parsed config, including enum coercion and validation."""
         for key, value in vars(self.config).items():
-            sanitized_key = key.replace("-", "_")
-
-            if sanitized_key in self._ENUM_FIELDS:
-                setattr(self, sanitized_key, self._parse_enum_field(sanitized_key, value))
+            if key in self._ENUM_FIELDS:
+                setattr(self, key, self._parse_enum_field(key, value))
             else:
-                setattr(self, sanitized_key, value)
+                setattr(self, key, value)
 
         self._validate_config_requirements()
 
@@ -197,138 +198,93 @@ class ConfigManager:
             raise ValueError(f"default_tag must be set when using the '{strategy}' strategy.")
 
     def save_config(self) -> None:
-        """Update or insert config values into the config file using full ConfigUpdater features."""
+        changes = self._get_runtime_config_changes()
 
-        def stringify_value(value: Union[str, bool, List], expected_type: type) -> str:
-            if expected_type is list:
-                return "[" + ", ".join(value) + "]"
-            if expected_type is bool:
-                return "true" if value else "false"
-            return str(value)
+        if not changes:
+            logger.debug("No config changes detected.")
+            return
 
-        def normalize_section_name(name: str) -> str:
-            return name.lower().replace(" configuration", "").strip()
+        if self.dry:
+            logger.debug("Dry-run: config changes detected but not saved.")
+            return
 
-        def update_config_value(section: Section, option: str, new_value: str, original_lhs: str, comment: str) -> None:
-            """
-            Replaces the value while preserving any existing spacing and inline comment.
-            - `original_lhs` includes any padding before the '#' in the original line.
-            - `comment` is everything after the '#' (may be empty).
-            """
-            # Preserve original padding if the new value fits
-            section[option] = None
-            option_obj = section[option]
+        self._update_config_file(changes)
 
-            original_value = original_lhs.rstrip()
-            padding = original_lhs[len(original_value) :]  # everything after the trimmed value
-            new_value = str(new_value)
-            if len(new_value) > len(original_value):
-                padded_value = new_value
-            else:
-                padded_value = new_value + padding
+    def _get_runtime_config_changes(self) -> dict:
+        loaded_config = self.parser.parse_args()
+        changes = {}
 
-            if comment:
-                option_obj.value = f"{padded_value}#{comment}"
-            else:
-                option_obj.value = new_value
-
-        def cast_config_option(value: str, expected_type: type) -> Union[str, bool]:
-            """Casts a config file string value into the expected Python type."""
-            raw = value.strip()
-
-            if expected_type is bool:
-                return raw.lower() in {"1", "true", "yes", "on"}
-            elif expected_type is list:
-                raw = raw.replace("[", "").replace("]", "")
-                return sorted(item.strip().lower() for item in raw.split(",") if item.strip())
-            elif expected_type is str:
-                return raw.lower()
-            else:
-                raise NotImplementedError(f"Unsupported type in cast_config_option: {expected_type}")
-
-        def needs_update(runtime_val: Union[str, bool, List], file_value: str, expected_type: type, default: Union[str, bool, List]) -> bool:
-            """Determines whether the value from runtime should be written to the config file."""
-
-            file_val_casted = cast_config_option(file_value, expected_type)
-
-            if expected_type is list:
-                runtime_normalized = sorted(v.strip().lower() for v in runtime_val) if runtime_val else []
-            elif expected_type is str:
-                runtime_normalized = runtime_val.strip().lower() if runtime_val else ""
-            elif expected_type is bool:
-                runtime_normalized = runtime_val is not None and runtime_val
-            else:
-                raise NotImplementedError(f"Unsupported type in needs_update: {expected_type}")
-
-            # Skip writing if file is empty and runtime value equals default
-            if file_value.strip() == "" and runtime_normalized == default:
-                return False
-
-            return runtime_normalized != file_val_casted
-
-        updater = ConfigUpdater()
-        # section_lookup: dest -> section_name
-        config_parser = {}
-        for group in self.parser._action_groups:
-            section_name = normalize_section_name(group.title)
-            for action in group._group_actions:
-                if action.default == "==SUPPRESS==":
-                    continue
-                if not action.option_strings or not any(opt.startswith("--") for opt in action.option_strings):
-                    continue
-                elif action.dest:
-                    if action.nargs in ("*", "+"):
-                        t = list
-                    elif isinstance(action.default, bool):
-                        t = bool
-                    elif action.type is str:
-                        t = str
-                    else:
-                        raise NotImplementedError(f"Type {action.type} not implemented")
-                    config_parser[action.dest] = {"section": section_name, "default": action.default, "type": t}
-        config_file_values = {}
-
-        if os.path.exists(self.CONFIG_FILE):
-            updater.read(self.CONFIG_FILE)
-            for section in updater.sections():
-                for option in updater[section]:
-                    line = updater[section][option].value.partition("#")
-                    config_file_values[option] = {"section": section, "value": line[0], "comment": line[2]}
-        else:
-            # If the file doesn't exist, create it and write default values
-            for section in self.parser._action_groups:
-                if section._group_actions:
-                    section_name = normalize_section_name(section.title)
-                    updater.add_section(section_name)
-
-        for dest_key, _value in self.config._get_kwargs():
-            if dest_key not in config_parser:
-                continue  # Skip unexpected/positional arguments
-
-            meta = config_parser[dest_key]
-            runtime_value = getattr(self, dest_key)
-            dest_key = dest_key.replace("_", "-")
-            file_val = config_file_values.get(dest_key)
-
-            # Determine which section to use
-            normalized_section = meta["section"].lower()
-            matched_section = next((sect for sect in updater.sections() if sect.lower() == normalized_section), None)
-            section_name = matched_section or meta["section"]
-
-            # Option exists in config file — check if update is needed
-            if not needs_update(
-                runtime_value,
-                file_value=file_val.get("value") if file_val else "",
-                expected_type=meta["type"],
-                default=meta["default"],
-            ):
+        for key, file_value in vars(loaded_config).items():
+            if not hasattr(self, key):
                 continue
-            # Update required
-            update_config_value(
-                updater[section_name],
-                option=dest_key,
-                new_value=stringify_value(runtime_value, meta["type"]),
-                original_lhs=file_val.get("value") if file_val else "",
-                comment=file_val["comment"] if file_val else "",
-            )
-        updater.update_file()
+
+            runtime_value = getattr(self, key)
+
+            if isinstance(runtime_value, list):
+                if set(runtime_value or []) != set(file_value or []):
+                    changes[key] = runtime_value
+            else:
+                if runtime_value != file_value:
+                    changes[key] = runtime_value
+
+        return changes
+
+    def _find_section_for_key(self, key: str) -> str:
+        for group in self.parser._action_groups:
+            if any(a.dest == key for a in group._group_actions):
+                return group.title.lower().replace(" configuration", "").strip()
+        return ""
+
+    def _get_config_key_name(self, key: str) -> str:
+        for action in self.parser._option_string_actions.values():
+            if action.dest == key:
+                return next((opt.lstrip("-") for opt in action.option_strings if opt.startswith("--")), key)
+        return key
+
+    def _update_config_file(self, changes: dict) -> None:
+        updater = ConfigUpdater()
+        updater.read(self.CONFIG_FILE)
+
+        for key, value in changes.items():
+            section_name = self._find_section_for_key(key)
+            if not section_name:
+                continue
+
+            if not updater.has_section(section_name):
+                updater.add_section(section_name)
+
+            config_key = self._get_config_key_name(key)
+            existing = updater[section_name].get(config_key)
+            existing_line = existing.value if existing else ""
+
+            updater[section_name][config_key] = None
+            option_obj = updater[section_name][config_key]
+            option_obj.value = stringify_value(value, existing_line)
+
+        updater.update_file(self.CONFIG_FILE)
+
+
+def stringify_value(new_value: Union[str, bool, List], existing_line: str = "") -> str:
+    """
+    Converts the new value into a config file string while preserving inline comments and padding.
+    - `existing_line` should be the original raw value string (e.g., 'true     # keep this')
+    """
+    # Extract comment
+    lhs, sep, comment = existing_line.partition("#")
+    lhs_stripped = lhs.rstrip()
+    padding = lhs[len(lhs_stripped) :] if lhs else ""
+
+    # Build new value string
+    if isinstance(new_value, list):
+        value_str = "[" + ", ".join(new_value) + "]"
+    elif isinstance(new_value, bool):
+        value_str = "true" if new_value else "false"
+    else:
+        value_str = str(new_value)
+
+    # Re-apply original padding if new value is shorter
+    if len(value_str) < len(lhs_stripped):
+        value_str = value_str + " " * (len(lhs_stripped) - len(value_str))
+
+    # Include original spacing + inline comment
+    return f"{value_str}{padding}#{comment}" if sep else value_str

@@ -45,5 +45,6 @@ class Manager:
         return self.config
 
 
+# TODO: refactor to get_manager()
 # Singleton instance
 manager = Manager()

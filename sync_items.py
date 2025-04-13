@@ -40,6 +40,7 @@ class AudioTag(object):
             return value
         return f"{value[:length - 3]}..." if from_end else f"...{value[-(length - 3):]}"
 
+    # TODO: evaluate if this is necessary
     def details(self, player: Optional["MediaPlayer"] = None) -> str:
         """Print formatted track details."""
         track_number = self.track or 0
@@ -69,6 +70,7 @@ class AudioTag(object):
         """Create AudioTag from cached dictionary"""
         return cls(**data)
 
+    # TODO: move to filesystem_provider
     @classmethod
     def from_id3(cls, id3: object, file_path: str, duration: int = -1) -> "AudioTag":
         from filesystem_provider import ID3Field
@@ -90,6 +92,7 @@ class AudioTag(object):
             duration=int(duration or -1),
         )
 
+    # TODO: move to filesystem_provider
     @classmethod
     def from_vorbis(cls, vorbis: object, file_path: str) -> "AudioTag":
         from filesystem_provider import VorbisField
