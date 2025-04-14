@@ -94,6 +94,7 @@ Create a `config.ini` file based on the template `config.ini.template`:
   - *`highest`*: Use the highest numeric rating found.
   - *`lowest`*: Use the lowest numeric rating found.
   - *`average`*: Use the average of all numeric ratings.
+  - *`choice`*: Prompt user to manually enter a rating.
 
 - **`tag_priority_order`**: *Ordered list of tag identifiers used for resolving conflicts.*  
   - *Recognized values*: Player values such as `MEDIAMONKEY`, `WINDOWSMEDIAPLAYER`, `MUSICBEE`, `WINAMP`, `TEXT`.  
@@ -107,7 +108,7 @@ Usage description:
 usage: sync_ratings.py [-h] [-c] [-d] --source SOURCE --destination DESTINATION --sync [SYNC ...] [--log LOG] [--cache-mode {metadata,matches,matches-only,disabled}]
                        [--server SERVER] [--username USERNAME] [--passwd PASSWD] [--token TOKEN] [--path PATH] [--playlist-path PLAYLIST_PATH]
                        [--tag-write-strategy {write_all,write_existing,write_default,overwrite_default}] [--default-tag DEFAULT_TAG]
-                       [--conflict-resolution-strategy {prioritized_order,highest,lowest,average}] [--tag-priority-order TAG_PRIORITY_ORDER [TAG_PRIORITY_ORDER ...]] 
+                       [--conflict-resolution-strategy {prioritized_order,highest,lowest,average, choice}] [--tag-priority-order TAG_PRIORITY_ORDER [TAG_PRIORITY_ORDER ...]] 
 
 Synchronizes ID3 and Vorbis music ratings between media players
 
@@ -142,7 +143,7 @@ optional arguments:
                         Options: Player values such as MEDIAMONKEY, WINDOWSMEDIAPLAYER, MUSICBEE, WINAMP, TEXT.
   --conflict-resolution-strategy
                         Strategy for resolving conflicting rating values.
-                        Options: prioritized_order, highest, lowest, average.
+                        Options: prioritized_order, highest, lowest, average, choice.
   --tag-priority-order  Ordered list of tag identifiers for resolving conflicts.
                         Options: MEDIAMONKEY, WINDOWSMEDIAPLAYER, MUSICBEE, WINAMP, TEXT.
 ```

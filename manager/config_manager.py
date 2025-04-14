@@ -1,6 +1,6 @@
 import logging
 from enum import StrEnum
-from typing import List, Union
+from typing import List, Optional, Union
 
 import configargparse
 from configupdater import ConfigUpdater
@@ -92,6 +92,7 @@ class ConflictResolutionStrategy(ConfigEnum):
     HIGHEST = "highest"
     LOWEST = "lowest"
     AVERAGE = "average"
+    CHOICE = "choice"
 
     @property
     def description(self) -> str:
@@ -100,6 +101,7 @@ class ConflictResolutionStrategy(ConfigEnum):
             self.HIGHEST: "Use the highest rating.",
             self.LOWEST: "Use the lowest rating.",
             self.AVERAGE: "Use the average of all ratings.",
+            self.CHOICE: "Prompt user to manually enter a rating.",
         }[self]
 
 
@@ -164,6 +166,7 @@ class ConfigManager:
                 setattr(self, key, value)
 
         self._validate_config_requirements()
+        logger.debug(f"Current runtime configuration: {self.to_dict()}")
 
     def _parse_enum_field(self, key: str, value: ConfigEnum) -> ConfigEnum | list[ConfigEnum] | None:
         """Convert CLI string(s) to corresponding ConfigEnum value(s), with error checking."""
@@ -197,8 +200,18 @@ class ConfigManager:
         if requires_default and not getattr(self, "default_tag", None):
             raise ValueError(f"default_tag must be set when using the '{strategy}' strategy.")
 
+    def to_dict(self) -> dict:
+        """Returns a dictionary of current runtime values stored in the ConfigManager instance.The keys correspond to the 'dest' values of the parser actions."""
+        config_dict = {}
+        for action in self.parser._actions:
+            key = action.dest
+            if key and hasattr(self, key):
+                config_dict[key] = getattr(self, key)
+        return config_dict
+
     def save_config(self) -> None:
-        changes = self._get_runtime_config_changes()
+        current_config = self.to_dict()
+        changes = self._get_runtime_config_changes(current_config)
 
         if not changes:
             logger.debug("No config changes detected.")
@@ -210,15 +223,18 @@ class ConfigManager:
 
         self._update_config_file(changes)
 
-    def _get_runtime_config_changes(self) -> dict:
+    def _get_runtime_config_changes(self, current_config: Optional[dict] = None) -> dict:
+        if current_config is None:
+            current_config = self.to_dict()
+
         loaded_config = self.parser.parse_args()
         changes = {}
 
         for key, file_value in vars(loaded_config).items():
-            if not hasattr(self, key):
+            if key not in current_config:
                 continue
 
-            runtime_value = getattr(self, key)
+            runtime_value = current_config[key]
 
             if isinstance(runtime_value, list):
                 if set(runtime_value or []) != set(file_value or []):
