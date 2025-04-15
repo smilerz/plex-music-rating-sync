@@ -1,20 +1,15 @@
 import abc
 import logging
-from enum import Enum, StrEnum, auto
+from enum import StrEnum
 from pathlib import Path
 from typing import List, Optional, Union
 
 import mutagen
 from mutagen.id3 import POPM, TXXX, ID3FileType
+from ratings import Rating, RatingScale
 
 from manager.config_manager import ConflictResolutionStrategy, TagWriteStrategy
 from sync_items import AudioTag, Playlist
-
-
-class RatingScale(Enum):
-    NORMALIZED = auto()
-    ZERO_TO_FIVE = auto()
-    ZERO_TO_HUNDRED = auto()
 
 
 class ID3Field(StrEnum):
@@ -134,7 +129,7 @@ class AudioTagHandler(abc.ABC):
         """Decide on strategies or settings to resolve ratings during second pass."""
         raise NotImplementedError("Subclasses must implement this method.")
 
-    def _resolve_normalized_conflict(self, ratings_by_tag_key: dict[str, float]) -> Optional[float]:
+    def _resolve_normalized_conflict(self, ratings_by_tag_key: dict[str, Rating]) -> Optional[Rating]:
         """Resolve a normalized rating from tag_key → rating mappings using the configured strategy."""
         strategy = self.conflict_resolution_strategy
         if not strategy:
@@ -160,30 +155,19 @@ class AudioTagHandler(abc.ABC):
             return max(ratings_by_tag_key.values())
 
         if strategy == ConflictResolutionStrategy.LOWEST:
-            return min(v for v in ratings_by_tag_key.values() if v > 0)
+            return min((v for v in ratings_by_tag_key.values() if v > 0), default=None)
 
         if strategy == ConflictResolutionStrategy.AVERAGE:
             values = [v for v in ratings_by_tag_key.values() if v > 0]
-            return round(sum(values) / len(values), 3) if values else None
+            return Rating(sum(values) / len(values), scale=RatingScale.NORMALIZED) if values else None
 
         self.logger.warning(f"Unsupported conflict strategy: {strategy}")
         return None
 
     @abc.abstractmethod
-    def _manual_conflict_resolution(self, ratings_by_tag_key: dict[str, float]) -> Optional[float]:
+    def _manual_conflict_resolution(self, ratings_by_tag_key: dict[str, Rating]) -> Optional[Rating]:
         """Interactive user choice for resolving conflicting ratings."""
         raise NotImplementedError("Subclasses must implement this method.")
-
-    @staticmethod
-    def get_5star_rating(rating: Optional[float]) -> float:
-        """Convert a normalized 0–1 rating to a 0–5 scale."""
-        return round(rating * 5, 1) if rating is not None else 0.0
-
-    @staticmethod
-    def has_rating_conflict(ratings_by_tag_key: dict[str, Optional[float]]) -> bool:
-        """Detect if multiple unique, non-null ratings exist."""
-        unique = {r for r in ratings_by_tag_key.values() if r is not None}
-        return len(unique) > 1
 
     @abc.abstractmethod
     def can_handle(self, file: mutagen.FileType) -> bool:
@@ -192,7 +176,7 @@ class AudioTagHandler(abc.ABC):
 
     @abc.abstractmethod
     def _extract_tags(self, audio_file: mutagen.FileType) -> tuple[AudioTag, dict]:
-        """Extract metadata and normalized ratings from the audio file."""
+        """Extract metadata and ratings from the audio file."""
         raise NotImplementedError("Subclasses must implement this method.")
 
     def read_tags(self, audio_file: mutagen.FileType) -> tuple[AudioTag, Optional[dict]]:
@@ -212,18 +196,11 @@ class AudioTagHandler(abc.ABC):
 
         return track, context
 
-    def get_normal_rating(self, context: dict) -> Optional[float]:
-        """
-        Resolve a final normalized rating from context:
-        - If exactly one rating exists, return it.
-        - If no valid ratings exist, return None.
-        - Otherwise, defer to _resolve_rating.
-        """
-        normalized: dict[str, Optional[float]] = context.get("normalized", {})
-        non_null_values = [v for v in normalized.values() if v is not None]
-        unique_values = set(non_null_values)
+    def get_normal_rating(self, context: dict) -> Optional[Rating]:
+        normalized: dict[str, Optional[Rating]] = context.get("normalized", {})
+        non_null_values = [r for r in normalized.values() if r is not None]
 
-        if len(unique_values) == 1:
+        if len(set(non_null_values)) == 1:
             return non_null_values[0]
         elif not non_null_values:
             return None
@@ -231,12 +208,12 @@ class AudioTagHandler(abc.ABC):
         return self._resolve_rating(context)
 
     @abc.abstractmethod
-    def _resolve_rating(self, context: dict) -> Optional[float]:
+    def _resolve_rating(self, context: dict) -> Optional[Rating]:
         """Subclasses must implement custom resolution logic based on context."""
         raise NotImplementedError("Subclasses must implement this method.")
 
     @abc.abstractmethod
-    def apply_tags(self, audio_file: mutagen.FileType, metadata: Optional[dict], rating: Optional[float] = None) -> mutagen.FileType:
+    def apply_tags(self, audio_file: mutagen.FileType, metadata: Optional[dict], rating: Optional[Rating] = None) -> mutagen.FileType:
         """Write metadata and rating to the audio file."""
         raise NotImplementedError("Subclasses must implement this method.")
 
@@ -256,31 +233,36 @@ class VorbisHandler(AudioTagHandler):
     def can_handle(self, file: mutagen.FileType) -> bool:
         return hasattr(file, "tags") and (VorbisField.RATING in file.tags or VorbisField.FMPS_RATING in file.tags)
 
-    def _manual_conflict_resolution(self, ratings: dict[str, float]) -> Optional[float]:
+    def _manual_conflict_resolution(self, ratings: dict[str, Rating]) -> Optional[Rating]:
         print("\nConflicting ratings detected (Vorbis):")
         for tag, rating in ratings.items():
-            print(f"  {tag:<20} : {self.get_5star_rating(rating):<5}")
+            print(f"  {tag:<20} : {rating.to_display():<5}")
+
         while True:
             choice = input("Select the correct rating (0-5, half-star increments allowed): ").strip()
-            try:
-                selected = float(choice)
-                if 0 <= selected <= 5 and (selected * 2).is_integer():
-                    return round(selected / 5, 3)
-            except ValueError:
-                pass
+            validated = Rating.validate(choice, scale=RatingScale.ZERO_TO_FIVE)
+            if validated is not None:
+                return Rating(choice, scale=RatingScale.ZERO_TO_FIVE)
             print("Invalid input. Please enter a number between 0 and 5 in half-star increments.")
+
+    def _get_scale_for(self, field: str) -> Optional[RatingScale]:
+        if field == VorbisField.FMPS_RATING:
+            return self.fmps_rating_scale
+        if field == VorbisField.RATING:
+            return self.rating_scale
+        return None
 
     def _extract_tags(self, audio_file: mutagen.FileType) -> tuple[AudioTag, dict]:
         """Extract raw and normalized ratings for Vorbis fields."""
         track = AudioTag.from_vorbis(audio_file, audio_file.filename)
 
         raw: dict[str, Optional[str]] = {}
-        normalized: dict[str, Optional[float]] = {}
+        normalized: dict[str, Optional[Rating]] = {}
 
         for field in [VorbisField.FMPS_RATING, VorbisField.RATING]:
             raw_value = audio_file.get(field, [None])[0]
             raw[field] = raw_value
-            normalized[field] = self._normalize_value(field, float(raw_value)) if raw_value is not None else None
+            normalized[field] = Rating(raw_value, scale=self._get_scale_for(field), aggressive=self.aggressive_inference) if raw_value is not None else None
 
         return track, {
             "raw": raw,
@@ -288,43 +270,13 @@ class VorbisHandler(AudioTagHandler):
             "handler": self,
         }
 
-    def _resolve_rating(self, context: dict) -> Optional[float]:
-        """Resolve a normalized rating from multiple Vorbis fields using normalized values and conflict strategy."""
-        raw = context.get("raw", {})
-        ratings: dict[str, float] = {}
-
-        for field, raw_value in raw.items():
-            if raw_value is None:
-                continue
-            try:
-                value = float(raw_value)
-            except (ValueError, TypeError):
-                continue
-
-            normalized = self._normalize_value(field, value)
-            if normalized is not None:
-                ratings[field] = normalized
+    def _resolve_rating(self, context: dict) -> Optional[Rating]:
+        ratings: dict[str, Rating] = {k: v for k, v in context.get("normalized", {}).items() if v is not None}
 
         if not ratings:
             return None
-        if len(set(ratings.values())) == 1:
-            return next(iter(ratings.values()))
 
         return self._resolve_normalized_conflict(ratings)
-
-    def _normalize_value(self, field: str, value: float) -> Optional[float]:
-        """Normalize a value using already-inferred scale."""
-        if field == VorbisField.FMPS_RATING:
-            scale = self.fmps_rating_scale
-        elif field == VorbisField.RATING:
-            scale = self.rating_scale
-        else:
-            return None
-
-        if not scale:
-            return None
-
-        return self._normalize_by_scale(value, scale)
 
     def finalize_rating_strategy(self, conflicts: list[dict]) -> None:
         self._print_summary()
@@ -342,7 +294,7 @@ class VorbisHandler(AudioTagHandler):
         self.rating_scale = resolve_scale_for(VorbisField.RATING)
         self.aggressive_inference = True
 
-    def apply_tags(self, audio_file: mutagen.FileType, metadata: Optional[dict] = None, rating: Optional[float] = None) -> mutagen.FileType:
+    def apply_tags(self, audio_file: mutagen.FileType, metadata: Optional[dict] = None, rating: Optional[Rating] = None) -> mutagen.FileType:
         """Write metadata and ratings to Vorbis comments."""
         if metadata:
             for key, value in metadata.items():
@@ -350,79 +302,10 @@ class VorbisHandler(AudioTagHandler):
                     audio_file[key] = value
 
         if rating is not None:
-            fmps_rating_value = self._native_rating(rating, VorbisField.FMPS_RATING)
-            rating_value = self._native_rating(rating, VorbisField.RATING)
-
-            audio_file[VorbisField.FMPS_RATING] = str(fmps_rating_value)
-            audio_file[VorbisField.RATING] = str(rating_value)
-            self.logger.info(f"Successfully wrote ratings: FMPS_RATING={fmps_rating_value}, RATING={rating_value}")
+            audio_file[VorbisField.FMPS_RATING] = rating.to_str(self.fmps_rating_scale)
+            audio_file[VorbisField.RATING] = rating.to_str(self.rating_scale)
 
         return audio_file
-
-    def _normalize_by_scale(self, value: float, scale: RatingScale) -> float:
-        if scale == RatingScale.ZERO_TO_HUNDRED:
-            return round(value / 100.0, 3)
-        if scale == RatingScale.ZERO_TO_FIVE:
-            return round(value / 5.0, 3)
-        return round(value, 3)
-
-    def _infer_scale(self, value: float, field: str) -> Optional[RatingScale]:
-        """
-        Infer the likely scale used for a raw rating value.
-        Increments usage stats but does not assign the scale.
-        """
-        inferred = None
-        if value > 10:
-            inferred = RatingScale.ZERO_TO_HUNDRED
-        elif 0 < value <= 1:
-            inferred = RatingScale.NORMALIZED
-        elif 1 < value <= 5:
-            inferred = RatingScale.ZERO_TO_FIVE
-        elif self.aggressive_inference:
-            if value in {0.5, 1.0}:
-                inferred = RatingScale.NORMALIZED
-            elif value == 5.0:
-                inferred = RatingScale.ZERO_TO_FIVE
-
-        if inferred:
-            self.mgr.stats.increment(f"VorbisHandler::scale_inferred::{field}::{inferred.name}")
-
-        return inferred
-
-    def _normalize_value(self, field: str, value: float) -> Optional[float]:
-        """
-        Normalize a rating value using the known scale if available.
-        If not set, infer the scale for this single use (without setting global state),
-        and track the inference for later resolution.
-        """
-        if field == VorbisField.FMPS_RATING:
-            scale = self.fmps_rating_scale
-        elif field == VorbisField.RATING:
-            scale = self.rating_scale
-        else:
-            return None
-
-        # If scale is known, apply it
-        if scale:
-            return self._normalize_by_scale(value, scale)
-
-        # Else infer one just for this value
-        inferred = self._infer_scale(value, field)
-        return self._normalize_by_scale(value, inferred) if inferred else None
-
-    def _native_rating(self, normalized: float, field: str) -> str:
-        """Convert normalized 0-1 rating to appropriate scale for the target field."""
-        scale = self.fmps_rating_scale if field.upper() == VorbisField.FMPS_RATING else self.rating_scale
-
-        if scale == RatingScale.NORMALIZED:
-            return round(normalized, 3)
-        elif scale == RatingScale.ZERO_TO_FIVE:
-            return round(normalized * 5.0, 1)
-        elif scale == RatingScale.ZERO_TO_HUNDRED:
-            return round(normalized * 100.0)
-        else:
-            self.logger.warning(f"Unknown scale for {field}, writing as normalized")
-            return round(normalized, 3)
 
     def _print_summary(self) -> None:
         print("\nFLAC, OGG (and other Vorbis formats) Ratings:")
@@ -440,34 +323,12 @@ class VorbisHandler(AudioTagHandler):
                 for scale, count in counts.items():
                     print(f"      - {scale.title()}: {count}")
 
-        # TODO: any stats that need summarized should be collected with mgr.stats
-        # ambiguous = deferral_info.get("ambiguous", 0)
-        # conflict = deferral_info.get("conflict", 0)
-        # if ambiguous:
-        #     print(f"  Files with ambiguous ratings: {ambiguous}")
-        # if conflict:
-        #     print(f"  Files with conflicting ratings: {conflict}")
-
         if self.conflict_resolution_strategy:
             print("\n  Conflict Resolution Strategy:")
             print(f"    {self.conflict_resolution_strategy.display}")
 
 
 class ID3Handler(AudioTagHandler):
-    RATING_MAP = [
-        (0, 0),
-        (0.1, 13),
-        (0.2, 32),
-        (0.3, 54),
-        (0.4, 64),
-        (0.5, 118),
-        (0.6, 128),
-        (0.7, 186),
-        (0.8, 196),
-        (0.9, 242),
-        (1, 255),
-    ]
-
     def __init__(self, tagging_policy: Optional[dict] = None, **kwargs):
         super().__init__(tagging_policy=tagging_policy, **kwargs)
 
@@ -478,60 +339,24 @@ class ID3Handler(AudioTagHandler):
     # Rating Normalization and Mapping
     # ------------------------------
 
-    @classmethod
-    def rating_to_popm(cls, rating: float) -> float:
-        for val, byte in reversed(cls.RATING_MAP):
-            if rating >= val:
-                return byte
-        return 0
-
-    @classmethod
-    def rating_from_popm(cls, popm_value: int) -> float:
-        """Convert a POPM byte value (0-255) back to a rating (0-5)."""
-        if popm_value == 0:
-            return 0
-
-        best_diff = float("inf")
-        best_rating = 0.0
-
-        for rating, byte in cls.RATING_MAP:
-            diff = abs(popm_value - byte)
-            if diff < best_diff:
-                best_diff = diff
-                best_rating = rating
-
-        return best_rating
-
-    def _manual_conflict_resolution(self, ratings: dict[str, float]) -> Optional[float]:
+    def _manual_conflict_resolution(self, ratings: dict[str, Rating]) -> Optional[Rating]:
         print("\nConflicting ratings detected (ID3):")
         for tag_key, rating in ratings.items():
-            print(f"  {self.tag_registry.display_name_for_id3_tag(tag_key):<30} : {self.get_5star_rating(rating):<5}")
+            print(f"  {self.tag_registry.display_name_for_id3_tag(tag_key):<30} : {rating.to_display():<5}")
+
         while True:
             choice = input("Select the correct rating (0-5, half-star increments allowed): ").strip()
-            try:
-                selected = float(choice)
-                if 0 <= selected <= 5 and (selected * 2).is_integer():
-                    return round(selected / 5, 3)
-            except ValueError:
-                pass
+            validated = Rating.validate(choice, scale=RatingScale.ZERO_TO_FIVE)
+            if validated is not None:
+                return Rating(choice, scale=RatingScale.ZERO_TO_FIVE)
             print("Invalid input. Please enter a number between 0 and 5 in half-star increments.")
-
-    def _extract_rating_value(self, id3_tag: str, frame: Union[POPM, TXXX]) -> Optional[float]:
-        if isinstance(frame, POPM):
-            return self.rating_from_popm(frame.rating) if frame.rating else None
-        elif isinstance(frame, TXXX) and id3_tag.upper() == "TXXX:RATING":
-            try:
-                return float(frame.text[0]) / 5
-            except (ValueError, IndexError):
-                return None
-        return None
 
     # ------------------------------
     # Rating Conflict Handling
     # ------------------------------
-    def _resolve_rating(self, context: dict) -> Optional[float]:
+    def _resolve_rating(self, context: dict) -> Optional[Rating]:
         """Resolve normalized rating from multiple ID3 tags using conflict strategy."""
-        ratings: dict[str, float] = {}
+        ratings: dict[str, Rating] = {}
 
         normalized = context.get("normalized", {})
 
@@ -557,7 +382,7 @@ class ID3Handler(AudioTagHandler):
         track = AudioTag.from_id3(audio_file.tags, audio_file.filename, duration=int(audio_file.info.length))
 
         raw: dict[str, Optional[str]] = {}
-        normalized: dict[str, Optional[float]] = {}
+        normalized: dict[str, Optional[Rating]] = {}
 
         for tag_key, frame in audio_file.tags.items():
             if not (tag_key.startswith("POPM:") or tag_key == "TXXX:RATING"):
@@ -575,7 +400,8 @@ class ID3Handler(AudioTagHandler):
                 raw_value = None
 
             raw[key] = raw_value
-            normalized[key] = self._normalize_raw_rating(tag_key, raw_value)
+            scale = RatingScale.ZERO_TO_FIVE if tag_key.upper() == "TXXX:RATING" else RatingScale.POPM
+            normalized[key] = Rating(raw_value, scale=scale) if raw_value is not None else None
 
         return track, {
             "raw": raw,
@@ -583,27 +409,7 @@ class ID3Handler(AudioTagHandler):
             "handler": self,
         }
 
-    def _normalize_raw_rating(self, tag_key: str, raw_value: Optional[str]) -> Optional[float]:
-        """Normalize a raw rating using tag type awareness (TXXX or POPM)."""
-        if raw_value is None:
-            return None
-
-        try:
-            val = float(raw_value)
-        except (ValueError, TypeError):
-            return None
-
-        tag_upper = tag_key.upper()
-        if tag_upper == "TXXX:RATING":
-            return round(val / 5.0, 3)
-
-        if tag_upper.startswith("POPM:"):
-            return self.rating_from_popm(int(val))
-
-        self.logger.warning(f"Unknown tag type for normalization: {tag_key}")
-        return None
-
-    def apply_tags(self, audio_file: mutagen.FileType, metadata: dict, rating: Optional[float] = None) -> mutagen.FileType:
+    def apply_tags(self, audio_file: mutagen.FileType, metadata: dict, rating: Optional[Rating] = None) -> mutagen.FileType:
         """Write or update tags (album, artist, rating frames) to the audio_file."""
         if metadata:
             for key, value in metadata.items():
@@ -639,8 +445,8 @@ class ID3Handler(AudioTagHandler):
 
         return audio_file
 
-    def apply_rating(self, audio_file: mutagen.FileType, rating: float, tag_keys: set[str]) -> mutagen.FileType:
-        self.logger.debug(f"Applying normalized rating {rating} to file: {audio_file.filename}")
+    def apply_rating(self, audio_file: mutagen.FileType, rating: Rating, tag_keys: set[str]) -> mutagen.FileType:
+        self.logger.debug(f"Applying normalized rating {rating.to_display()} to file: {audio_file.filename}")
 
         for tag_key in tag_keys:
             if not tag_key:
@@ -653,7 +459,7 @@ class ID3Handler(AudioTagHandler):
 
             # Determine tag type and apply rating
             if tag.upper() == "TXXX:RATING":
-                txt_rating = str(self.get_5star_rating(rating))
+                txt_rating = rating.to_str(RatingScale.ZERO_TO_FIVE)
                 if tag in audio_file.tags:
                     self.logger.debug(f"Updating TXXX:RATING ({tag_key}) to value: {txt_rating}")
                     audio_file.tags[tag].text = [txt_rating]
@@ -663,7 +469,7 @@ class ID3Handler(AudioTagHandler):
                     audio_file.tags.add(new_txxx)
 
             elif tag.upper().startswith("POPM:"):
-                popm_rating = int(self.rating_to_popm(rating))
+                popm_rating = rating.to_int(RatingScale.POPM)
                 popm_email = self.tag_registry.get_popm_email_for_key(tag_key)
                 if tag in audio_file.tags:
                     self.logger.debug(f"Updating POPM ({tag_key}) rating to: {popm_rating}")
@@ -771,7 +577,7 @@ class ID3Handler(AudioTagHandler):
                             track = conflict["track"]
                             print(f"\n{track.artist} | {track.album} | {track.title}")
                             for tag_key, rating in conflict["normalized"].items():
-                                print(f"\t{self.tag_registry.display_name_for_id3_tag(tag_key):<30} : {self.get_5star_rating(rating):<5}")
+                                print(f"\t{self.tag_registry.display_name_for_id3_tag(tag_key):<30} : {rating.to_display():<5}")
                         print("")
                         continue
                     elif choice_num == len(ConflictResolutionStrategy) + 2:
@@ -1007,7 +813,7 @@ class FileSystemProvider:
         self.logger.debug(f"Successfully read metadata for {file_path}")
         return tag
 
-    def update_metadata_in_file(self, file_path: Union[Path, str], metadata: Optional[dict] = None, rating: Optional[float] = None) -> Optional[mutagen.File]:
+    def update_metadata_in_file(self, file_path: Union[Path, str], metadata: Optional[dict] = None, rating: Optional[Rating] = None) -> Optional[mutagen.File]:
         """Update metadata and/or rating in the audio file."""
         file_path = Path(file_path)
         if not file_path.exists():
