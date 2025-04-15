@@ -7,6 +7,7 @@ from typing import List, Optional, Union
 import mutagen
 from mutagen.id3 import POPM, TXXX, ID3FileType
 
+from manager import get_manager
 from manager.config_manager import ConflictResolutionStrategy, TagWriteStrategy
 from ratings import Rating, RatingScale
 from sync_items import AudioTag, Playlist
@@ -110,10 +111,8 @@ class ID3TagRegistry:
 
 class AudioTagHandler(abc.ABC):
     def __init__(self, tagging_policy: Optional[dict] = None, **kwargs):
-        from manager import manager
-
-        self.mgr = manager
         self.logger = logging.getLogger(f"PlexSync.{self.__class__.__name__}")
+        self.stats_mgr = get_manager().get_stats_manager()
 
         self.conflict_resolution_strategy = tagging_policy.get("conflict_resolution_strategy") if tagging_policy else None
         self.tag_write_strategy = tagging_policy.get("tag_write_strategy") if tagging_policy else None
@@ -129,7 +128,7 @@ class AudioTagHandler(abc.ABC):
         """Decide on strategies or settings to resolve ratings during second pass."""
         raise NotImplementedError("Subclasses must implement this method.")
 
-    def _resolve_normalized_conflict(self, ratings_by_tag_key: dict[str, Rating]) -> Optional[Rating]:
+    def _resolve_conflict(self, ratings_by_tag_key: dict[str, Rating], track: AudioTag) -> Optional[Rating]:
         """Resolve a normalized rating from tag_key → rating mappings using the configured strategy."""
         strategy = self.conflict_resolution_strategy
         if not strategy:
@@ -140,7 +139,7 @@ class AudioTagHandler(abc.ABC):
             strategy = ConflictResolutionStrategy.HIGHEST
 
         if strategy == ConflictResolutionStrategy.CHOICE:
-            return self._manual_conflict_resolution(ratings_by_tag_key)
+            return self._manual_conflict_resolution(ratings_by_tag_key, track)
 
         if strategy == ConflictResolutionStrategy.PRIORITIZED_ORDER:
             if not self.tag_priority_order:
@@ -164,9 +163,8 @@ class AudioTagHandler(abc.ABC):
         self.logger.warning(f"Unsupported conflict strategy: {strategy}")
         return None
 
-    # TODO: this needs track details for display purposes
     @abc.abstractmethod
-    def _manual_conflict_resolution(self, ratings_by_tag_key: dict[str, Rating]) -> Optional[Rating]:
+    def _manual_conflict_resolution(self, ratings_by_tag_key: dict[str, Rating], track: AudioTag) -> Optional[Rating]:
         """Interactive user choice for resolving conflicting ratings."""
         raise NotImplementedError("Subclasses must implement this method.")
 
@@ -234,8 +232,9 @@ class VorbisHandler(AudioTagHandler):
     def can_handle(self, file: mutagen.FileType) -> bool:
         return hasattr(file, "tags") and (VorbisField.RATING in file.tags or VorbisField.FMPS_RATING in file.tags)
 
-    def _manual_conflict_resolution(self, ratings: dict[str, Rating]) -> Optional[Rating]:
-        print("\nConflicting ratings detected (Vorbis):")
+    def _manual_conflict_resolution(self, ratings: dict[str, Rating], track: AudioTag) -> Optional[Rating]:
+        print("\nConflicting ratings detected:")
+        print(track.details())
         for tag, rating in ratings.items():
             print(f"  {tag:<20} : {rating.to_display():<5}")
 
@@ -277,13 +276,13 @@ class VorbisHandler(AudioTagHandler):
         if not ratings:
             return None
 
-        return self._resolve_normalized_conflict(ratings)
+        return self._resolve_normalized_conflict(ratings, context.get("track"))
 
     def finalize_rating_strategy(self, conflicts: list[dict]) -> None:
         self._print_summary()
 
         def resolve_scale_for(field: str) -> Optional[RatingScale]:
-            field_stats = self.mgr.stats.get(f"VorbisHandler::scale_inferred::{field}")
+            field_stats = self.stats_mgr.get(f"VorbisHandler::scale_inferred::{field}")
             if not field_stats:
                 return None
             max_count = max(field_stats.values())
@@ -312,8 +311,8 @@ class VorbisHandler(AudioTagHandler):
         print("\nFLAC, OGG (and other Vorbis formats) Ratings:")
 
         # Inferred Scales
-        rating_counts = self.mgr.stats.get("VorbisHandler::scale_inferred::RATING")
-        fmps_counts = self.mgr.stats.get("VorbisHandler::scale_inferred::FMPS_RATING")
+        rating_counts = self.stats_mgr.get("VorbisHandler::scale_inferred::RATING")
+        fmps_counts = self.stats_mgr.get("VorbisHandler::scale_inferred::FMPS_RATING")
 
         if rating_counts or fmps_counts:
             print("  Inferred Rating Scales:")
@@ -355,8 +354,9 @@ class ID3Handler(AudioTagHandler):
     # Rating Normalization and Mapping
     # ------------------------------
 
-    def _manual_conflict_resolution(self, ratings: dict[str, Rating]) -> Optional[Rating]:
-        print("\nConflicting ratings detected (ID3):")
+    def _manual_conflict_resolution(self, ratings: dict[str, Rating], track: AudioTag) -> Optional[Rating]:
+        print("\nConflicting ratings detected:")
+        print(track.details())
         for tag_key, rating in ratings.items():
             print(f"  {self.tag_registry.display_name(tag_key):<30} : {rating.to_display():<5}")
 
@@ -406,7 +406,7 @@ class ID3Handler(AudioTagHandler):
 
             key = self.tag_registry.register(tag_key)
             self.discovered_rating_tags.add(key)
-            self.mgr.stats.increment(f"FileSystemPlayer::tags_used::{key}")
+            self.stats_mgr.increment(f"FileSystemPlayer::tags_used::{key}")
 
             if isinstance(frame, POPM):
                 raw_value = str(frame.rating)
@@ -538,7 +538,7 @@ class ID3Handler(AudioTagHandler):
     def _print_summary(self) -> None:
         print("\nMP3 Ratings:")
 
-        tag_keys_used = self.mgr.stats.get("FileSystemPlayer::tags_used")
+        tag_keys_used = self.stats_mgr.get("FileSystemPlayer::tags_used")
         if tag_keys_used:
             print("  Ratings Found:")
             for tag_key, count in tag_keys_used.items():
@@ -566,7 +566,7 @@ class ID3Handler(AudioTagHandler):
 
     def finalize_rating_strategy(self, conflicts: list[dict]) -> None:
         """Interactively resolve strategies and settings for rating conflicts."""
-        tag_keys_used = self.mgr.stats.get("FileSystemPlayer::tags_used")
+        tag_keys_used = self.stats_mgr.get("FileSystemPlayer::tags_used")
         if not tag_keys_used:
             return
 
@@ -670,11 +670,12 @@ class ID3Handler(AudioTagHandler):
                 print("\nWould you like to save these settings to config.ini for future runs?")
                 choice = input("Your choice [yes/no]: ").strip().lower()
                 if choice in {"y", "yes"}:
-                    self.mgr.config.conflict_resolution_strategy = self.conflict_resolution_strategy
-                    self.mgr.config.tag_write_strategy = self.tag_write_strategy
-                    self.mgr.config.default_tag = self.default_tag
-                    self.mgr.config.tag_priority_order = self.tag_priority_order
-                    self.mgr.config.save_config()
+                    config_mgr = get_manager().get_config_manager()
+                    config_mgr.conflict_resolution_strategy = self.conflict_resolution_strategy
+                    config_mgr.tag_write_strategy = self.tag_write_strategy
+                    config_mgr.default_tag = self.default_tag
+                    config_mgr.tag_priority_order = self.tag_priority_order
+                    config_mgr.save_config()
                     break
                 elif choice in {"n", "no"}:
                     break
@@ -688,16 +689,15 @@ class FileSystemProvider:
     PLAYLIST_EXT = {".m3u", ".m3u8", ".pls"}
 
     def __init__(self):
-        from manager import manager
-
-        self.mgr = manager
-
         self.logger = logging.getLogger("PlexSync.FileSystemProvider")
+        mgr = get_manager()
+        self.config_mgr = mgr.get_config_manager()
+        self.status_mgr = mgr.get_status_manager()
         self._audio_files = []
         self._playlist_files = []
         self.deferred_tracks = []
 
-        self.id3_handler = ID3Handler(tagging_policy=self.mgr.config.to_dict())
+        self.id3_handler = ID3Handler(tagging_policy=self.config_mgr.config.to_dict())
         self.vorbis_handler = VorbisHandler()
         self._handlers = [self.id3_handler, self.vorbis_handler]
 
@@ -725,7 +725,7 @@ class FileSystemProvider:
 
     def _save_track(self, audio_file: mutagen.FileType) -> bool:
         """Helper function to save changes to an audio file."""
-        if self.mgr.config.dry:
+        if self.config_mgr.dry:
             self.logger.info(f"Dry run enabled. Changes to {audio_file.filename} will not be saved.")
             return True  # Simulate a successful save
 
@@ -745,7 +745,7 @@ class FileSystemProvider:
     # ------------------------------
     def scan_audio_files(self) -> List[Path]:
         """Scan directory structure for audio files."""
-        path = self.mgr.config.path
+        path = self.config_mgr.path
 
         if not path:
             self.logger.error("Path is required for filesystem player")
@@ -757,7 +757,7 @@ class FileSystemProvider:
             raise FileNotFoundError(f"Music directory not found: {path}")
 
         self.logger.info(f"Scanning {path} for audio files...")
-        bar = self.mgr.status.start_phase("Collecting audio files", total=None)
+        bar = self.status_mgr.start_phase("Collecting audio files", total=None)
 
         for file_path in self.path.rglob("*"):
             if file_path.suffix.lower() in self.TRACK_EXT:
@@ -770,12 +770,12 @@ class FileSystemProvider:
 
     def scan_playlist_files(self) -> List[Path]:
         """Scan and list all playlist files in the directory."""
-        playlist_path = self.mgr.config.playlist_path
+        playlist_path = self.config_mgr.playlist_path
         self.playlist_path = Path(playlist_path) if playlist_path else self.path
         self.playlist_path.mkdir(exist_ok=True)
         # TODO: add support for m3u8 and pls
 
-        bar = self.mgr.status.start_phase("Collecting audio files", total=None)
+        bar = self.status_mgr.start_phase("Collecting audio files", total=None)
 
         for file_path in self.playlist_path.rglob("*"):
             if file_path.suffix.lower() in self.PLAYLIST_EXT:
@@ -791,7 +791,7 @@ class FileSystemProvider:
             handler.finalize_rating_strategy(self.deferred_tracks)
 
         resolved_tracks = []
-        bar = self.mgr.status.start_phase("Resolving rating conflicts", total=len(self.deferred_tracks)) if len(self.deferred_tracks) > 100 else None
+        bar = self.status_mgr.start_phase("Resolving rating conflicts", total=len(self.deferred_tracks)) if len(self.deferred_tracks) > 100 else None
 
         for deferred in self.deferred_tracks:
             track = deferred["track"]
@@ -952,16 +952,21 @@ class FileSystemProvider:
     def remove_track_from_playlist(self, playlist_path: str, track: Path) -> None:
         """Remove a track from a playlist."""
         playlist_path = Path(playlist_path)
-        raise NotImplementedError
         try:
             lines = []
+            track_relative = track.relative_to(self.path) if track.is_absolute() else track
+            track_absolute = track.resolve()
+
             with playlist_path.open("r", encoding="utf-8") as file:
                 for line in file:
-                    # TODO: Handle both relative and absolute paths
-                    if line.strip() != str(Path(track.file_path).relative_to(self.path)):
-                        lines.append(line)
+                    line = line.strip()
+                    # Skip lines that match either the relative or absolute path of the track
+                    if line != str(track_relative) and line != str(track_absolute):
+                        lines.append(line + "\n")
+
             with playlist_path.open("w", encoding="utf-8") as file:
                 file.writelines(lines)
-            self.logger.info(f"Removed track {track.file_path} from playlist {playlist_path}")
+
+            self.logger.info(f"Removed track {track} from playlist {playlist_path}")
         except Exception as e:
             self.logger.error(f"Failed to remove track from playlist {playlist_path}: {e}")

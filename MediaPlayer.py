@@ -12,6 +12,7 @@ from plexapi.exceptions import BadRequest, NotFound
 from plexapi.myplex import MyPlexAccount
 
 from filesystem_provider import FileSystemProvider
+from manager import get_manager
 from manager.config_manager import SyncItem
 from ratings import Rating, RatingScale
 from sync_items import AudioTag, Playlist
@@ -35,9 +36,10 @@ class MediaPlayer(abc.ABC):
     rating_scale = None
 
     def __init__(self):
-        from manager import manager
-
-        self.mgr = manager
+        mgr = get_manager()
+        self.config_mgr = mgr.get_config_manager()
+        self.cache_mgr = mgr.get_cache_manager()
+        self.status_mgr = mgr.get_status_manager()
 
     def __str__(self) -> int:
         return self.name()
@@ -117,7 +119,7 @@ class MediaPlayer(abc.ABC):
 
         if len(updates) > 0:
             self.logger.info(f"Syncing {len(updates)} changes to playlist '{playlist.name}'")
-            bar = self.mgr.status.start_phase("Syncing playlist updates", total=len(updates))
+            bar = self.status_mgr.start_phase("Syncing playlist updates", total=len(updates))
             for track, present in updates:
                 self.update_playlist(playlist, track, present)
                 bar.update()
@@ -202,11 +204,11 @@ class MediaMonkey(MediaPlayer):
     rating_scale = RatingScale.ZERO_TO_HUNDRED
 
     def __init__(self):
+        super().__init__()
         self.logger = logging.getLogger("PlexSync.MediaMonkey")
         self.sdb = None
         self.abbr = "MM"
         self.playlists = {}
-        super().__init__()
 
     @staticmethod
     def name() -> str:
@@ -243,7 +245,7 @@ class MediaMonkey(MediaPlayer):
                 current_playlist = current_playlist.CreateChildPlaylist(part)
         # Add tracks to the final playlist
         if tracks:
-            bar = self.mgr.status.start_phase(f"Adding tracks to playlist {title}", total=len(tracks))
+            bar = self.status_mgr.start_phase(f"Adding tracks to playlist {title}", total=len(tracks))
             for track in tracks:
                 try:
                     song = self.sdb.Database.QuerySongs(f"ID={track.ID}").Item
@@ -285,7 +287,7 @@ class MediaMonkey(MediaPlayer):
             bar = None
             for j in range(native_playlist.Tracks.Count):
                 if not bar and native_playlist.Tracks.Count > 100:
-                    bar = self.mgr.status.start_phase(f"Reading tracks from playlist {playlist.name}", total=native_playlist.Tracks.Count)
+                    bar = self.status_mgr.start_phase(f"Reading tracks from playlist {playlist.name}", total=native_playlist.Tracks.Count)
                 playlist.tracks.append(track := self._read_track_metadata(native_playlist.Tracks[j]))
                 if bar:
                     bar.update()
@@ -312,7 +314,7 @@ class MediaMonkey(MediaPlayer):
         return playlist
 
     def _read_track_metadata(self, track: MediaMonkeyTrack) -> AudioTag:
-        cached = self.mgr.cache.get_metadata(self.name(), track.ID)
+        cached = self.cache_mgr.get_metadata(self.name(), track.ID)
         if cached is not None:
             return cached
 
@@ -326,7 +328,7 @@ class MediaMonkey(MediaPlayer):
             track=track.TrackOrder,
             duration=int(track.SongLength / 1000) if track.SongLength else -1,
         )
-        self.mgr.cache.set_metadata(self.name(), tag.ID, tag)
+        self.cache_mgr.set_metadata(self.name(), tag.ID, tag)
 
         return tag
 
@@ -341,7 +343,7 @@ class MediaMonkey(MediaPlayer):
         elif key == "query":
             query = value
         elif key == "id":
-            if not return_native and (cached := self.mgr.cache.get_metadata(self.name(), str(value))):
+            if not return_native and (cached := self.cache_mgr.get_metadata(self.name(), str(value))):
                 return [cached]
             query = f"ID = {value}"
         else:
@@ -361,7 +363,7 @@ class MediaMonkey(MediaPlayer):
             it.Next()
             counter += 1
             if counter >= 50 and not bar:
-                bar = self.mgr.status.start_phase(f"Collecting tracks from {self.name()}", initial=counter, total=None)
+                bar = self.status_mgr.start_phase(f"Collecting tracks from {self.name()}", initial=counter, total=None)
             bar.update() if bar else None
         bar.close() if bar else None
         return results
@@ -420,12 +422,12 @@ class PlexPlayer(MediaPlayer):
     album_empty_alias = "[Unknown Album]"
 
     def __init__(self):
+        super().__init__()
         self.logger = logging.getLogger("PlexSync.PlexPlayer")
         self.abbr = "PP"
         self.account = None
         self.plex_api_connection = None
         self.music_library = None
-        super().__init__()
 
     @staticmethod
     def name() -> str:
@@ -439,14 +441,14 @@ class PlexPlayer(MediaPlayer):
             return " - ".join([track.artist, track.album, track.title])
 
     def connect(self) -> None:
-        server = self.mgr.config.server
-        username = self.mgr.config.username
-        password = self.mgr.config.passwd
-        token = self.mgr.config.token
-        if not self.mgr.config.token and not self.mgr.config.passwd:
+        server = self.config_mgr.server
+        username = self.config_mgr.username
+        password = self.config_mgr.passwd
+        token = self.config_mgr.token
+        if not self.config_mgr.token and not self.config_mgr.passwd:
             self.logger.error("Plex token or password is required for Plex player")
             raise
-        if not self.mgr.config.server or not self.mgr.config.username:
+        if not self.config_mgr.server or not self.config_mgr.username:
             self.logger.error("Plex server and username are required for Plex player")
             raise
 
@@ -513,7 +515,7 @@ class PlexPlayer(MediaPlayer):
             album=track.parentTitle,
             title=track.title,
             file_path=track.locations[0],
-            rating=Rating.try_create(track.userRating, scale=self.rating_scale) or 0,
+            rating=Rating.try_create(track.userRating, scale=self.rating_scale) or Rating(0),
             ID=track.key.split("/")[-1] if "/" in track.key else track.key,
             track=track.index,
             duration=int(track.duration / 1000) if track.duration else -1,  # Convert ms to seconds
@@ -549,7 +551,7 @@ class PlexPlayer(MediaPlayer):
         if not playlist.is_auto_playlist:
             for item in native_playlist.items():
                 if not bar and len(native_playlist.items()) > 100:
-                    bar = self.mgr.status.start_phase(f"Reading tracks from playlist {playlist.name}", total=len(native_playlist.items()))
+                    bar = self.status_mgr.start_phase(f"Reading tracks from playlist {playlist.name}", total=len(native_playlist.items()))
                 playlist.tracks.append(self._read_track_metadata(item))
                 bar.update() if bar else None
                 self.logger.debug(f"Reading track {item} from playlist {playlist.name}") if bar else None
@@ -610,7 +612,7 @@ class PlexPlayer(MediaPlayer):
         tracks = []
         bar = None
         if len(matches) >= 500:
-            bar = self.mgr.status.start_phase(f"Reading track metadata from {self.name()}", total=len(matches))
+            bar = self.status_mgr.start_phase(f"Reading track metadata from {self.name()}", total=len(matches))
 
         for match in matches:
             bar.update() if bar else None
@@ -699,34 +701,33 @@ class FileSystemPlayer(MediaPlayer):
         self.fsp = FileSystemProvider()
 
         self.fsp.scan_audio_files()
-        if SyncItem.PLAYLISTS in self.mgr.config.sync:
+        if SyncItem.PLAYLISTS in self.config_mgr.sync:
             self.fsp.scan_playlist_files()
 
-        bar = self.mgr.status.start_phase(f"Reading track metadata from {self.name()}", total=len(self.fsp._audio_files))
+        bar = self.status_mgr.start_phase(f"Reading track metadata from {self.name()}", total=len(self.fsp._audio_files))
         for file_path in self.fsp.get_tracks():
             self._read_track_metadata(file_path)
             bar.update()
         bar.close()
 
         finalizing_tracks = self.fsp.finalize_scan()
-        bar = self.mgr.status.start_phase(f"Finalizing track indexing from {self.name()}", total=len(finalizing_tracks)) if finalizing_tracks else None
+        bar = self.status_mgr.start_phase(f"Finalizing track indexing from {self.name()}", total=len(finalizing_tracks)) if finalizing_tracks else None
         for track in finalizing_tracks:
-            self.mgr.cache.set_metadata(self.name(), track.ID, track)
+            self.cache_mgr.set_metadata(self.name(), track.ID, track)
             bar.update()
         bar.close() if bar else None
-        # TODO: add playlist scanning
 
     def _read_track_metadata(self, file_path: Union[Path, str]) -> AudioTag:
         """Retrieve metadata from cache or read from file."""
         str_path = str(file_path)
 
-        cached = self.mgr.cache.get_metadata(self.name(), str_path, force_enable=True)
+        cached = self.cache_mgr.get_metadata(self.name(), str_path, force_enable=True)
         if cached:
             self.logger.debug(f"Cache hit for {file_path}")
             return cached
 
         tag = self.fsp.read_metadata_from_file(file_path)
-        self.mgr.cache.set_metadata(self.name(), tag.ID, tag, force_enable=True) if tag else None
+        self.cache_mgr.set_metadata(self.name(), tag.ID, tag, force_enable=True) if tag else None
         return tag
 
     def _search_tracks(self, key: str, value: Union[bool, str]) -> List[AudioTag]:
@@ -735,18 +736,18 @@ class FileSystemPlayer(MediaPlayer):
         tracks = []
 
         if key == "id":
-            tracks = [self.mgr.cache.get_metadata(self.name(), value, force_enable=True)]
+            tracks = [self.cache_mgr.get_metadata(self.name(), value, force_enable=True)]
         elif key == "title":
-            mask = self.mgr.cache.metadata_cache.cache[key].apply(lambda x: fuzz.ratio(str(x).lower(), str(value).lower()) >= self.SEARCH_THRESHOLD)
-            tracks = self.mgr.cache.get_tracks_by_filter(mask)
+            mask = self.cache_mgr.metadata_cache.cache[key].apply(lambda x: fuzz.ratio(str(x).lower(), str(value).lower()) >= self.SEARCH_THRESHOLD)
+            tracks = self.cache_mgr.get_tracks_by_filter(mask)
         elif key == "rating":
             if value is True:
                 value = 0
-                rating_mask = self.mgr.cache.metadata_cache.cache["rating"].notna()
+                rating_mask = self.cache_mgr.metadata_cache.cache["rating"].notna()
             else:
-                rating_mask = self.mgr.cache.metadata_cache.cache["rating"] > Rating(value, scale=RatingScale.ZERO_TO_FIVE).to_float(RatingScale.NORMALIZED)
-            mask = (self.mgr.cache.metadata_cache.cache["player_name"] == self.name()) & rating_mask & (self.mgr.cache.metadata_cache.cache["rating"] > float(value))
-            tracks = self.mgr.cache.get_tracks_by_filter(mask)
+                rating_mask = self.cache_mgr.metadata_cache.cache["rating"] > Rating(value, scale=RatingScale.ZERO_TO_FIVE).to_float(RatingScale.NORMALIZED)
+            mask = (self.cache_mgr.metadata_cache.cache["player_name"] == self.name()) & rating_mask & (self.cache_mgr.metadata_cache.cache["rating"] > float(value))
+            tracks = self.cache_mgr.get_tracks_by_filter(mask)
 
         self.logger.debug(f"Found {len(tracks)} tracks for {key}={value}")
 
@@ -760,7 +761,7 @@ class FileSystemPlayer(MediaPlayer):
         try:
             self.fsp.update_metadata_in_file(file_path=track.file_path, rating=rating)
             track.rating = rating
-            self.mgr.cache.set_metadata(self.name(), track.ID, track, force_enable=True)
+            self.cache_mgr.set_metadata(self.name(), track.ID, track, force_enable=True)
             self.logger.info(f"Successfully updated rating for {track}")
         except Exception as e:
             self.logger.error(f"Failed to update rating: {e}")
@@ -774,7 +775,7 @@ class FileSystemPlayer(MediaPlayer):
         bar = None
         if playlist:
             if len(tracks) > 100:
-                bar = self.mgr.status.start_phase(f"Adding tracks to playlist {title}", total=len(tracks))
+                bar = self.status_mgr.start_phase(f"Adding tracks to playlist {title}", total=len(tracks))
             for track in tracks:
                 self._add_track_to_playlist(playlist, track)
                 bar.update() if bar else None
@@ -804,7 +805,7 @@ class FileSystemPlayer(MediaPlayer):
         tracks = self.fsp.get_tracks_from_playlist(playlist.file_path)
         bar = None
         if len(tracks) >= 100:
-            bar = self.mgr.status.start_phase(f"Reading tracks from playlist {playlist.name}", total=len(tracks))
+            bar = self.status_mgr.start_phase(f"Reading tracks from playlist {playlist.name}", total=len(tracks))
         for track in tracks:
             playlist.tracks.append(self._read_track_metadata(track))
             bar.update() if bar else None

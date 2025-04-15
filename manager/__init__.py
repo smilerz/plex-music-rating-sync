@@ -9,6 +9,7 @@ if TYPE_CHECKING:
 
 class Manager:
     _instance = None
+    _initialized = None
 
     def __new__(self) -> "Manager":
         if self._instance is None:
@@ -21,30 +22,33 @@ class Manager:
         from .log_manager import LogManager
         from .stats_manager import StatsManager, StatusManager
 
-        self.config = ConfigManager()
-        self.log = LogManager()
-        self.stats = StatsManager()
-        self.status = StatusManager()
-        self.cache = CacheManager()
+        if self._initialized:
+            return
 
-        self.logger = self.log.setup_logging(self.config.log)
+        self._config = ConfigManager()
+        self._log = LogManager()
+        self._stats = StatsManager()
+        self._status = StatusManager()
+        self._cache = CacheManager()
 
-    def get_log_manager(self) -> "LogManager":
-        return self.log
+        self._logger = self._log.setup_logging(self._config.log)
+        self._initialized = True
 
     def get_stats_manager(self) -> "StatsManager":
-        return self.stats
+        return self._stats
 
     def get_status_manager(self) -> "StatusManager":
-        return self.status
+        return self._status
 
     def get_cache_manager(self) -> "CacheManager":
-        return self.cache
+        return self._cache
 
     def get_config_manager(self) -> "ConfigManager":
-        return self.config
+        return self._config
 
 
-# TODO: refactor to get_manager()
-# Singleton instance
-manager = Manager()
+def get_manager() -> Manager:
+    return Manager()
+
+
+manager = get_manager()

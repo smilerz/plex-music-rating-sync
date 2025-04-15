@@ -86,7 +86,6 @@ class TagWriteStrategy(ConfigEnum):
         }
 
 
-# TODO: make choice an option?  update AudioFileManager to filter acceptable options
 class ConflictResolutionStrategy(ConfigEnum):
     PRIORITIZED_ORDER = "prioritized_order"
     HIGHEST = "highest"

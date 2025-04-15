@@ -6,6 +6,7 @@ from typing import List, Optional
 
 import pandas as pd
 
+from manager import get_manager
 from MediaPlayer import FileSystemPlayer, MediaMonkey, PlexPlayer
 from sync_items import AudioTag
 
@@ -103,11 +104,11 @@ class CacheManager:
 
     def __init__(self) -> None:
         """Initialize cache manager"""
-        from manager import manager
-
-        self.mgr = manager
+        mgr = get_manager()
+        self.config_mgr = mgr.get_config_manager()
+        self.stats_mgr = mgr.get_stats_manager()
         self.logger = logging.getLogger("PlexSync.CacheManager")
-        self.mode = self.mgr.config.cache_mode
+        self.mode = self.config_mgr.cache_mode
         self.metadata_cache = None
         self.match_cach = None
 
@@ -199,7 +200,7 @@ class CacheManager:
         match = self._safe_get_value(row, dest_name)
         score = self._safe_get_value(row, "score")
         self.logger.debug(f"Match Cache hit: {match} (score: {score}) for source_id: {source_id}")
-        self.mgr.stats.increment("cache_hits")
+        self.stats_mgr.increment("cache_hits")
         return match, score
 
     def set_match(self, source_id: str, dest_id: str, source_name: str, dest_name: str, score: Optional[float] = None) -> None:
@@ -248,7 +249,7 @@ class CacheManager:
         # Convert row data to AudioTag
         data = {key: self._safe_get_value(row, key) for key in row.columns}
         self.logger.debug(f"Metadata cache hit for {player_name}:{track_id}")
-        self.mgr.stats.increment("cache_hits")
+        self.stats_mgr.increment("cache_hits")
         return AudioTag.from_dict(data)
 
     ### METADATA CACHING (NON-PERSISTENT) ###

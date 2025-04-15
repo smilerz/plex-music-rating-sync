@@ -6,6 +6,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 from fuzzywuzzy import fuzz
 
+from manager import get_manager
 from MediaPlayer import MediaPlayer
 from ratings import Rating, RatingScale
 from sync_items import AudioTag, Playlist
@@ -42,23 +43,11 @@ class SyncPair(abc.ABC):
     sync_state = SyncState.UNKNOWN
 
     def __init__(self, source_player: MediaPlayer, destination_player: MediaPlayer) -> None:
-        from manager import manager
-
-        self.mgr = manager
+        mgr = get_manager()
+        self.stats_mgr = mgr.get_stats_manager()
+        self.cache_mgr = mgr.get_cache_manager()
         self.source_player: MediaPlayer = source_player
         self.destination_player: MediaPlayer = destination_player
-
-    # TODO: refactor to seperate tracks and playlists
-    def _record_match_quality(self, score: int) -> None:
-        """Track match quality statistics based on the score."""
-        if score >= MatchThresholds.PERFECT_MATCH:
-            self.mgr.stats.increment("perfect_matches")
-        elif score >= MatchThresholds.GOOD_MATCH:
-            self.mgr.stats.increment("good_matches")
-        elif score >= MatchThresholds.POOR_MATCH:
-            self.mgr.stats.increment("poor_matches")
-        else:
-            self.mgr.stats.increment("no_matches")
 
     @abc.abstractmethod
     def match(self, *args, **kwargs) -> bool:
@@ -86,6 +75,17 @@ class TrackPair(SyncPair):
         super(TrackPair, self).__init__(source_player, destination_player)
         self.logger = logging.getLogger("PlexSync.TrackPair")
         self.source = source_track
+
+    def _record_match_quality(self, score: int) -> None:
+        """Track match quality statistics based on the score."""
+        if score >= MatchThresholds.PERFECT_MATCH:
+            self.stats_mgr.increment("perfect_matches")
+        elif score >= MatchThresholds.GOOD_MATCH:
+            self.stats_mgr.increment("good_matches")
+        elif score >= MatchThresholds.POOR_MATCH:
+            self.stats_mgr.increment("poor_matches")
+        else:
+            self.stats_mgr.increment("no_matches")
 
     @staticmethod
     def display_pair_details(category: str, sync_pairs: List["TrackPair"]) -> None:
@@ -122,22 +122,22 @@ class TrackPair(SyncPair):
 
     def _get_cache_match(self) -> Optional[AudioTag]:
         """Attempt to retrieve a cached match for the current source track."""
-        if not self.mgr.cache.match_cache:
+        if not self.cache_mgr.match_cache:
             return None
 
-        cached_id, cached_score = self.mgr.cache.get_match(self.source.ID, source_name=self.source_player.name(), dest_name=self.destination_player.name())
+        cached_id, cached_score = self.cache_mgr.get_match(self.source.ID, source_name=self.source_player.name(), dest_name=self.destination_player.name())
 
         if not cached_id:
             return None
 
         candidates = self.destination_player.search_tracks(key="id", value=cached_id)
         if candidates:
-            self.mgr.stats.increment("cache_hits")
+            self.stats_mgr.increment("cache_hits")
             destination_track = candidates[0]
 
             if cached_score is None:
                 cached_score = self.similarity(destination_track)
-                self.mgr.cache.set_match(self.source.ID, destination_track.ID, self.source_player.name(), self.destination_player.name(), cached_score)
+                self.cache_mgr.set_match(self.source.ID, destination_track.ID, self.source_player.name(), self.destination_player.name(), cached_score)
 
             self.score = cached_score
             return destination_track
@@ -173,10 +173,10 @@ class TrackPair(SyncPair):
 
     def _set_cache_match(self, best_match: AudioTag, score: Optional[float] = None) -> None:
         """Store a successful match in the cache along with its score."""
-        if not self.mgr.cache.match_cache:
+        if not self.cache_mgr.match_cache:
             return
 
-        self.mgr.cache.set_match(self.source.ID, best_match.ID, self.source_player.name(), self.destination_player.name(), score)
+        self.cache_mgr.set_match(self.source.ID, best_match.ID, self.source_player.name(), self.destination_player.name(), score)
 
     def find_best_match(self, candidates: Optional[List[AudioTag]] = None, match_threshold: int = MatchThresholds.MINIMUM_ACCEPTABLE) -> Tuple[Optional[AudioTag], int]:
         """Find the best matching track from candidates or by searching."""
@@ -218,7 +218,7 @@ class TrackPair(SyncPair):
             return False
 
         self.destination = best_match
-        self.mgr.stats.increment("tracks_matched")
+        self.stats_mgr.increment("tracks_matched")
 
         src = self.rating_source = self.source.rating
         dst = self.rating_destination = self.destination.rating
@@ -312,7 +312,7 @@ class TrackPair(SyncPair):
                 self.destination_player.update_rating(self.destination, self.rating_source)
             else:
                 self.source_player.update_rating(self.source, self.rating_destination)
-            self.mgr.stats.increment("tracks_updated")
+            self.stats_mgr.increment("tracks_updated")
             return True
         return False
 
@@ -324,6 +324,7 @@ class PlaylistPair(SyncPair):
     def __init__(self, source_player: MediaPlayer, destination_player: MediaPlayer, source_playlist: Playlist) -> None:
         """Initialize playlist pair with consistent naming"""
         super(PlaylistPair, self).__init__(source_player, destination_player)
+        self.status_mgr = get_manager().get_status_manager()
         self.logger = logging.getLogger("PlexSync.PlaylistPair")
         self.source = source_playlist
 
@@ -344,7 +345,7 @@ class PlaylistPair(SyncPair):
             self.sync_state = SyncState.UP_TO_DATE
             self.logger.info(f"Playlist {self.source.name} is up to date")
 
-        self.mgr.stats.increment("playlists_matched")
+        self.stats_mgr.increment("playlists_matched")
         return True
 
     def resolve_conflict(self) -> bool:
@@ -360,14 +361,14 @@ class PlaylistPair(SyncPair):
         destination_tracks = [pair.destination for pair in track_pairs]
         self.destination = self.destination_player.create_playlist(self.source.name, destination_tracks)
         self.logger.info(f"Created new playlist {self.source.name} with {len(destination_tracks)} tracks")
-        self.mgr.stats.increment("playlists_created")
+        self.stats_mgr.increment("playlists_created")
         return True
 
     def _update_existing_playlist(self, track_pairs: List[TrackPair]) -> bool:
         """Update an existing playlist on the destination player with missing tracks."""
         updates = []
         if len(track_pairs) > 0:
-            bar = self.mgr.status.start_phase(f"Updating playlist '{self.source.name}'", total=len(track_pairs))
+            bar = self.status_mgr.start_phase(f"Updating playlist '{self.source.name}'", total=len(track_pairs))
             for pair in track_pairs:
                 if not self.destination.has_track(pair.destination):
                     updates.append((pair.destination, True))
@@ -377,7 +378,7 @@ class PlaylistPair(SyncPair):
         if updates:
             self.logger.debug(f"Adding {len(updates)} missing tracks to playlist {self.source.name}")
             self.destination_player.sync_playlist(self.destination, updates)
-            self.mgr.stats.increment("playlists_updated")
+            self.stats_mgr.increment("playlists_updated")
             return True
         else:
             self.logger.debug(f"Playlist {self.source.name} is up to date")
@@ -398,7 +399,7 @@ class PlaylistPair(SyncPair):
         if len(self.source.tracks) > 0:
             bar = None
             if len(self.source.tracks) > 50:
-                bar = self.mgr.status.start_phase(f"Matching tracks for playlist '{self.source.name}'", total=len(self.source.tracks))
+                bar = self.status_mgr.start_phase(f"Matching tracks for playlist '{self.source.name}'", total=len(self.source.tracks))
             for track in self.source.tracks:
                 bar.update() if bar else None
                 pair = TrackPair(self.source_player, self.destination_player, track)
