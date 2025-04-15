@@ -44,7 +44,7 @@ class AudioTag(object):
     def details(self, player: Optional["MediaPlayer"] = None) -> str:
         """Print formatted track details."""
         track_number = self.track or 0
-        track_rating = player.get_5star_rating(self.rating) if self.rating else "N/A"
+        track_rating = self.rating.to_display() if self.rating else "N/A"
         artist = self.truncate(self.artist, self.MAX_ARTIST_LENGTH)
         album = self.truncate(self.album, self.MAX_ALBUM_LENGTH)
         title = self.truncate(self.title, self.MAX_TITLE_LENGTH)
@@ -69,47 +69,6 @@ class AudioTag(object):
     def from_dict(cls, data: dict) -> "AudioTag":
         """Create AudioTag from cached dictionary"""
         return cls(**data)
-
-    # TODO: move to filesystem_provider
-    @classmethod
-    def from_id3(cls, id3: object, file_path: str, duration: int = -1) -> "AudioTag":
-        from filesystem_provider import ID3Field
-
-        def _safe_get(field: str) -> str:
-            """Safely get ID3 field value."""
-            return id3.get(field).text[0] if id3.get(field) else None
-
-        """Create AudioTag from ID3 object."""
-        track = _safe_get(ID3Field.TRACKNUMBER) or "0"
-        return cls(
-            artist=_safe_get(ID3Field.ARTIST) or "",
-            album=_safe_get(ID3Field.ALBUM) or "",
-            title=_safe_get(ID3Field.TITLE) or "",
-            file_path=str(file_path),
-            rating=None,
-            ID=str(file_path),
-            track=int(track.split("/")[0] if "/" in track else track),
-            duration=int(duration or -1),
-        )
-
-    # TODO: move to filesystem_provider
-    @classmethod
-    def from_vorbis(cls, vorbis: object, file_path: str) -> "AudioTag":
-        from filesystem_provider import VorbisField
-
-        """Create AudioTag from Vorbis object."""
-        track = vorbis.get(VorbisField.TRACKNUMBER, None)[0]
-        duration = vorbis.info.length if hasattr(vorbis, "info") and hasattr(vorbis.info, "length") else -1
-        return cls(
-            artist=vorbis.get(VorbisField.ARTIST, [""])[0],
-            album=vorbis.get(VorbisField.ALBUM, [""])[0],
-            title=vorbis.get(VorbisField.TITLE, [""])[0],
-            file_path=str(file_path or ""),
-            rating=None,
-            ID=str(file_path),
-            track=int(track.split("/")[0] if "/" in track else track),
-            duration=int(duration or -1),
-        )
 
 
 class Playlist(object):

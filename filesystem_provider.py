@@ -6,9 +6,9 @@ from typing import List, Optional, Union
 
 import mutagen
 from mutagen.id3 import POPM, TXXX, ID3FileType
-from ratings import Rating, RatingScale
 
 from manager.config_manager import ConflictResolutionStrategy, TagWriteStrategy
+from ratings import Rating, RatingScale
 from sync_items import AudioTag, Playlist
 
 
@@ -97,9 +97,9 @@ class ID3TagRegistry:
             return entry["id3_tag"]
         return tag_key
 
-    def display_name_for_id3_tag(self, id3_tag: str) -> str:
-        tag_key = self.get_key_for_id3_tag(id3_tag)
-        return self.get_player_name_for_key(tag_key) if tag_key else id3_tag
+    def display_name(self, value: str) -> str:
+        tag_key = self.resolve_key_from_input(value)
+        return self.get_player_name_for_key(tag_key) or value
 
     def get_popm_email_for_key(self, key: str) -> Optional[str]:
         tag = self.get_id3_tag_for_key(key)
@@ -158,12 +158,13 @@ class AudioTagHandler(abc.ABC):
             return min((v for v in ratings_by_tag_key.values() if v > 0), default=None)
 
         if strategy == ConflictResolutionStrategy.AVERAGE:
-            values = [v for v in ratings_by_tag_key.values() if v > 0]
+            values = [v.to_float(RatingScale.NORMALIZED) for v in ratings_by_tag_key.values() if v and not v.is_unrated]
             return Rating(sum(values) / len(values), scale=RatingScale.NORMALIZED) if values else None
 
         self.logger.warning(f"Unsupported conflict strategy: {strategy}")
         return None
 
+    # TODO: this needs track details for display purposes
     @abc.abstractmethod
     def _manual_conflict_resolution(self, ratings_by_tag_key: dict[str, Rating]) -> Optional[Rating]:
         """Interactive user choice for resolving conflicting ratings."""
@@ -254,7 +255,7 @@ class VorbisHandler(AudioTagHandler):
 
     def _extract_tags(self, audio_file: mutagen.FileType) -> tuple[AudioTag, dict]:
         """Extract raw and normalized ratings for Vorbis fields."""
-        track = AudioTag.from_vorbis(audio_file, audio_file.filename)
+        track = self.get_audiotag(audio_file, audio_file.filename)
 
         raw: dict[str, Optional[str]] = {}
         normalized: dict[str, Optional[Rating]] = {}
@@ -262,7 +263,7 @@ class VorbisHandler(AudioTagHandler):
         for field in [VorbisField.FMPS_RATING, VorbisField.RATING]:
             raw_value = audio_file.get(field, [None])[0]
             raw[field] = raw_value
-            normalized[field] = Rating(raw_value, scale=self._get_scale_for(field), aggressive=self.aggressive_inference) if raw_value is not None else None
+            normalized[field] = Rating.try_create(raw_value, scale=self._get_scale_for(field), aggressive=self.aggressive_inference)
 
         return track, {
             "raw": raw,
@@ -327,6 +328,21 @@ class VorbisHandler(AudioTagHandler):
             print("\n  Conflict Resolution Strategy:")
             print(f"    {self.conflict_resolution_strategy.display}")
 
+    def get_audiotag(self, vorbis: object, file_path: str) -> AudioTag:
+        """Create an AudioTag from a Vorbis object."""
+        track = vorbis.get(VorbisField.TRACKNUMBER, None)[0]
+        duration = vorbis.info.length if hasattr(vorbis, "info") and hasattr(vorbis.info, "length") else -1
+        return AudioTag(
+            artist=vorbis.get(VorbisField.ARTIST, [""])[0],
+            album=vorbis.get(VorbisField.ALBUM, [""])[0],
+            title=vorbis.get(VorbisField.TITLE, [""])[0],
+            file_path=str(file_path or ""),
+            rating=None,
+            ID=str(file_path),
+            track=int(track.split("/")[0] if "/" in track else track),
+            duration=int(duration or -1),
+        )
+
 
 class ID3Handler(AudioTagHandler):
     def __init__(self, tagging_policy: Optional[dict] = None, **kwargs):
@@ -342,7 +358,7 @@ class ID3Handler(AudioTagHandler):
     def _manual_conflict_resolution(self, ratings: dict[str, Rating]) -> Optional[Rating]:
         print("\nConflicting ratings detected (ID3):")
         for tag_key, rating in ratings.items():
-            print(f"  {self.tag_registry.display_name_for_id3_tag(tag_key):<30} : {rating.to_display():<5}")
+            print(f"  {self.tag_registry.display_name(tag_key):<30} : {rating.to_display():<5}")
 
         while True:
             choice = input("Select the correct rating (0-5, half-star increments allowed): ").strip()
@@ -379,7 +395,7 @@ class ID3Handler(AudioTagHandler):
 
     def _extract_tags(self, audio_file: mutagen.FileType) -> tuple[AudioTag, dict]:
         """Extract raw and normalized ratings for ID3 frames."""
-        track = AudioTag.from_id3(audio_file.tags, audio_file.filename, duration=int(audio_file.info.length))
+        track = self.get_audiotag(audio_file.tags, audio_file.filename, duration=int(audio_file.info.length))
 
         raw: dict[str, Optional[str]] = {}
         normalized: dict[str, Optional[Rating]] = {}
@@ -389,7 +405,7 @@ class ID3Handler(AudioTagHandler):
                 continue
 
             key = self.tag_registry.register(tag_key)
-            self.discovered_rating_tags.add(tag_key)
+            self.discovered_rating_tags.add(key)
             self.mgr.stats.increment(f"FileSystemPlayer::tags_used::{key}")
 
             if isinstance(frame, POPM):
@@ -493,6 +509,25 @@ class ID3Handler(AudioTagHandler):
                 del audio_file[id3_tag]
         self.logger.debug(f"Finished removing rating ID3 tags from file: {audio_file.filename}")
 
+    def get_audiotag(self, id3: object, file_path: str, duration: int = -1) -> AudioTag:
+        """Create an AudioTag from an ID3 object."""
+
+        def _safe_get(field: str) -> str:
+            """Safely get ID3 field value."""
+            return id3.get(field).text[0] if id3.get(field) else None
+
+        track = _safe_get(ID3Field.TRACKNUMBER) or "0"
+        return AudioTag(
+            artist=_safe_get(ID3Field.ARTIST) or "",
+            album=_safe_get(ID3Field.ALBUM) or "",
+            title=_safe_get(ID3Field.TITLE) or "",
+            file_path=str(file_path),
+            rating=None,
+            ID=str(file_path),
+            track=int(track.split("/")[0] if "/" in track else track),
+            duration=int(duration or -1),
+        )
+
     # ------------------------------
     # Utility Methods
     # ------------------------------
@@ -577,7 +612,7 @@ class ID3Handler(AudioTagHandler):
                             track = conflict["track"]
                             print(f"\n{track.artist} | {track.album} | {track.title}")
                             for tag_key, rating in conflict["normalized"].items():
-                                print(f"\t{self.tag_registry.display_name_for_id3_tag(tag_key):<30} : {rating.to_display():<5}")
+                                print(f"\t{self.tag_registry.display_name(tag_key):<30} : {rating.to_display():<5}")
                         print("")
                         continue
                     elif choice_num == len(ConflictResolutionStrategy) + 2:

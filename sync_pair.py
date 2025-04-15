@@ -7,6 +7,7 @@ import numpy as np
 from fuzzywuzzy import fuzz
 
 from MediaPlayer import MediaPlayer
+from ratings import Rating, RatingScale
 from sync_items import AudioTag, Playlist
 
 
@@ -33,8 +34,6 @@ class ConflictResolutionOptions:
         "4": "Skip this track",
         "5": "Cancel resolving conflicts",
     }
-    MIN_RATING = 0
-    MAX_RATING = 10
 
 
 class SyncPair(abc.ABC):
@@ -79,9 +78,9 @@ class SyncPair(abc.ABC):
 
 
 class TrackPair(SyncPair):
-    rating_source = 0.0
-    rating_destination = 0.0
-    score = None
+    rating_source: Optional[Rating] = None
+    rating_destination: Optional[Rating] = None
+    score: Optional[int] = None
 
     def __init__(self, source_player: MediaPlayer, destination_player: MediaPlayer, source_track: AudioTag) -> None:
         super(TrackPair, self).__init__(source_player, destination_player)
@@ -221,41 +220,28 @@ class TrackPair(SyncPair):
         self.destination = best_match
         self.mgr.stats.increment("tracks_matched")
 
-        self.rating_source = self.source.rating
-        self.rating_destination = self.destination.rating
+        src = self.rating_source = self.source.rating
+        dst = self.rating_destination = self.destination.rating
 
-        if self.rating_source == self.rating_destination:
+        if src and dst and src == dst:
             self.sync_state = SyncState.UP_TO_DATE
-        elif self.rating_source == 0.0 or self.rating_destination == 0.0:
+        elif src.is_unrated or dst.is_unrated:
             self.sync_state = SyncState.NEEDS_UPDATE
-        elif self.rating_source != self.rating_destination:
+        elif src != dst:
             self.sync_state = SyncState.CONFLICTING
-            self.logger.warning(
-                f"Found match with conflicting ratings: {self.source} "
-                f"(Source: {self.source_player.get_5star_rating(self.rating_source)} | "
-                f"Destination: {self.destination_player.get_5star_rating(self.rating_destination)})"
-            )
+            self.logger.warning(f"Found match with conflicting ratings: {self.source} " f"(Source: {src.to_display()} | " f"Destination: {dst.to_display()})")
 
         self.score = score
         return True
 
-    def _get_new_rating(self) -> Optional[float]:
+    def _get_new_rating(self) -> Optional[Rating]:
         """Prompt for and validate a new rating."""
-        new_rating_input = input(f"Please enter a rating between {ConflictResolutionOptions.MIN_RATING} and {ConflictResolutionOptions.MAX_RATING}: ")
-        try:
-            new_rating = int(new_rating_input) / 10
-            if new_rating < ConflictResolutionOptions.MIN_RATING / 10:
-                raise ValueError("Ratings below 0 not allowed")
-            elif new_rating > ConflictResolutionOptions.MAX_RATING / 10:
-                raise ValueError("Ratings above 10 not allowed")
-            return new_rating
-        except Exception as e:
-            print("Error:", e)
-            print(
-                f"Rating {new_rating_input} is not a valid rating, please choose an integer between {ConflictResolutionOptions.MIN_RATING} "
-                f"and {ConflictResolutionOptions.MAX_RATING}"
-            )
-            return None
+        choice = input("Select the correct rating (0-5, half-star increments allowed): ").strip()
+        validated = Rating.validate(choice, scale=RatingScale.ZERO_TO_FIVE)
+        if validated is not None:
+            return Rating(choice, scale=RatingScale.ZERO_TO_FIVE)
+        print("Invalid input. Please enter a number between 0 and 5 in half-star increments.")
+        return None
 
     def _apply_resolution(self, choice: str) -> bool:
         """Display conflict menu and apply the selected resolution."""
@@ -266,17 +252,17 @@ class TrackPair(SyncPair):
             return False
 
         if choice == "1":
-            self.logger.info(f"Applying source rating {self.source_player.get_5star_rating(self.rating_source)}  to destination track {self.destination}")
+            self.logger.info(f"Applying source rating {self.rating_source.to_display()}  to destination track {self.destination}")
             self.destination_player.update_rating(self.destination, self.rating_source)
             return True
         elif choice == "2":
-            self.logger.info(f"Applying destination rating {self.destination_player.get_5star_rating(self.rating_destination)} to source track {self.source}")
+            self.logger.info(f"Applying destination rating {self.rating_destination.to_display()} to source track {self.source}")
             self.source_player.update_rating(self.source, self.rating_destination)
             return True
         elif choice == "3":
             new_rating = self._get_new_rating()
             if new_rating is not None:
-                self.logger.info(f"Applying new rating {self.source_player.get_5star_rating(new_rating)}  to both source and destination tracks")
+                self.logger.info(f"Applying new rating {new_rating.to_display()}  to both source and destination tracks")
                 self.destination_player.update_rating(self.destination, new_rating)
                 self.source_player.update_rating(self.source, new_rating)
                 return True
@@ -320,8 +306,8 @@ class TrackPair(SyncPair):
 
     def sync(self, force: bool = False, source_to_destination: bool = False) -> bool:
         """Synchronizes the source and destination replicas.:return: True if synchronization was successful, False otherwise"""
-        rating_unset = self.rating_destination is None or self.rating_destination <= 0.0
-        if rating_unset or force:
+        destination_unrated = self.rating_destination is None or self.rating_destination.is_unrated
+        if destination_unrated or force:
             if source_to_destination:
                 self.destination_player.update_rating(self.destination, self.rating_source)
             else:

@@ -13,6 +13,7 @@ from plexapi.myplex import MyPlexAccount
 
 from filesystem_provider import FileSystemProvider
 from manager.config_manager import SyncItem
+from ratings import Rating, RatingScale
 from sync_items import AudioTag, Playlist
 
 NativePlaylist = Any
@@ -31,7 +32,7 @@ PlexTrack = Any  # plexapi.audio.Track
 class MediaPlayer(abc.ABC):
     album_empty_alias = ""
     dry_run = False
-    rating_maximum = 5
+    rating_scale = None
 
     def __init__(self):
         from manager import manager
@@ -166,26 +167,12 @@ class MediaPlayer(abc.ABC):
         self.logger.info(f"Playlist '{title}' not found")
         return None
 
-    @staticmethod
-    def get_5star_rating(rating: float) -> float:
-        return rating * 5 if rating else 0.0
-
-    @classmethod
-    def get_native_rating(cls, normed_rating: Union[float, int, None]) -> Union[float, int, None]:
-        """Override to support native rating conversion"""
-        return None if normed_rating is None else normed_rating * cls.rating_maximum
-
-    @classmethod
-    def get_normed_rating(cls, rating: Union[float, int, None]) -> Union[float, None]:
-        """Override to support normalized rating conversion"""
-        return None if rating is None else max(0, rating) / cls.rating_maximum
-
     @abc.abstractmethod
     def _read_track_metadata(self, track: NativeTrack) -> AudioTag:
         """Reads the metadata of a track."""
 
     @abc.abstractmethod
-    def update_rating(self, track: AudioTag, rating: float) -> None:
+    def update_rating(self, track: AudioTag, rating: Rating) -> None:
         """Updates the rating of the track, unless in dry run"""
 
     def update_playlist(self, playlist: Playlist, track: AudioTag, present: bool) -> None:
@@ -212,7 +199,7 @@ class MediaPlayer(abc.ABC):
 
 
 class MediaMonkey(MediaPlayer):
-    rating_maximum = 100
+    rating_scale = RatingScale.ZERO_TO_HUNDRED
 
     def __init__(self):
         self.logger = logging.getLogger("PlexSync.MediaMonkey")
@@ -334,7 +321,7 @@ class MediaMonkey(MediaPlayer):
             album=track.Album.Name,
             title=track.Title,
             file_path=track.Path,
-            rating=self.get_normed_rating(track.Rating),
+            rating=Rating.try_create(track.Rating, scale=self.rating_scale) or Rating(0, scale=self.rating_scale),
             ID=track.ID,
             track=track.TrackOrder,
             duration=int(track.SongLength / 1000) if track.SongLength else -1,
@@ -379,15 +366,15 @@ class MediaMonkey(MediaPlayer):
         bar.close() if bar else None
         return results
 
-    def update_rating(self, track: AudioTag, rating: float) -> None:
+    def update_rating(self, track: AudioTag, rating: Rating) -> None:
         if self.dry_run:
-            self.logger.info(f"DRY RUN: Would update rating for {track} to {self.get_5star_rating(rating)}")
+            self.logger.info(f"DRY RUN: Would update rating for {track} to {rating.to_display()}")
             return
 
-        self.logger.debug(f"Updating rating for {track} to {self.get_5star_rating(rating)}")
+        self.logger.debug(f"Updating rating for {track} to {rating.to_display()}")
         try:
             song = self._search_tracks("id", track.ID, return_native=True)[0]
-            song.Rating = self.get_native_rating(rating)
+            song.Rating = rating.to_float(self.rating_scale)
             song.UpdateDB()
         except Exception as e:
             self.logger.error(f"Failed to update rating: {e!s}")
@@ -429,7 +416,7 @@ class MediaMonkey(MediaPlayer):
 
 class PlexPlayer(MediaPlayer):
     maximum_connection_attempts = 3
-    rating_maximum = 10
+    rating_scale = RatingScale.ZERO_TO_TEN
     album_empty_alias = "[Unknown Album]"
 
     def __init__(self):
@@ -478,6 +465,7 @@ class PlexPlayer(MediaPlayer):
         self.logger.info("Looking for music libraries")
         music_libraries = {section.key: section for section in self.plex_api_connection.library.sections() if section.type == "artist"}
 
+        # TODO: offer to save library to config
         if len(music_libraries) == 0:
             self.logger.error("No music library found")
             exit(1)
@@ -525,7 +513,7 @@ class PlexPlayer(MediaPlayer):
             album=track.parentTitle,
             title=track.title,
             file_path=track.locations[0],
-            rating=self.get_normed_rating(track.userRating),
+            rating=Rating.try_create(track.userRating, scale=self.rating_scale) or 0,
             ID=track.key.split("/")[-1] if "/" in track.key else track.key,
             track=track.index,
             duration=int(track.duration / 1000) if track.duration else -1,  # Convert ms to seconds
@@ -632,16 +620,16 @@ class PlexPlayer(MediaPlayer):
         bar.close() if bar else None
         return tracks
 
-    def update_rating(self, track: AudioTag, rating: float) -> None:
+    def update_rating(self, track: AudioTag, rating: Rating) -> None:
         if self.dry_run:
-            self.logger.info(f"DRY RUN: Would update rating for {track} to {self.get_5star_rating(rating)}")
+            self.logger.info(f"DRY RUN: Would update rating for {track} to {rating.to_display()}")
             return
 
-        self.logger.debug(f"Updating rating for {track} to {self.get_5star_rating(rating)}")
+        self.logger.debug(f"Updating rating for {track} to {rating.to_display()}")
 
         try:
             song = self._search_tracks("id", track.ID, return_native=True)[0]
-            song.edit(**{"userRating.value": self.get_native_rating(rating)})
+            song.edit(**{"userRating.value": Rating.to_float(rating, scale=self.rating_scale)})
         except Exception as e:
             self.logger.error(f"Failed to update rating using fallback: {e!s}")
             raise
@@ -691,10 +679,9 @@ class PlexPlayer(MediaPlayer):
 
 
 class FileSystemPlayer(MediaPlayer):
-    rating_maximum = 10
+    RATING_SCALE = RatingScale.NORMALIZED
     album_empty_alias = "[Unknown Album]"
     SEARCH_THRESHOLD = 75  # Fuzzy search threshold for track title matching
-    DEFAULT_RATING_TAG = "WINDOWSMEDIAPLAYER"
 
     def __init__(self):
         self.fsp = None
@@ -729,14 +716,6 @@ class FileSystemPlayer(MediaPlayer):
         bar.close() if bar else None
         # TODO: add playlist scanning
 
-    @classmethod
-    def get_native_rating(cls, normed_rating: Optional[float]) -> int:
-        raise NotImplementedError
-
-    @classmethod
-    def get_normed_rating(cls, native_rating: Optional[int]) -> Optional[float]:
-        raise NotImplementedError
-
     def _read_track_metadata(self, file_path: Union[Path, str]) -> AudioTag:
         """Retrieve metadata from cache or read from file."""
         str_path = str(file_path)
@@ -765,7 +744,7 @@ class FileSystemPlayer(MediaPlayer):
                 value = 0
                 rating_mask = self.mgr.cache.metadata_cache.cache["rating"].notna()
             else:
-                rating_mask = self.mgr.cache.metadata_cache.cache["rating"] > float(self.get_normed_rating(value))
+                rating_mask = self.mgr.cache.metadata_cache.cache["rating"] > Rating(value, scale=RatingScale.ZERO_TO_FIVE).to_float(RatingScale.NORMALIZED)
             mask = (self.mgr.cache.metadata_cache.cache["player_name"] == self.name()) & rating_mask & (self.mgr.cache.metadata_cache.cache["rating"] > float(value))
             tracks = self.mgr.cache.get_tracks_by_filter(mask)
 
@@ -773,10 +752,10 @@ class FileSystemPlayer(MediaPlayer):
 
         return tracks
 
-    def update_rating(self, track: AudioTag, rating: float) -> None:
+    def update_rating(self, track: AudioTag, rating: Rating) -> None:
         """Update rating for a track."""
         if self.dry_run:
-            self.logger.info(f"DRY RUN: Would update rating for {track} to {rating})")
+            self.logger.info(f"DRY RUN: Would update rating for {track} to {rating.to_display()})")
             return
         try:
             self.fsp.update_metadata_in_file(file_path=track.file_path, rating=rating)
