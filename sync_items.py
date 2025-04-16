@@ -71,8 +71,10 @@ class AudioTag(object):
         return cls(**data)
 
 
+# TODO: remove _player
 class Playlist(object):
-    def __init__(self, name: str, player: Optional[object] = None):
+    def __init__(self, ID: [str, int], name: str, player: Optional[object] = None):
+        self.ID = ID
         self.name = name
         self.tracks = []
         self.is_auto_playlist = False

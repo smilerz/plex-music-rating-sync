@@ -276,7 +276,7 @@ class VorbisHandler(AudioTagHandler):
         if not ratings:
             return None
 
-        return self._resolve_normalized_conflict(ratings, context.get("track"))
+        return self._resolve_conflict(ratings, context.get("track"))
 
     def finalize_rating_strategy(self, conflicts: list[dict]) -> None:
         self._print_summary()
@@ -337,7 +337,7 @@ class VorbisHandler(AudioTagHandler):
             title=vorbis.get(VorbisField.TITLE, [""])[0],
             file_path=str(file_path or ""),
             rating=None,
-            ID=str(file_path),
+            ID=str(file_path.lower()),
             track=int(track.split("/")[0] if "/" in track else track),
             duration=int(duration or -1),
         )
@@ -387,7 +387,7 @@ class ID3Handler(AudioTagHandler):
         if len(unique_ratings) == 1:
             return next(iter(unique_ratings))
 
-        return self._resolve_normalized_conflict(ratings)
+        return self._resolve_conflict(ratings, context.get("track"))
 
     # ------------------------------
     # Tag Reading/Writing
@@ -523,7 +523,7 @@ class ID3Handler(AudioTagHandler):
             title=_safe_get(ID3Field.TITLE) or "",
             file_path=str(file_path),
             rating=None,
-            ID=str(file_path),
+            ID=str(file_path.lower()),
             track=int(track.split("/")[0] if "/" in track else track),
             duration=int(duration or -1),
         )
@@ -685,7 +685,7 @@ class ID3Handler(AudioTagHandler):
 class FileSystemProvider:
     """Adapter class for handling filesystem operations for audio files and playlists."""
 
-    TRACK_EXT = {".mp3", ".flac", ".ogg", ".m4a", ".wav", ".aac"}
+    AUDIO_EXT = {".mp3", ".flac", ".ogg", ".m4a", ".wav", ".aac"}
     PLAYLIST_EXT = {".m3u", ".m3u8", ".pls"}
 
     def __init__(self):
@@ -693,11 +693,11 @@ class FileSystemProvider:
         mgr = get_manager()
         self.config_mgr = mgr.get_config_manager()
         self.status_mgr = mgr.get_status_manager()
-        self._audio_files = []
-        self._playlist_files = []
+        self._media_files = []
+        self._playlist_title_map: dict[str, Path] = {}
         self.deferred_tracks = []
 
-        self.id3_handler = ID3Handler(tagging_policy=self.config_mgr.config.to_dict())
+        self.id3_handler = ID3Handler(tagging_policy=self.config_mgr.to_dict())
         self.vorbis_handler = VorbisHandler()
         self._handlers = [self.id3_handler, self.vorbis_handler]
 
@@ -711,7 +711,7 @@ class FileSystemProvider:
     # ------------------------------
     # File Handling (Low-Level Helpers)
     # ------------------------------
-    def _open_track(self, file_path: Union[Path, str]) -> Optional[mutagen.FileType]:
+    def _open_audio_file(self, file_path: Union[Path, str]) -> Optional[mutagen.FileType]:
         """Helper function to open an audio file using mutagen."""
         try:
             audio_file = mutagen.File(file_path, easy=False)
@@ -723,7 +723,7 @@ class FileSystemProvider:
             self.logger.error(f"Error opening file {file_path}: {e}", exc_info=True)
             return None
 
-    def _save_track(self, audio_file: mutagen.FileType) -> bool:
+    def _save_audio_file(self, audio_file: mutagen.FileType) -> bool:
         """Helper function to save changes to an audio file."""
         if self.config_mgr.dry:
             self.logger.info(f"Dry run enabled. Changes to {audio_file.filename} will not be saved.")
@@ -743,47 +743,77 @@ class FileSystemProvider:
     # ------------------------------
     # File Discovery (Scanning)
     # ------------------------------
-    def scan_audio_files(self) -> List[Path]:
-        """Scan directory structure for audio files."""
-        path = self.config_mgr.path
+    def scan_media_files(self) -> None:
+        """Scan configured paths for audio and playlist files without duplication or scope leakage."""
+        self._media_files = []
 
-        if not path:
-            self.logger.error("Path is required for filesystem player")
-            raise ValueError("Path is required for filesystem player")
+        self.path = audio_root = Path(self.config_mgr.path).resolve()
+        self.playlist_path = playlist_root = Path(self.config_mgr.playlist_path).resolve() if self.config_mgr.playlist_path else audio_root
 
-        self.path = Path(path)
-        if not self.path.exists():
-            self.logger.error(f"Music directory not found: {path}")
-            raise FileNotFoundError(f"Music directory not found: {path}")
+        scanned_files: set[Path] = set()
+        bar = self.status_mgr.start_phase("Scanning media files", total=None)
 
-        self.logger.info(f"Scanning {path} for audio files...")
-        bar = self.status_mgr.start_phase("Collecting audio files", total=None)
+        # Track whether playlist_root is fully covered by audio_root
+        playlist_scanned_during_audio = playlist_root.is_relative_to(audio_root)
 
-        for file_path in self.path.rglob("*"):
-            if file_path.suffix.lower() in self.TRACK_EXT:
-                self._audio_files.append(file_path)
+        # Scan audio_root for audio and playlists (if they fall within playlist_root)
+        for file_path in audio_root.rglob("*"):
+            resolved = file_path.resolve()
+            if not file_path.is_file() or resolved in scanned_files:
+                continue
+            scanned_files.add(resolved)
+
+            ext = file_path.suffix.lower()
+            if ext in self.AUDIO_EXT:
+                self._media_files.append(resolved)
+            if ext in self.PLAYLIST_EXT and file_path.is_relative_to(playlist_root):
+                self._media_files.append(resolved)
+
+            bar.update()
+
+        # If playlist_root wasn't already covered, scan it independently (playlists only)
+        if not playlist_scanned_during_audio:
+            for file_path in playlist_root.rglob("*"):
+                resolved = file_path.resolve()
+                if not file_path.is_file() or resolved in scanned_files:
+                    continue
+                scanned_files.add(resolved)
+
+                ext = file_path.suffix.lower()
+                if ext in self.PLAYLIST_EXT:
+                    self._media_files.append(file_path)
+
                 bar.update()
 
         bar.close()
-        self.logger.info(f"Found {len(self._audio_files)} audio files")
-        return self._audio_files
 
-    def scan_playlist_files(self) -> List[Path]:
-        """Scan and list all playlist files in the directory."""
-        playlist_path = self.config_mgr.playlist_path
-        self.playlist_path = Path(playlist_path) if playlist_path else self.path
-        self.playlist_path.mkdir(exist_ok=True)
-        # TODO: add support for m3u8 and pls
+        self.logger.info(f"Found {len(self.get_tracks())} audio files")
+        self.logger.info(f"Found {len(self.get_playlists())} playlist files")
 
-        bar = self.status_mgr.start_phase("Collecting audio files", total=None)
+    def get_tracks(self) -> List[Path]:
+        """Return all discovered audio files."""
+        return [t for t in self._media_files if t.suffix.lower() in self.AUDIO_EXT]
 
-        for file_path in self.playlist_path.rglob("*"):
-            if file_path.suffix.lower() in self.PLAYLIST_EXT:
-                self._playlist_files.append(file_path)
-                bar.update()
-        bar.close()
-        self.logger.info(f"Found {len(self._playlist_files)} playlist files")
-        self.logger.info(f"Using playlists directory: {playlist_path}")
+    def get_playlists(self, title: Optional[str] = None, path: Optional[Union[str, Path]] = None) -> List[Playlist]:
+        """Return all discovered Playlist objects, optionally filtered by title or resolved path."""
+        playlist_paths = [p for p in self._media_files if p.suffix.lower() in self.PLAYLIST_EXT]
+
+        if title:
+            matched_path = self._playlist_title_map.get(title)
+            playlist_paths = [matched_path] if matched_path else []
+
+        elif path:
+            resolved = Path(path).resolve()
+            playlist_paths = [p for p in playlist_paths if p.resolve() == resolved]
+
+        # Convert paths to Playlist objects
+        playlists = []
+        for p in playlist_paths:
+            playlist = self.read_playlist_metadata(p)
+            if playlist:
+                playlists.append(playlist)
+
+        return playlists
 
     def finalize_scan(self) -> List[AudioTag]:
         """Finalize the scan by letting handlers resolve strategies and processing deferred tracks."""
@@ -806,7 +836,7 @@ class FileSystemProvider:
             self.logger.debug(f"Resolving deferred rating for {track.artist} | {track.album} | {track.title}")
 
             track.rating = manager.get_normal_rating(context)
-            self.update_metadata_in_file(track.file_path, rating=track.rating)
+            self.update_track_metadata(track.file_path, rating=track.rating)
             resolved_tracks.append(track)
 
             bar.update() if bar else None
@@ -814,19 +844,26 @@ class FileSystemProvider:
         bar.close() if bar else None
         return resolved_tracks
 
-    def get_tracks(self) -> List[Path]:
-        """Return all discovered audio files."""
-        return [t for t in self._audio_files if t.suffix.lower() in self.TRACK_EXT]
-
-    def get_playlists(self) -> List[Path]:
-        """Return all discovered playlist files."""
-        return [p for p in self._playlist_files if p.suffix.lower() in self.PLAYLIST_EXT]
-
     # ------------------------------
     # Metadata Access and Update
     # ------------------------------
-    def read_metadata_from_file(self, file_path: Union[Path, str]) -> Optional[AudioTag]:
-        audio_file = self._open_track(file_path)
+    def _get_playlist_title(self, path: Path, base_title: Optional[str]) -> str:
+        candidate = base_title
+        rel_path = path.relative_to(self.playlist_path)
+        folders = list(reversed(rel_path.parts[:-1]))  # exclude file
+
+        parts = [base_title]
+        while candidate in self._playlist_title_map and self._playlist_title_map[candidate] != path:
+            if not folders:
+                self.logger.warning(f"Could not disambiguate duplicate playlist title: {base_title}")
+                break
+            parts.insert(0, folders.pop(0))
+            candidate = ".".join(parts)
+
+        return candidate
+
+    def read_track_metadata(self, file_path: Union[Path, str]) -> Optional[AudioTag]:
+        audio_file = self._open_audio_file(file_path)
         if not audio_file:
             return None
 
@@ -848,14 +885,15 @@ class FileSystemProvider:
         self.logger.debug(f"Successfully read metadata for {file_path}")
         return tag
 
-    def update_metadata_in_file(self, file_path: Union[Path, str], metadata: Optional[dict] = None, rating: Optional[Rating] = None) -> Optional[mutagen.File]:
+    def update_track_metadata(self, file_path: Union[Path, str], metadata: Optional[dict] = None, rating: Optional[Rating] = None) -> Optional[mutagen.File]:
         """Update metadata and/or rating in the audio file."""
+        # TODO: add logic to handle relative paths
         file_path = Path(file_path)
         if not file_path.exists():
             self.logger.error(f"File not found: {file_path}")
             return None
 
-        audio_file = self._open_track(file_path)
+        audio_file = self._open_audio_file(file_path)
         if not audio_file:
             self.logger.warning(f"Failed to open file for metadata update: {file_path}")
             return None
@@ -867,7 +905,7 @@ class FileSystemProvider:
 
         updated_file = manager.apply_tags(audio_file, metadata, rating)
         if metadata or rating is not None:
-            if self._save_track(updated_file):
+            if self._save_audio_file(updated_file):
                 self.logger.info(f"Successfully updated metadata for file: {file_path}")
                 return updated_file
         return None
@@ -875,8 +913,21 @@ class FileSystemProvider:
     # ------------------------------
     # Playlist Operations
     # ------------------------------
+    def _open_playlist(self, path: Path, mode: str = "r", encoding: str = "utf-8"):
+        try:
+            if "r" in mode and not path.exists():
+                raise FileNotFoundError(f"Playlist file not found: {path}")
+            return path.open(mode, encoding=encoding)
+        except Exception as e:
+            self.logger.error(f"Failed to open playlist file {path} with mode '{mode}': {e}")
+            return None
+
     def create_playlist(self, title: str, is_extm3u: bool = False) -> Playlist:
         """Create a new M3U playlist file."""
+        if self.config_mgr.dry:
+            self.logger.info("Dry run enabled. Playlist creation of {title} skipped.")
+            return None
+
         playlist_path = self.playlist_path / f"{title}.m3u"
         try:
             with playlist_path.open("w", encoding="utf-8") as file:
@@ -886,54 +937,51 @@ class FileSystemProvider:
             self.logger.info(f"Created playlist: {playlist_path}")
         except Exception as e:
             self.logger.error(f"Failed to create playlist {playlist_path}: {e}")
-        return self.read_playlist(str(playlist_path))
+        return self.read_playlist_metadata(str(playlist_path))
 
-    def read_playlist(self, playlist_path: str) -> Playlist:
-        """Convert a text file into a Playlist object."""
-        playlist = Playlist(name=Path(playlist_path).stem.replace("_", " ").title())
+    def read_playlist_metadata(self, playlist_path: Path) -> Optional[Playlist]:
+        playlist_path = playlist_path.resolve()
+        title = playlist_path.stem
+        is_extm3u = False
+
+        with self._open_playlist(playlist_path) as file:
+            for line in file:
+                line = line.strip()
+                if line.startswith("#EXTM3U"):
+                    is_extm3u = True
+                elif not is_extm3u:
+                    # Abort if it's not an extended playlist
+                    return None
+                elif line.startswith("#PLAYLIST:"):
+                    title = line.split(":", 1)[1].strip()
+                    break  # Stop once we've extracted the title
+
+        title = self._get_playlist_title(playlist_path, title)
+        self._playlist_title_map[title] = playlist_path
+
+        playlist = Playlist(name=title, ID=str(playlist_path).lower(), player=None)
         playlist.file_path = str(playlist_path)
-        playlist.is_extm3u = False
-        playlist_path = Path(playlist_path)
-        try:
-            with playlist_path.open("r", encoding="utf-8") as file:
-                for line in file:
-                    line = line.strip()
-                    if line.startswith("#EXTM3U"):
-                        playlist.is_extm3u = True
-                    elif not playlist.is_extm3u:
-                        # Return early if it's not an extended M3U playlist
-                        return playlist
-                    elif line.startswith("#PLAYLIST:"):
-                        playlist.name = line.split(":", 1)[1].strip()
-                    elif line.startswith("#EXTINF:") and not playlist.name:
-                        return playlist
-        except Exception as e:
-            self.logger.error(f"Failed to read playlist {playlist_path}: {e}")
+        playlist.is_extm3u = is_extm3u
         return playlist
 
-    def get_all_playlists(self) -> List[Playlist]:
-        """Retrieve all M3U playlists in the playlist directory as Playlist objects."""
-        playlists = []
-        for playlist_path in self.playlist_path.glob("*.m3u"):
-            playlists.append(self.read_playlist(playlist_path))
-        return playlists
-
-    def get_tracks_from_playlist(self, playlist_path: str) -> List[Path]:
-        """Retrieve all track paths from a playlist file."""
+    def get_tracks_from_playlist(self, playlist_path: Union[str, Path]) -> List[Path]:
+        """Retrieve resolved track paths from a playlist file, scoped to self.path."""
         playlist_path = Path(playlist_path)
         tracks = []
-        try:
-            with playlist_path.open("r", encoding="utf-8") as file:
-                for line in file:
-                    line = line.strip()
-                    if line and not line.startswith("#"):  # Ignore comments and directives
-                        track_path = self.path / line
-                        if track_path.exists():
-                            tracks.append(track_path)
-                        else:
-                            self.logger.warning(f"Track not found: {track_path}")
-        except Exception as e:
-            self.logger.error(f"Failed to read playlist {playlist_path}: {e}")
+
+        with self._open_playlist(playlist_path) as file:
+            for line in file:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+
+                candidate_path = (self.path / line).resolve()
+
+                # Must exist and be within root path
+                if candidate_path.exists() and candidate_path.is_relative_to(self.path):
+                    tracks.append(candidate_path)
+                else:
+                    self.logger.debug(f"Ignored invalid or out-of-scope track in playlist: {candidate_path}")
         return tracks
 
     def add_track_to_playlist(self, playlist_path: str, track: AudioTag, is_extm3u: bool = False) -> None:

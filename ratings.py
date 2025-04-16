@@ -59,7 +59,7 @@ class Rating:
 
     @classmethod
     def try_create(cls, raw: Union[str, float], scale: Optional[RatingScale] = None, *, aggressive: bool = False) -> Optional["Rating"]:
-        if raw is None:
+        if raw is None or str(raw).strip() in {"", "0", "0.0"}:
             return None
         try:
             return cls(raw, scale=scale, aggressive=aggressive)
@@ -69,27 +69,36 @@ class Rating:
     def to_float(self, scale: Optional[RatingScale] = None) -> float:
         """Return this rating as a float in the given scale (default: self.scale)."""
         target_scale = scale or self.scale
+        if target_scale is None:
+            raise ValueError("Rating has no scale. Provide one to convert to float.")
         if target_scale == RatingScale.POPM:
             return self._to_popm(self._normalized)
         return round(self._normalized * target_scale.value, 3)
 
     def to_str(self, scale: Optional[RatingScale] = None) -> str:
         """Convert the rating to a string for writing to file (e.g., POPM, Vorbis)."""
-        target = scale or self.scale
-        return str(self.to_float(target))
+        target_scale = scale or self.scale
+        if target_scale is None:
+            raise ValueError("Rating has no scale. Provide one to convert to string.")
+        return str(self.to_float(target_scale))
 
     def to_int(self, scale: Optional[RatingScale] = None) -> int:
         """Return the rating as a rounded int in the target scale (e.g., for POPM)."""
-        return round(self.to_float(scale))
+        target_scale = scale or self.scale
+        if target_scale is None:
+            raise ValueError("Rating has no scale. Provide one to convert to integer.")
+        return round(self.to_float(target_scale))
 
     def to_display(self, scale: RatingScale = RatingScale.ZERO_TO_FIVE) -> str:
         """Return a user-friendly rating string in a 5-star style, e.g., '4.5 / 5.0'."""
-        value = self.to_float(scale)
-        return f"{round(value, 1)}"
+        if self.scale is None and self._normalized == 0.0:
+            return "0"  # Sentinel or unrated — no need for scale context
+        return f"{round(self.to_float(scale), 1)}"
 
     def update(self, other: "Rating") -> None:
         """Update this rating with another's normalized value."""
         self._normalized = other._normalized
+        self.scale = other.scale if self.scale is None else self.scale
 
     @staticmethod
     def validate(value: Union[str, float], scale: RatingScale = RatingScale.ZERO_TO_FIVE) -> Optional[float]:
