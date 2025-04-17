@@ -220,8 +220,8 @@ class TrackPair(SyncPair):
         self.destination = best_match
         self.stats_mgr.increment("tracks_matched")
 
-        src = self.rating_source = self.source.rating  # or Rating(0, scale=RatingScale.NORMALIZED)
-        dst = self.rating_destination = self.destination.rating  # or Rating(0, scale=RatingScale.NORMALIZED)
+        src = self.rating_source = self.source.rating  # or Rating.unrated()
+        dst = self.rating_destination = self.destination.rating  # or Rating.unrated()
 
         if src == dst:
             self.sync_state = SyncState.UP_TO_DATE

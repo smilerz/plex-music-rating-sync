@@ -84,10 +84,10 @@ class Playlist(object):
         self.logger = logging.getLogger("PlexSync.Playlist")
 
     def __repr__(self) -> str:
-        return f"{self._player} Playlist({self.name})"
+        return self.__str__()
 
     def __str__(self) -> str:
-        return f"{self._player} Playlist({self.name})"
+        return f"{self._player} Playlist: {self.name}"
 
     def add_tracks(self, tracks: Union[List[AudioTag], AudioTag]) -> None:
         if not isinstance(tracks, (list, tuple)):

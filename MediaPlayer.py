@@ -73,6 +73,7 @@ class MediaPlayer(abc.ABC):
     # TODO: replace with search_playlists
     def _get_playlists(self) -> List[NativePlaylist]:
         """Get all native playlists from player"""
+        return None
 
     @abc.abstractmethod
     def _search_playlists(self, key: str, value: Union[str, bool], return_native: bool = False) -> List[Playlist]:
@@ -332,7 +333,7 @@ class MediaMonkey(MediaPlayer):
             album=track.Album.Name,
             title=track.Title,
             file_path=track.Path,
-            rating=Rating.try_create(track.Rating, scale=self.rating_scale) or Rating(0, scale=self.rating_scale),
+            rating=Rating.try_create(track.Rating, scale=self.rating_scale) or Rating.unrated(),
             ID=track.ID,
             track=track.TrackOrder,
             duration=int(track.SongLength / 1000) if track.SongLength else -1,
@@ -524,7 +525,7 @@ class PlexPlayer(MediaPlayer):
             album=track.parentTitle,
             title=track.title,
             file_path=track.locations[0],
-            rating=Rating.try_create(track.userRating, scale=self.rating_scale) or Rating(0, self.rating_scale),
+            rating=Rating.try_create(track.userRating, scale=self.rating_scale) or Rating.unrated(),
             ID=track.key.split("/")[-1] if "/" in track.key else track.key,
             track=track.index,
             duration=int(track.duration / 1000) if track.duration else -1,  # Convert ms to seconds
@@ -753,14 +754,10 @@ class FileSystemPlayer(MediaPlayer):
         elif key == "rating":
             if value is True:
                 value = 0
-                rating_mask = self.cache_mgr.metadata_cache.cache["rating"].notna()
-            else:
-                rating_mask = self.cache_mgr.metadata_cache.cache["rating"] > Rating(value, scale=RatingScale.ZERO_TO_FIVE).to_float(RatingScale.NORMALIZED)
-            mask = (self.cache_mgr.metadata_cache.cache["player_name"] == self.name()) & rating_mask & (self.cache_mgr.metadata_cache.cache["rating"] > float(value))
+            rating_mask = self.cache_mgr.metadata_cache.cache["rating"] > Rating(value, scale=RatingScale.ZERO_TO_FIVE).to_float(RatingScale.NORMALIZED)
+            mask = (self.cache_mgr.metadata_cache.cache["player_name"] == self.name()) & rating_mask
             tracks = self.cache_mgr.get_tracks_by_filter(mask)
-
         self.logger.debug(f"Found {len(tracks)} tracks for {key}={value}")
-
         return tracks
 
     def update_rating(self, track: AudioTag, rating: Rating) -> None:
@@ -802,17 +799,17 @@ class FileSystemPlayer(MediaPlayer):
     # TODO: replace _find_playlists with search_playlists
     def _search_playlists(self, key: str, value: Optional[Union[str, int]] = None, return_native: bool = False) -> List[Playlist]:
         if key == "all":
-            return self.fsp.get_playlists()
-
-        if key == "title":
-            result = self.fsp.get_playlist_by_title(value, return_native=return_native)
-            return [result] if result else []
-
-        if key == "id":
-            result = self.fsp.get_playlist_by_id(value, return_native=return_native)
-            return [result] if result else []
-
-        raise ValueError(f"Invalid search key {key}")
+            playlists = self.fsp.get_playlists()
+        elif key == "title":
+            result = self.fsp.get_playlists(title=value)
+            playlists = [result] if result else []
+        elif key == "id":
+            result = self.fsp.get_playlists(path=value)
+            playlists = [result] if result else []
+        else:
+            playlists = ValueError(f"Invalid search key {key}")
+        [setattr(p, "_player", self) for p in playlists]
+        return playlists
 
     def read_playlist_tracks(self, playlist: Playlist) -> None:
         """Read tracks from a native playlist"""

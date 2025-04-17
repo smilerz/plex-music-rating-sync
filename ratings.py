@@ -29,11 +29,18 @@ class Rating:
     def __init__(self, raw: Union[float, str], scale: Optional[RatingScale] = None, *, aggressive: bool = False) -> None:
         self.raw = raw
         value = float(self.raw)
+
         self.scale = scale or self.infer(value, aggressive=aggressive)
         if not self.scale:
             raise ValueError(f"Unable to infer rating scale from value: {raw}")
 
         self._normalized = self._normalize(value, self.scale)
+
+        if not (0.0 <= self._normalized <= 1.0):
+            raise ValueError(f"Normalized rating out of bounds: {self._normalized} for value {value} with scale {self.scale.name}")
+
+    def __repr__(self) -> str:
+        return f"<Rating raw={self.raw}, normalized={self._normalized:.3f}, scale={self.scale.name}>"
 
     @property
     def is_unrated(self) -> bool:
@@ -58,11 +65,15 @@ class Rating:
         return None
 
     @classmethod
-    def try_create(cls, raw: Union[str, float], scale: Optional[RatingScale] = None, *, aggressive: bool = False) -> Optional["Rating"]:
-        if raw is None or str(raw).strip() in {"", "0", "0.0"}:
+    def unrated(cls) -> "Rating":
+        return cls(0, scale=RatingScale.NORMALIZED)
+
+    @classmethod
+    def try_create(cls, value: Union[str, float], scale: Optional[RatingScale] = None, *, aggressive: bool = False) -> Optional["Rating"]:
+        if value is None or value == "":
             return None
         try:
-            return cls(raw, scale=scale, aggressive=aggressive)
+            return cls(value, scale=scale, aggressive=aggressive)
         except ValueError:
             return None
 

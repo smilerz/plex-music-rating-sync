@@ -240,8 +240,11 @@ class CacheManager:
         if not (force_enable or self.is_metadata_cache_enabled()) or self.metadata_cache is None or self.metadata_cache.is_empty():
             return None
 
+        player_name = player_name.strip().lower()
+        track_id = str(track_id).strip().lower()
+
         # Find row matching player name and track ID
-        row = self.metadata_cache.cache[(self.metadata_cache.cache["player_name"] == player_name) & (self.metadata_cache.cache["ID"] == str(track_id))]
+        row = self.metadata_cache.cache[(self.metadata_cache.cache["player_name"] == player_name) & (self.metadata_cache.cache["ID"] == track_id)]
 
         if row.empty:
             return None
@@ -257,6 +260,9 @@ class CacheManager:
         """Store metadata in the pre-allocated cache, resizing if needed."""
         if not (force_enable or self.is_metadata_cache_enabled()):
             return
+
+        player_name = player_name.strip().lower()
+        track_id = str(track_id).strip().lower()
 
         if self.metadata_cache is None or self.metadata_cache.is_empty():
             self.metadata_cache = Cache(
