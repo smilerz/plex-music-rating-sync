@@ -5,7 +5,6 @@ if TYPE_CHECKING:
     from MediaPlayer import MediaPlayer
 
 
-# TODO: evaluate if storing native object on Playlist is necessary
 class AudioTag(object):
     MAX_ARTIST_LENGTH = 25
     MAX_ALBUM_LENGTH = 30
@@ -72,6 +71,7 @@ class AudioTag(object):
 
 
 # TODO: remove _player
+# TODO: should all of these  methods be availalble on the Playlist object?
 class Playlist(object):
     def __init__(self, ID: [str, int], name: str, player: Optional[object] = None):
         self.ID = ID
@@ -79,7 +79,7 @@ class Playlist(object):
         self.tracks = []
         self.is_auto_playlist = False
         self.is_extm3u = True
-        self._player = player
+        self._player = player  # TODO: remove _player
         self._pending_changes = False
         self.logger = logging.getLogger("PlexSync.Playlist")
 
@@ -129,7 +129,7 @@ class Playlist(object):
         if not self.tracks:
             self._player.read_playlist_tracks(self)
         if not other.tracks:
-            self._player.read_playlist_tracks(other)
+            other._player.read_playlist_tracks(other)
         missing = [t for t in other.tracks if not self.has_track(t)]
         if missing:
             self.logger.info(f"Found {len(missing)} missing tracks in playlist {self.name}")

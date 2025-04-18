@@ -205,7 +205,7 @@ class AudioTagHandler(abc.ABC):
             return min(ratings_by_tag.values())
 
         if strat == ConflictResolutionStrategy.AVERAGE:
-            vals = [r.to_float() for r in ratings_by_tag.values()]
+            vals = [r.to_float(RatingScale.NORMALIZED) for r in ratings_by_tag.values()]
             return Rating(sum(vals) / len(vals)) if vals else None
 
         self.logger.warning(f"Unknown conflict strategy {strat}")
@@ -361,6 +361,8 @@ class VorbisHandler(AudioTagHandler):
 
     def _print_summary(self) -> None:
         """Print the stats of inferred scales and current strategy."""
+        # TODO: consolidate to FSP finalize_scan method and make debug log messages
+        # NOTE: this will require some refactoring of the stats manager to make keys consistent and match handlers
         print("\nFLAC/OGG (Vorbis) Ratings Summary:")
         for field in (VorbisField.RATING, VorbisField.FMPS_RATING):
             stats = self.stats_mgr.get(f"VorbisHandler::scale_inferred::{field.value}")
@@ -520,6 +522,8 @@ class ID3Handler(AudioTagHandler):
                 print("Invalid input.")
 
         # Step 3: write strategy
+        # TODO: decide when this should be displayed - if every file has the same tag is it necessary?
+        # TODO: add better instructions for end user - perhaps a help menu?
         if has_multiple and not self.tag_write_strategy:
             while True:
                 print("\nChoose write strategy:")
@@ -900,10 +904,18 @@ class FileSystemProvider:
     def create_playlist(self, title: str, is_extm3u: bool = False) -> Playlist:
         """Create a new M3U playlist file."""
         if self.config_mgr.dry:
-            self.logger.info("Dry run enabled. Playlist creation of {title} skipped.")
+            self.logger.info(f"Dry run enabled. Playlist creation of {title} skipped.")
             return None
 
         playlist_path = self.playlist_path / f"{title}.m3u"
+
+        # Ensure the folder exists
+        try:
+            playlist_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            self.logger.error(f"Failed to create directory for playlist {playlist_path}: {e}")
+            return None
+
         try:
             with playlist_path.open("w", encoding="utf-8") as file:
                 if is_extm3u:
@@ -912,13 +924,16 @@ class FileSystemProvider:
             self.logger.info(f"Created playlist: {playlist_path}")
         except Exception as e:
             self.logger.error(f"Failed to create playlist {playlist_path}: {e}")
+            return None
+
         return self.read_playlist_metadata(str(playlist_path))
 
-    def read_playlist_metadata(self, playlist_path: Path) -> Optional[Playlist]:
-        playlist_path = playlist_path.resolve()
+    def read_playlist_metadata(self, playlist_path: Union[Path, str]) -> Optional[Playlist]:
+        playlist_path = Path(playlist_path).resolve()
         title = playlist_path.stem
         is_extm3u = False
 
+        # TODO: what happens if the open fails?
         with self._open_playlist(playlist_path) as file:
             for line in file:
                 line = line.strip()
@@ -969,7 +984,7 @@ class FileSystemProvider:
                 file.write(f"{Path(track.file_path).relative_to(self.path)!s}\n")
             self.logger.info(f"Added track {track} to playlist {playlist_path}")
         except Exception as e:
-            self.logger.error(f"Failed to add track to playlist {playlist_path}: {e}")
+            self.logger.debug(f"Failed to add track to playlist {playlist_path}: {e}")
 
     def remove_track_from_playlist(self, playlist_path: str, track: Path) -> None:
         """Remove a track from a playlist."""

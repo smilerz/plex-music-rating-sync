@@ -100,7 +100,7 @@ class PlexSync:
             "1": f"Keep all ratings from {self.source_player.name()} and update {self.destination_player.name()}",
             "2": f"Keep all ratings from {self.destination_player.name()} and update {self.source_player.name()}",
             "3": "Choose rating for each track",
-            "4": "Display all conflicts",
+            "4": "Display all conflicts",  # TODO add display by match quality
             "5": "Display track match details",
             "6": "Don't resolve conflicts",
         }
@@ -220,6 +220,7 @@ class PlexSync:
             bar.close()
 
     def print_summary(self) -> None:
+        # TODO: debug log summary as well including cache hits, misses
         elapsed = time.time() - self.start_time
         elapsed_time = str(timedelta(seconds=int(elapsed)))
 

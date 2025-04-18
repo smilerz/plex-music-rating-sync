@@ -199,7 +199,6 @@ class CacheManager:
 
         match = self._safe_get_value(row, dest_name)
         score = self._safe_get_value(row, "score")
-        self.logger.debug(f"Match Cache hit: {match} (score: {score}) for source_id: {source_id}")
         self.stats_mgr.increment("cache_hits")
         return match, score
 
@@ -224,13 +223,11 @@ class CacheManager:
         # Find the next available empty row or resize if needed
         empty_row_idx = self.match_cache.cache.index[self.match_cache.cache.isna().all(axis=1)][0] if self.match_cache.cache.isna().all(axis=1).any() else None
         if empty_row_idx is None:
-            self.logger.debug("No empty rows left in match cache! Resizing...")
             self.match_cache.resize()
             empty_row_idx = self.match_cache.cache.index[self.match_cache.cache.isna().all(axis=1)][0]
 
         # Insert new match
         self.match_cache.cache.loc[empty_row_idx, [source_name, dest_name, "score"]] = [source_id, dest_id, score]
-        self.logger.debug(f"Added new match: {source_name}:{source_id} <-> {dest_name}:{dest_id} (score: {score})")
         self.match_cache.update_count += 1
         self.match_cache.auto_save()
 
@@ -287,7 +284,6 @@ class CacheManager:
             empty_row_idx = self.metadata_cache.cache.index[self.metadata_cache.cache.isna().all(axis=1)][0] if self.metadata_cache.cache.isna().all(axis=1).any() else None
 
             if empty_row_idx is None:
-                self.logger.debug("No empty rows left in metadata cache! Resizing...")
                 self.metadata_cache.resize()
                 empty_row_idx = self.metadata_cache.cache.index[self.metadata_cache.cache.isna().all(axis=1)][0]
 

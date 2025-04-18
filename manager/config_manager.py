@@ -45,6 +45,7 @@ class LogLevel(ConfigEnum):
     DEBUG = "debug"
 
 
+# TODO: where should these enums live?
 class PlayerType(ConfigEnum):
     PLEX = "plex"
     MEDIAMONKEY = "mediamonkey"

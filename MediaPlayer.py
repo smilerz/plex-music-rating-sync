@@ -88,6 +88,7 @@ class MediaPlayer(abc.ABC):
     def read_playlist_tracks(self, playlist: Playlist) -> None:
         """Read tracks from a native playlist"""
 
+    # TODO: remove
     @abc.abstractmethod
     def _find_playlist(self, title: str, return_native: bool = False) -> Optional[Union[NativePlaylist, Playlist]]:
         """Find native playlist by title"""
@@ -112,8 +113,6 @@ class MediaPlayer(abc.ABC):
             raise ValueError("value can not be empty.")
 
         tracks = self._search_tracks(key, value)
-
-        self.logger.debug(f"Found {len(tracks)} tracks for {key}={value}")
         return tracks
 
     def sync_playlist(self, playlist: Playlist, updates: List[Tuple[AudioTag, bool]]) -> None:
@@ -217,7 +216,7 @@ class MediaMonkey(MediaPlayer):
         self.logger = logging.getLogger("PlexSync.MediaMonkey")
         self.sdb = None
         self.abbr = "MM"
-        self.playlists = {}
+        self._title_to_id_map = {}
 
     @staticmethod
     def name() -> str:
@@ -246,7 +245,7 @@ class MediaMonkey(MediaPlayer):
         for part in nested_playlists:
             current_path.append(part)
             path_title = ".".join(current_path)
-            existing = self._find_playlist(path_title, return_native=True)
+            existing = self._search_playlists("title", path_title, return_native=True)
 
             if existing:
                 current_playlist = existing
@@ -270,26 +269,11 @@ class MediaMonkey(MediaPlayer):
         return current_playlist
 
     def _get_playlists(self) -> List[MediaMonkeyPlaylist]:
-        playlists = []
-        root = self.sdb.PlaylistByTitle("")
-
-        def get_playlists(parent: MediaMonkeyPlaylist, titles: Optional[List[str]] = None):
-            for i in range(len(parent.ChildPlaylists)):
-                pl = parent.ChildPlaylists[i]
-                title = f"{".".join(titles)}.{pl.Title}" if titles else pl.Title
-                self.playlists[f"{title.lower()}"] = pl.ID  # todo: get rid of the cache
-                playlist = self._convert_playlist(pl, title=title)
-                playlists.append(playlist)
-                if len(pl.ChildPlaylists):
-                    titles = titles if titles else []
-                    get_playlists(pl, [*titles, pl.Title])
-
-        get_playlists(root)
-        return playlists
+        return self._search_playlists("all")
 
     def read_playlist_tracks(self, playlist: Playlist) -> None:
         """Read tracks from a native playlist"""
-        native_playlist = self._find_playlist(playlist.name, return_native=True)
+        native_playlist = self._search_playlists("title", playlist.name, return_native=True)
         if not playlist.is_auto_playlist:
             bar = None
             for j in range(native_playlist.Tracks.Count):
@@ -302,26 +286,69 @@ class MediaMonkey(MediaPlayer):
             bar.close() if bar else None
 
     def _find_playlist(self, title: str, return_native: bool = False) -> Optional[MediaMonkeyPlaylist]:
-        if not self.playlists:
-            self._get_playlists()
-
-        playlist_id = self.playlists.get(title.lower())
-        if not playlist_id:
-            return None
-        elif return_native:
-            return self.sdb.PlaylistByID(playlist_id)
-        else:
-            return self._convert_playlist(self.sdb.PlaylistByID(playlist_id), title=title)
+        results = self.search_playlists("title", title)
+        return results[0] if results else None
 
     def _convert_playlist(self, native_playlist: MediaMonkeyPlaylist, title: str) -> Optional[Playlist]:
+        """Convert a MediaMonkey native playlist to a standard Playlist object. Also register the title → ID mapping."""
+        if not native_playlist or not title:
+            self.logger.warning("Invalid playlist conversion request")
+            return None
+
         playlist = Playlist(ID=native_playlist.ID, name=title, player=self)
         playlist.is_auto_playlist = native_playlist.isAutoplaylist
+        # TODO: _native will be removed later once all paths use _search_playlists
         playlist._native = native_playlist
 
         return playlist
 
-    def _search_playlists(self, key: str, value: Union[str, bool], return_native: bool = False) -> List[Playlist]:
-        raise NotImplementedError("PlexPlayer does not support searching for playlists by key.")
+    def _register_playlist_title(self, title: str, ID: int) -> None:
+        key = title.lower()
+        if key in self._title_to_id_map:
+            existing = self._title_to_id_map[key]
+            if existing != ID:
+                raise ValueError(f"Ambiguous playlist title '{title}' maps to multiple IDs: {existing}, {ID}. Please rename one of the playlists.")
+        self._title_to_id_map[key] = ID
+
+    def _collect_playlists(self, parent: MediaMonkeyPlaylist, prefix: str = "") -> List[Tuple[MediaMonkeyPlaylist, str]]:
+        """Recursively collect playlists and their titles."""
+        results = []
+        for i in range(len(parent.ChildPlaylists)):
+            pl = parent.ChildPlaylists[i]
+            title = f"{prefix}.{pl.Title}" if prefix else pl.Title
+            self._register_playlist_title(title, pl.ID)
+            results.append((pl, title))
+            if len(pl.ChildPlaylists):
+                results.extend(self._collect_playlists(pl, title))
+        return results
+
+    def _search_playlists(self, key: str, value: Union[str, bool], return_native: bool = False) -> List[Union[Playlist, MediaMonkeyPlaylist]]:
+        """Search for playlists by 'all', 'title', or 'id' using COM interface."""
+        if key not in {"all", "title", "id"}:
+            raise ValueError(f"Invalid search key: {key}")
+
+        native_results = []
+
+        if key == "all":
+            native_results = self._collect_playlists(self.sdb.PlaylistByTitle(""))
+
+        elif key == "title":
+            playlist_id = self._title_to_id_map.get(value.lower())
+            if playlist_id:
+                return self._search_playlists("id", playlist_id, return_native)
+
+        elif key == "id":
+            try:
+                pl = self.sdb.PlaylistByID(int(value))
+                native_results.append((pl, pl.Title))
+            except Exception:
+                self.logger.warning(f"Failed to retrieve playlist by ID: {value}")
+                return []
+
+        if return_native:
+            return [pl for pl, _ in native_results]
+        else:
+            return [self._convert_playlist(pl, title) for pl, title in native_results]
 
     def _read_track_metadata(self, track: MediaMonkeyTrack) -> AudioTag:
         cached = self.cache_mgr.get_metadata(self.name(), track.ID)
@@ -394,12 +421,9 @@ class MediaMonkey(MediaPlayer):
 
     def _add_track_to_playlist(self, playlist: Union[MediaMonkeyPlaylist, Playlist], track: AudioTag) -> None:
         """Add a track to a playlist using the Playlist object"""
-        if isinstance(playlist, Playlist) and not playlist._native:
-            playlist._native = self._find_playlist(playlist.name, return_native=True)
-        elif not isinstance(playlist, Playlist):
-            playlist._native = self._find_playlist(playlist.name, return_native=True)
+        native_playlist = self._search_playlists("id", playlist.ID, return_native=True)[0]
 
-        if not playlist._native:
+        if not native_playlist:
             self.logger.warning(f"Native playlist not found for {playlist.name}")
             return
 
@@ -407,15 +431,12 @@ class MediaMonkey(MediaPlayer):
         if not matches:
             self.logger.warning(f"Could not find track for: {track} in {self.name()}")
             return
-        playlist._native.AddTrack(matches[0])
+        native_playlist.AddTrack(matches[0])
 
     def _remove_track_from_playlist(self, playlist: Union[MediaMonkeyPlaylist, Playlist], track: AudioTag) -> None:
         """Remove a track from a playlist using the Playlist object"""
-        if isinstance(playlist, Playlist) and not playlist._native:
-            playlist._native = self._find_playlist(playlist.name, return_native=True)
-        elif not isinstance(playlist, Playlist):
-            playlist._native = self._find_playlist(playlist.name, return_native=True)
-        if not playlist._native:
+        native_playlist = self._search_playlists("id", playlist.ID, return_native=True)[0]
+        if not native_playlist:
             self.logger.warning(f"Native playlist not found for {playlist.name}")
             return
 
@@ -423,7 +444,7 @@ class MediaMonkey(MediaPlayer):
         if not matches:
             self.logger.warning(f"Could not find track for: {track} in {self.name()}")
             return
-        playlist._native.RemoveTrack(matches[0])
+        native_playlist.RemoveTrack(matches[0])
 
 
 class PlexPlayer(MediaPlayer):
@@ -610,7 +631,6 @@ class PlexPlayer(MediaPlayer):
     def _search_tracks(self, key: str, value: Union[bool, str], return_native: bool = False) -> List[PlexTrack]:
         if key == "title":
             matches = self.music_library.searchTracks(title=value)
-            self.logger.debug(f"Found tracks for query title={value}")
         elif key == "rating":
             if value is True:
                 value = "0"
@@ -745,19 +765,18 @@ class FileSystemPlayer(MediaPlayer):
         """Search for audio files matching criteria"""
 
         tracks = []
+        player_mask = self.cache_mgr.metadata_cache.cache["player_name"] == self.name().lower()
 
         if key == "id":
             tracks = [self.cache_mgr.get_metadata(self.name(), value, force_enable=True)]
         elif key == "title":
-            mask = self.cache_mgr.metadata_cache.cache[key].apply(lambda x: fuzz.ratio(str(x).lower(), str(value).lower()) >= self.SEARCH_THRESHOLD)
-            tracks = self.cache_mgr.get_tracks_by_filter(mask)
+            title_mask = self.cache_mgr.metadata_cache.cache[key].apply(lambda x: fuzz.ratio(str(x).lower(), str(value).lower()) >= self.SEARCH_THRESHOLD)
+            tracks = self.cache_mgr.get_tracks_by_filter(player_mask & title_mask)
         elif key == "rating":
             if value is True:
                 value = 0
             rating_mask = self.cache_mgr.metadata_cache.cache["rating"] > Rating(value, scale=RatingScale.ZERO_TO_FIVE).to_float(RatingScale.NORMALIZED)
-            mask = (self.cache_mgr.metadata_cache.cache["player_name"] == self.name()) & rating_mask
-            tracks = self.cache_mgr.get_tracks_by_filter(mask)
-        self.logger.debug(f"Found {len(tracks)} tracks for {key}={value}")
+            tracks = self.cache_mgr.get_tracks_by_filter(player_mask & rating_mask)
         return tracks
 
     def update_rating(self, track: AudioTag, rating: Rating) -> None:
@@ -766,7 +785,7 @@ class FileSystemPlayer(MediaPlayer):
             self.logger.info(f"DRY RUN: Would update rating for {track} to {rating.to_display()})")
             return
 
-        self.fsp.update_track_metadata(file_path=track.file_path, rating=rating)
+        self.fsp.update_track_metadata(file_path=track.ID, rating=rating)
         track.rating = rating
         self.cache_mgr.set_metadata(self.name(), track.ID, track, force_enable=True)
         self.logger.info(f"Successfully updated rating for {track}")
@@ -801,19 +820,19 @@ class FileSystemPlayer(MediaPlayer):
         if key == "all":
             playlists = self.fsp.get_playlists()
         elif key == "title":
-            result = self.fsp.get_playlists(title=value)
-            playlists = [result] if result else []
+            playlists = self.fsp.get_playlists(title=value)
         elif key == "id":
-            result = self.fsp.get_playlists(path=value)
-            playlists = [result] if result else []
+            playlists = self.fsp.get_playlists(path=value)
         else:
-            playlists = ValueError(f"Invalid search key {key}")
+            raise ValueError(f"Invalid search key {key}")
+
+        # TODO: remove this once _player has been deprecated
         [setattr(p, "_player", self) for p in playlists]
         return playlists
 
     def read_playlist_tracks(self, playlist: Playlist) -> None:
         """Read tracks from a native playlist"""
-        tracks = self.fsp.get_tracks_from_playlist(playlist.file_path)
+        tracks = self.fsp.get_tracks_from_playlist(playlist.ID)
         bar = None
         if len(tracks) >= 100:
             bar = self.status_mgr.start_phase(f"Reading tracks from playlist {playlist.name}", total=len(tracks))
@@ -829,7 +848,7 @@ class FileSystemPlayer(MediaPlayer):
             self.logger.warning("Playlist not found or invalid")
             return
         self.logger.debug(f"Adding track {track.ID} to playlist {playlist.name}")
-        self.fsp.add_track_to_playlist(playlist.file_path, track, is_extm3u=playlist.is_extm3u)
+        self.fsp.add_track_to_playlist(playlist.ID, track, is_extm3u=playlist.is_extm3u)
 
     def _remove_track_from_playlist(self, playlist: Playlist, track: AudioTag) -> None:
         """Remove a track from a playlist"""
