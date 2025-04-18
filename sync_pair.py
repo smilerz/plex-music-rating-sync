@@ -304,14 +304,11 @@ class TrackPair(SyncPair):
         )
         return np.average(scores)
 
-    def sync(self, force: bool = False, source_to_destination: bool = False) -> bool:
+    def sync(self, force: bool = False) -> bool:
         """Synchronizes the source and destination replicas.:return: True if synchronization was successful, False otherwise"""
         destination_unrated = self.rating_destination is None or self.rating_destination.is_unrated
         if destination_unrated or force:
-            if source_to_destination:
-                self.destination_player.update_rating(self.destination, self.rating_source)
-            else:
-                self.source_player.update_rating(self.source, self.rating_destination)
+            self.source_player.update_rating(self.source, self.rating_destination)
             self.stats_mgr.increment("tracks_updated")
             return True
         return False
@@ -330,17 +327,24 @@ class PlaylistPair(SyncPair):
 
     def match(self) -> bool:
         """Find matching playlist on destination player based on name."""
-        self.destination = self.destination_player.find_playlist(title=self.source.name)
+        self.destination = self.destination_player.search_playlists("title", self.source.name)[0]
 
         if self.destination is None:
             self.sync_state = SyncState.NEEDS_UPDATE
             self.logger.info(f"Playlist {self.source.name} needs to be created")
             return False
 
+        if not self.source.tracks:
+            self.source_player.read_playlist_tracks(self.source)
+
+        if not self.destination.tracks:
+            self.destination_player.read_playlist_tracks(self.destination)
+
+        missing = self.destination.missing_tracks(self.source)
         missing = self.destination.missing_tracks(self.source)
         if missing:
             self.sync_state = SyncState.NEEDS_UPDATE
-            self.logger.info(f"Playlist {self.source.name} needs {len(missing)} tracks added")
+            self.logger.info(f"Found {len(missing)} missing tracks in playlist {self.destination}")
         else:
             self.sync_state = SyncState.UP_TO_DATE
             self.logger.info(f"Playlist {self.source.name} is up to date")
@@ -371,12 +375,13 @@ class PlaylistPair(SyncPair):
             bar = self.status_mgr.start_phase(f"Updating playlist '{self.source.name}'", total=len(track_pairs))
             for pair in track_pairs:
                 if not self.destination.has_track(pair.destination):
+                    self.logger.warning(f"Track not found in playlist {self.destination}: {pair.destination}")
                     updates.append((pair.destination, True))
                 bar.update()
             bar.close()
 
         if updates:
-            self.logger.debug(f"Adding {len(updates)} missing tracks to playlist {self.source.name}")
+            self.logger.debug(f"Adding {len(updates)} missing tracks to playlist {self.destination}")
             self.destination_player.sync_playlist(self.destination, updates)
             self.stats_mgr.increment("playlists_updated")
             return True

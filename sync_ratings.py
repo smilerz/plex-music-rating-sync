@@ -186,7 +186,7 @@ class PlexSync:
     def sync_playlists(self) -> None:
         # Start discovery phase
         print(f"Discovering playlists from {self.source_player.name()}")
-        playlists = self.source_player.read_playlists()
+        playlists = self.source_player.search_playlists("all")
         if not playlists:
             self.logger.warning("No playlists found")
             return

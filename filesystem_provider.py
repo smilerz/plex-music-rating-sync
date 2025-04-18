@@ -948,7 +948,7 @@ class FileSystemProvider:
         title = self._get_playlist_title(playlist_path, title)
         self._playlist_title_map[title] = playlist_path
 
-        playlist = Playlist(name=title, ID=str(playlist_path).lower(), player=None)
+        playlist = Playlist(name=title, ID=str(playlist_path).lower())
         playlist.file_path = str(playlist_path)
         playlist.is_extm3u = is_extm3u
         return playlist
