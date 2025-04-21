@@ -45,7 +45,6 @@ class LogLevel(ConfigEnum):
     DEBUG = "debug"
 
 
-# TODO: where should these enums live?
 class PlayerType(ConfigEnum):
     PLEX = "plex"
     MEDIAMONKEY = "mediamonkey"
@@ -66,7 +65,6 @@ class CacheMode(ConfigEnum):
 
 class TagWriteStrategy(ConfigEnum):
     WRITE_ALL = "write_all"
-    WRITE_EXISTING = "write_existing"
     WRITE_DEFAULT = "write_default"
     OVERWRITE_DEFAULT = "overwrite_default"
 
@@ -74,7 +72,6 @@ class TagWriteStrategy(ConfigEnum):
     def description(self) -> str:
         return {
             self.WRITE_ALL: "Update ratings for all discovered media players.",
-            self.WRITE_EXISTING: "Only update ratings for media players in each file; fallback to default player if none exist.",
             self.WRITE_DEFAULT: "Update ratings only for the default player; do not remove other ratings.",
             self.OVERWRITE_DEFAULT: "Update ratings only for the default player and delete all other ratings.",
         }[self]
@@ -83,7 +80,6 @@ class TagWriteStrategy(ConfigEnum):
         return self in {
             TagWriteStrategy.WRITE_DEFAULT,
             TagWriteStrategy.OVERWRITE_DEFAULT,
-            TagWriteStrategy.WRITE_EXISTING,
         }
 
 
@@ -194,7 +190,6 @@ class ConfigManager:
         requires_default = strategy in {
             TagWriteStrategy.WRITE_DEFAULT,
             TagWriteStrategy.OVERWRITE_DEFAULT,
-            TagWriteStrategy.WRITE_EXISTING,
         }
 
         if requires_default and not getattr(self, "default_tag", None):

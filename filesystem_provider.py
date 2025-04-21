@@ -11,6 +11,7 @@ from manager import get_manager
 from manager.config_manager import ConflictResolutionStrategy, TagWriteStrategy
 from ratings import Rating, RatingScale
 from sync_items import AudioTag, Playlist
+from ui.help import ShowHelp
 
 
 class ID3Field(StrEnum):
@@ -120,24 +121,29 @@ class AudioTagHandler(abc.ABC):
         self.tag_priority_order = tagging_policy.get("tag_priority_order") if tagging_policy else None
 
     # ------------------------------
-    # Lifecycle Phase 0: Capability
+    # Phase 1: Metadata Extraction
     # ------------------------------
     @abc.abstractmethod
     def can_handle(self, file: mutagen.FileType) -> bool:
         """Return True if this handler supports the given file."""
         raise NotImplementedError("can_handle() not implemented")
 
-    # ------------------------------
-    # Phase 1: Extraction
-    # ------------------------------
     @abc.abstractmethod
     def extract_metadata(self, audio_file: mutagen.FileType) -> Tuple[AudioTag, Dict[str, Any]]:
         """Read *only* raw rating-tag values from the file."""
         raise NotImplementedError("extract_metadata() not implemented")
 
     # ------------------------------
-    # Phase 2: Resolution
+    # Phase 2: Normalization
     # ------------------------------
+    @abc.abstractmethod
+    def _try_normalize(self, raw_value: Union[str, float], tag_key: str) -> Optional[Rating]:
+        """
+        Attempt to convert a single raw tag_value into a Rating.
+        Subclasses implement scale inference or parsing here.
+        """
+        raise NotImplementedError("Subclasses must implement _try_normalize()")
+
     def resolve_rating(self, raw_ratings: Dict[str, Union[str, float]], track: AudioTag) -> Optional[Rating]:
         """Attempt to resolve a final rating based on raw values and context."""
         normalized: Dict[str, Rating] = {}
@@ -165,14 +171,6 @@ class AudioTagHandler(abc.ABC):
 
         # genuine conflict
         return self._resolve_conflict(normalized, track)
-
-    @abc.abstractmethod
-    def _try_normalize(self, raw_value: Union[str, float], tag_key: str) -> Optional[Rating]:
-        """
-        Attempt to convert a single raw tag_value into a Rating.
-        Subclasses implement scale inference or parsing here.
-        """
-        raise NotImplementedError("Subclasses must implement _try_normalize()")
 
     def _resolve_conflict(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Optional[Rating]:
         strat = self.conflict_resolution_strategy
@@ -219,13 +217,12 @@ class AudioTagHandler(abc.ABC):
     def _resolve_choice(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Optional[Rating]:
         """Default interactive chooser: list each tag and rating, let user pick or skip."""
         items = list(ratings_by_tag.items())
-        print(f"\nConflicting ratings for {track.artist} - {track.album} - {track.title}:")
-        for idx, (key, rating) in enumerate(items, start=1):
-            print(f"  {idx}) {key:<20} : {rating.to_display()}")
-        print(f"  {len(items)+1}) Skip / defer")
-
         while True:
-            choice = input(f"Select [1-{len(items)+1}]: ").strip()
+            print(f"\nConflicting ratings for {track.artist} - {track.album} - {track.title}:")
+            for idx, (key, rating) in enumerate(items, start=1):
+                player_name = self.tag_registry.get_player_name_for_key(key)
+                print(f"  {idx}) {player_name:<30} : {rating.to_display()}")
+            choice = input(f"Select [1-{len(items)}]: ").strip()
             if choice.isdigit():
                 i = int(choice)
                 if 1 <= i <= len(items):
@@ -239,7 +236,25 @@ class AudioTagHandler(abc.ABC):
         return True
 
     # ------------------------------
-    # Phase 3: Orchestration
+    # Phase 3: Finalization / Scale Inference
+    # ------------------------------
+    @abc.abstractmethod
+    def finalize_rating_strategy(self, conflicts: List[dict]) -> None:
+        """
+        After a full scan, infer dominant scales or prompt for strategy settings.
+        """
+        raise NotImplementedError("finalize_rating_strategy() not implemented")
+
+    # ------------------------------
+    # Phase 4: Writing
+    # ------------------------------
+    @abc.abstractmethod
+    def apply_tags(self, audio_file: mutagen.FileType, metadata: Optional[Dict[str, Any]], rating: Optional[Rating] = None) -> mutagen.FileType:
+        """Write metadata fields and the resolved rating back to the file."""
+        raise NotImplementedError("apply_tags() not implemented")
+
+    # ------------------------------
+    # Phase 5: Orchestration
     # ------------------------------
     def read_tags(self, audio_file: mutagen.FileType) -> Tuple[AudioTag, Optional[Dict[str, Any]]]:
         """
@@ -257,25 +272,7 @@ class AudioTagHandler(abc.ABC):
         return track, raw
 
     # ------------------------------
-    # Phase 4: Writing
-    # ------------------------------
-    @abc.abstractmethod
-    def apply_tags(self, audio_file: mutagen.FileType, metadata: Optional[Dict[str, Any]], rating: Optional[Rating] = None) -> mutagen.FileType:
-        """Write metadata fields and the resolved rating back to the file."""
-        raise NotImplementedError("apply_tags() not implemented")
-
-    # ------------------------------
-    # Phase 5: Finalization
-    # ------------------------------
-    @abc.abstractmethod
-    def finalize_rating_strategy(self, conflicts: List[dict]) -> None:
-        """
-        After a full scan, infer dominant scales or prompt for strategy settings.
-        """
-        raise NotImplementedError("finalize_rating_strategy() not implemented")
-
-    # ------------------------------
-    # Utilities
+    # Utility
     # ------------------------------
     def _show_conflicts(self, conflicts: List[dict]) -> None:
         print("\nConflicts:")
@@ -304,12 +301,6 @@ class VorbisHandler(AudioTagHandler):
         self.conflict_resolution_strategy = ConflictResolutionStrategy.HIGHEST
 
     # ------------------------------
-    # Capability Detection
-    # ------------------------------
-    def can_handle(self, file: mutagen.FileType) -> bool:
-        return hasattr(file, "tags") and (VorbisField.FMPS_RATING.value in file.tags or VorbisField.RATING.value in file.tags)
-
-    # ------------------------------
     # Phase 1: Metadata Extraction
     # ------------------------------
     def extract_metadata(self, audio_file: mutagen.FileType) -> Tuple[AudioTag, Dict[str, Any]]:
@@ -321,6 +312,20 @@ class VorbisHandler(AudioTagHandler):
                 raw[key] = audio_file.get(key, [None])[0]
         return tag, raw
 
+    def _get_audiotag(self, audio_file: mutagen.FileType, file_path: str) -> AudioTag:
+        track_num = audio_file.get(VorbisField.TRACKNUMBER.value, ["0"])[0]
+        duration = getattr(getattr(audio_file, "info", None), "length", -1)
+        return AudioTag(
+            artist=audio_file.get(VorbisField.ARTIST.value, [""])[0],
+            album=audio_file.get(VorbisField.ALBUM.value, [""])[0],
+            title=audio_file.get(VorbisField.TITLE.value, [""])[0],
+            file_path=file_path,
+            ID=file_path.lower(),
+            track=int(track_num.split("/")[0]),
+            duration=int(duration or -1),
+            rating=None,
+        )
+
     # ------------------------------
     # Phase 2: Normalization Hook
     # ------------------------------
@@ -329,7 +334,7 @@ class VorbisHandler(AudioTagHandler):
         rating = Rating.try_create(raw_value, scale=scale, aggressive=self.aggressive_inference)
 
         if not scale and rating:
-            self.stats_mgr.increment(f"VorbisHandler::scale_inferred::{tag_key}::{rating.scale.name}")
+            self.stats_mgr.increment(f"VorbisHandler::inferred_scale::{tag_key}::{rating.scale.name}")
 
         if rating is not None:
             return rating
@@ -350,7 +355,7 @@ class VorbisHandler(AudioTagHandler):
         self._print_summary()
 
         def pick_scale(field: VorbisField) -> Optional[RatingScale]:
-            stats = self.stats_mgr.get(f"VorbisHandler::scale_inferred::{field.value}")
+            stats = self.stats_mgr.get(f"VorbisHandler::inferred_scale::{field.value}")
             if not stats:
                 return None
             max_count = max(stats.values())
@@ -363,11 +368,9 @@ class VorbisHandler(AudioTagHandler):
 
     def _print_summary(self) -> None:
         """Print the stats of inferred scales and current strategy."""
-        # TODO: consolidate to FSP finalize_scan method and make debug log messages
-        # NOTE: this will require some refactoring of the stats manager to make keys consistent and match handlers
         print("\nFLAC/OGG (Vorbis) Ratings Summary:")
         for field in (VorbisField.RATING, VorbisField.FMPS_RATING):
-            stats = self.stats_mgr.get(f"VorbisHandler::scale_inferred::{field.value}")
+            stats = self.stats_mgr.get(f"VorbisHandler::inferred_scale::{field.value}")
             if stats:
                 print(f"  {field.value} scale usage:")
                 for scale, count in stats.items():
@@ -398,19 +401,8 @@ class VorbisHandler(AudioTagHandler):
     # ------------------------------
     # Utility
     # ------------------------------
-    def _get_audiotag(self, audio_file: mutagen.FileType, file_path: str) -> AudioTag:
-        track_num = audio_file.get(VorbisField.TRACKNUMBER.value, ["0"])[0]
-        duration = getattr(getattr(audio_file, "info", None), "length", -1)
-        return AudioTag(
-            artist=audio_file.get(VorbisField.ARTIST.value, [""])[0],
-            album=audio_file.get(VorbisField.ALBUM.value, [""])[0],
-            title=audio_file.get(VorbisField.TITLE.value, [""])[0],
-            file_path=file_path,
-            ID=file_path.lower(),
-            track=int(track_num.split("/")[0]),
-            duration=int(duration or -1),
-            rating=None,
-        )
+    def can_handle(self, file: mutagen.FileType) -> bool:
+        return hasattr(file, "tags") and (VorbisField.FMPS_RATING.value in file.tags or VorbisField.RATING.value in file.tags)
 
 
 class ID3Handler(AudioTagHandler):
@@ -418,12 +410,6 @@ class ID3Handler(AudioTagHandler):
         super().__init__(tagging_policy=tagging_policy, **kwargs)
         self.tag_registry = ID3TagRegistry()
         self.discovered_rating_tags: set[str] = set()
-
-    # ------------------------------
-    # Capability Detection
-    # ------------------------------
-    def can_handle(self, file: mutagen.FileType) -> bool:
-        return isinstance(file, ID3FileType) or (hasattr(file, "tags") and any(key.startswith("POPM:") or key == "TXXX:RATING" for key in getattr(file, "tags", {}).keys()))
 
     # ------------------------------
     # Phase 1: Metadata Extraction
@@ -453,8 +439,24 @@ class ID3Handler(AudioTagHandler):
 
         return track, raw
 
+    def _get_audiotag(self, audio_file: mutagen.FileType, file_path: str, duration: int = -1) -> AudioTag:
+        def _safe(field: str) -> str:
+            return audio_file.get(field).text[0] if audio_file.get(field) else ""
+
+        track = _safe("TRCK") or "0"
+        return AudioTag(
+            artist=_safe("TPE1"),
+            album=_safe("TALB"),
+            title=_safe("TIT2"),
+            file_path=file_path,
+            rating=None,
+            ID=file_path.lower(),
+            track=int(track.split("/")[0]),
+            duration=duration,
+        )
+
     # ------------------------------
-    # Phase 2: Normalization Hook
+    # Phase 2: Normalization
     # ------------------------------
     def _try_normalize(self, raw_value: Union[str, float], tag_key: str) -> Optional[Rating]:
         id3_tag = self.tag_registry.get_id3_tag_for_key(tag_key) or ""
@@ -467,7 +469,13 @@ class ID3Handler(AudioTagHandler):
     # ------------------------------
     # Phase 3: Finalization / Scale Inference
     # ------------------------------
-    def finalize_rating_strategy(self, conflicts: List[dict]) -> None:
+
+    def finalize_rating_strategy(self, conflicts: list[dict]) -> None:
+        def _is_valid_choice(choice: str, max_value: int, allow_help: bool = True) -> bool:
+            if allow_help and choice in ("?", "h", "help"):
+                return True
+            return choice.isdigit() and 1 <= int(choice) <= max_value
+
         conflicts = [c for c in conflicts if c.get("handler") is self]
         tag_counts = self.stats_mgr.get("ID3Handler::tags_used") or {}
         unique = [
@@ -482,39 +490,62 @@ class ID3Handler(AudioTagHandler):
         has_conflicts = len(conflicts) > 0
         needs_save = False
 
+        def _settings_required() -> bool:
+            return any(
+                [
+                    self.conflict_resolution_strategy is None and has_conflicts,
+                    self.conflict_resolution_strategy == ConflictResolutionStrategy.PRIORITIZED_ORDER and has_multiple and not self.tag_priority_order,
+                    has_multiple and not self.tag_write_strategy,
+                    self.tag_write_strategy and self.tag_write_strategy.requires_default_tag() and not self.default_tag,
+                ]
+            )
+
+        if not _settings_required():
+            return  # No settings required, exit early
+
         self._print_summary()
 
-        # Step 1: conflict strategy
-        if has_conflicts and self.conflict_resolution_strategy is None:
+        # Conflict resolution strategy prompt
+        if self.conflict_resolution_strategy is None and has_conflicts:
+            print("\nHow should rating conflicts be resolved when different media players have stored different ratings for the same track?")
+            print("Choose a strategy below. This affects how those ratings are interpreted:")
+
             while True:
-                print("\nChoose conflict resolution strategy:")
                 for i, strat in enumerate(ConflictResolutionStrategy, start=1):
                     print(f"  {i}) {strat.display}")
                 print(f"  {len(ConflictResolutionStrategy)+1}) Show conflicts")
-                print(f"  {len(ConflictResolutionStrategy)+2}) Ignore conflicts")
-                choice = input(f"Select [1-{len(ConflictResolutionStrategy)+2}]: ").strip()
-                if choice.isdigit():
-                    idx = int(choice)
-                    if 1 <= idx <= len(ConflictResolutionStrategy):
-                        self.conflict_resolution_strategy = list(ConflictResolutionStrategy)[idx - 1]
-                        needs_save = True
-                        break
-                    if idx == len(ConflictResolutionStrategy) + 1:
-                        self._show_conflicts(conflicts)
-                        continue
-                    if idx == len(ConflictResolutionStrategy) + 2:
-                        break
-                print("Invalid choice.")
+                choice = input(f"Select [1-{len(ConflictResolutionStrategy) + 1}] or '?' for help: ").strip().lower()
 
-        # Step 2: priority order
+                if choice in ("?", "h", "help"):
+                    print(ShowHelp.ConflictResolution)
+                    continue
+
+                if choice == str(len(ConflictResolutionStrategy) + 1):
+                    self._show_conflicts(conflicts)
+                    continue
+
+                if _is_valid_choice(choice, len(ConflictResolutionStrategy), allow_help=False):
+                    idx = int(choice)
+                    self.conflict_resolution_strategy = list(ConflictResolutionStrategy)[idx - 1]
+                    needs_save = True
+                    break
+
+                print("Invalid choice. Enter a number, '?' or 'help'.")
+
+        # Tag priority order prompt
         if self.conflict_resolution_strategy == ConflictResolutionStrategy.PRIORITIZED_ORDER and has_multiple and not self.tag_priority_order:
+            print("\nMultiple media players have written ratings to this file. Please choose the order of preference (highest first).")
+            print("This determines which player's rating takes priority when they conflict.")
             while True:
-                print("\nEnter tag priority (highest-first), comma-separated:")
+                print("Enter the numbers as a comma-separated list.")
                 for i, info in enumerate(unique, start=1):
                     print(f"  {i}) {info['player']}")
-                sel = input("Your order: ").strip()
+                choice = input("Your order (comma-separated), or '?' for help: ").strip().lower()
+                if choice in ("?", "h", "help"):
+                    print(ShowHelp.TagPriority)
+                    continue
                 try:
-                    idxs = [int(x) for x in sel.split(",")]
+                    idxs = [int(x) for x in choice.split(",")]
                     if all(1 <= x <= len(unique) for x in idxs):
                         self.tag_priority_order = [unique[x - 1]["key"] for x in idxs]
                         needs_save = True
@@ -523,47 +554,56 @@ class ID3Handler(AudioTagHandler):
                     pass
                 print("Invalid input.")
 
-        # Step 3: write strategy
-        # TODO: decide when this should be displayed - if every file has the same tag is it necessary?
-        # TODO: add better instructions for end user - perhaps a help menu?
+        # Write strategy prompt
         if has_multiple and not self.tag_write_strategy:
+            print("\nHow should ratings be written back to your files?")
+            print("Choose a write strategy. This controls which tags are updated:")
+
             while True:
-                print("\nChoose write strategy:")
                 for i, strat in enumerate(TagWriteStrategy, start=1):
                     print(f"  {i}) {strat.display}")
-                c = input(f"Select [1-{len(TagWriteStrategy)}]: ").strip()
-                if c.isdigit() and 1 <= int(c) <= len(TagWriteStrategy):
-                    self.tag_write_strategy = list(TagWriteStrategy)[int(c) - 1]
+                choice = input(f"Select [1-{len(TagWriteStrategy)}], or '?' for help: ").strip().lower()
+                if choice in ("?", "h", "help"):
+                    print(ShowHelp.WriteStrategy)
+                    continue
+                if _is_valid_choice(choice, len(TagWriteStrategy), allow_help=False):
+                    self.tag_write_strategy = list(TagWriteStrategy)[int(choice) - 1]
                     needs_save = True
                     break
                 print("Invalid choice.")
 
-        # Step 4: default tag
+        # Preferred player tag prompt
         if self.tag_write_strategy and self.tag_write_strategy.requires_default_tag() and not self.default_tag:
+            print("Which media player do you use most often to view or manage ratings?")
+            print("Select the one whose format should be used to store ratings in your files:")
+
             while True:
-                print("\nSelect default tag for writing:")
                 for i, info in enumerate(unique, start=1):
                     print(f"  {i}) {info['player']}")
-                c = input(f"Select [1-{len(unique)}]: ").strip()
-                if c.isdigit() and 1 <= int(c) <= len(unique):
-                    self.default_tag = unique[int(c) - 1]["key"]
+                choice = input(f"Select [1-{len(unique)}], or '?' for help: ").strip().lower()
+                if choice in ("?", "h", "help"):
+                    print(ShowHelp.PreferredPlayerTag)
+                    continue
+                if _is_valid_choice(choice, len(unique), allow_help=False):
+                    self.default_tag = unique[int(choice) - 1]["key"]
                     needs_save = True
                     break
                 print("Invalid choice.")
 
-        # Step 5: save config
-        cfg = get_manager().get_config_manager()
-        cfg.conflict_resolution_strategy = self.conflict_resolution_strategy
-        cfg.tag_write_strategy = self.tag_write_strategy
-        cfg.default_tag = self.default_tag
-        cfg.tag_priority_order = self.tag_priority_order
+        # Save config if changed
         if needs_save:
+            cfg = get_manager().get_config_manager()
+            cfg.conflict_resolution_strategy = self.conflict_resolution_strategy
+            cfg.tag_write_strategy = self.tag_write_strategy
+            cfg.default_tag = self.default_tag
+            cfg.tag_priority_order = self.tag_priority_order
+
             while True:
-                yn = input("\nSave settings to config.ini? (y/n): ").strip().lower()
-                if yn in ("y", "yes"):
+                choice = input("\nSave settings to config.ini? (y/n): ").strip().lower()
+                if choice in ("y", "yes"):
                     cfg.save_config()
                     break
-                if yn in ("n", "no"):
+                if choice in ("n", "no"):
                     break
                 print("Please enter y or n.")
 
@@ -581,9 +621,6 @@ class ID3Handler(AudioTagHandler):
             dt = self.tag_registry.get_player_name_for_key(self.default_tag) or self.default_tag
             print(f"Default tag: {dt}")
 
-    def _get_label(self, tag_key: str) -> str:
-        return self.tag_registry.display_name(tag_key)
-
     # ------------------------------
     # Phase 4: Writing
     # ------------------------------
@@ -599,9 +636,6 @@ class ID3Handler(AudioTagHandler):
                 to_write = {self.default_tag}
             elif self.tag_write_strategy == TagWriteStrategy.WRITE_ALL:
                 to_write = self.discovered_rating_tags
-            elif self.tag_write_strategy == TagWriteStrategy.WRITE_EXISTING:
-                existing = {self.tag_registry.register(fk) for fk, fr in audio_file.tags.items() if isinstance(fr, POPM) or (isinstance(fr, TXXX) and fk == "TXXX:RATING")}
-                to_write = existing or {self.default_tag}
             elif self.tag_write_strategy == TagWriteStrategy.WRITE_DEFAULT:
                 to_write = {self.default_tag}
             else:
@@ -644,21 +678,11 @@ class ID3Handler(AudioTagHandler):
     # ------------------------------
     # Utility
     # ------------------------------
-    def _get_audiotag(self, audio_file: mutagen.FileType, file_path: str, duration: int = -1) -> AudioTag:
-        def _safe(field: str) -> str:
-            return audio_file.get(field).text[0] if audio_file.get(field) else ""
+    def can_handle(self, file: mutagen.FileType) -> bool:
+        return isinstance(file, ID3FileType) or (hasattr(file, "tags") and any(key.startswith("POPM:") or key == "TXXX:RATING" for key in getattr(file, "tags", {}).keys()))
 
-        track = _safe("TRCK") or "0"
-        return AudioTag(
-            artist=_safe("TPE1"),
-            album=_safe("TALB"),
-            title=_safe("TIT2"),
-            file_path=file_path,
-            rating=None,
-            ID=file_path.lower(),
-            track=int(track.split("/")[0]),
-            duration=duration,
-        )
+    def _get_label(self, tag_key: str) -> str:
+        return self.tag_registry.display_name(tag_key)
 
 
 class FileSystemProvider:
@@ -688,39 +712,7 @@ class FileSystemProvider:
         return next((handler for handler in self._handlers if handler.can_handle(audio_file)), None)
 
     # ------------------------------
-    # File Handling (Low-Level Helpers)
-    # ------------------------------
-    def _open_audio_file(self, file_path: Union[Path, str]) -> Optional[mutagen.FileType]:
-        """Helper function to open an audio file using mutagen."""
-        try:
-            audio_file = mutagen.File(file_path, easy=False)
-            if not audio_file:
-                self.logger.warning(f"Unsupported audio format for file: {file_path}")
-                raise ValueError(f"Unsupported audio format: {file_path}")
-            return audio_file
-        except Exception as e:
-            self.logger.error(f"Error opening file {file_path}: {e}", exc_info=True)
-            return None
-
-    def _save_audio_file(self, audio_file: mutagen.FileType) -> bool:
-        """Helper function to save changes to an audio file."""
-        if self.config_mgr.dry:
-            self.logger.info(f"Dry run enabled. Changes to {audio_file.filename} will not be saved.")
-            return True  # Simulate a successful save
-
-        try:
-            if isinstance(audio_file, ID3FileType):
-                audio_file.save(v2_version=3)
-            else:
-                audio_file.save()
-            self.logger.info(f"Successfully saved changes to {audio_file.filename}")
-            return True
-        except Exception as e:
-            self.logger.error(f"Failed to save file {audio_file.filename}: {e}", exc_info=True)
-            return False
-
-    # ------------------------------
-    # File Discovery (Scanning)
+    # Phase 1: File Discovery (Scanning)
     # ------------------------------
     def scan_media_files(self) -> None:
         """Scan configured paths for audio and playlist files without duplication or scope leakage."""
@@ -794,54 +786,9 @@ class FileSystemProvider:
 
         return playlists
 
-    def finalize_scan(self) -> List[AudioTag]:
-        """Finalize the scan by letting handlers resolve strategies and processing deferred tracks."""
-        # give each handler a chance to configure conflict strategy / infer scales
-        for handler in self._handlers:
-            handler.finalize_rating_strategy(self.deferred_tracks)
-
-        resolved_tracks: List[AudioTag] = []
-        total = len(self.deferred_tracks)
-        bar = self.status_mgr.start_phase("Resolving rating conflicts", total=total) if total > 100 else None
-
-        for entry in self.deferred_tracks:
-            track = entry["track"]
-            handler = entry["handler"]
-            raw = entry["raw"]
-
-            self.logger.debug(f"Resolving deferred rating for {track.artist} | {track.album} | {track.title}")
-            # new lifecycle: normalize & resolve from raw only
-            rating = handler.resolve_rating(raw, track)
-            track.rating = rating
-
-            # write back whichever rating (or unrated) was chosen
-            self.update_track_metadata(track.file_path, rating=track.rating)
-            resolved_tracks.append(track)
-
-            bar.update() if bar else None
-
-        bar.close() if bar else None
-
-        return resolved_tracks
-
     # ------------------------------
-    # Metadata Access and Update
+    # Phase 2: Metadata Access and Update
     # ------------------------------
-    def _get_playlist_title(self, path: Path, base_title: Optional[str]) -> str:
-        candidate = base_title
-        rel_path = path.relative_to(self.playlist_path)
-        folders = list(reversed(rel_path.parts[:-1]))  # exclude file
-
-        parts = [base_title]
-        while candidate in self._playlist_title_map and self._playlist_title_map[candidate] != path:
-            if not folders:
-                self.logger.warning(f"Could not disambiguate duplicate playlist title: {base_title}")
-                break
-            parts.insert(0, folders.pop(0))
-            candidate = ".".join(parts)
-
-        return candidate
-
     def read_track_metadata(self, file_path: Union[Path, str]) -> Optional[AudioTag]:
         audio_file = self._open_audio_file(file_path)
         if not audio_file:
@@ -890,18 +837,39 @@ class FileSystemProvider:
                 return updated_file
         return None
 
-    # ------------------------------
-    # Playlist Operations
-    # ------------------------------
-    def _open_playlist(self, path: Path, mode: str = "r", encoding: str = "utf-8"):
-        try:
-            if "r" in mode and not path.exists():
-                raise FileNotFoundError(f"Playlist file not found: {path}")
-            return path.open(mode, encoding=encoding)
-        except Exception as e:
-            self.logger.error(f"Failed to open playlist file {path} with mode '{mode}': {e}")
-            return None
+    def finalize_scan(self) -> List[AudioTag]:
+        """Finalize the scan by letting handlers resolve strategies and processing deferred tracks."""
+        # give each handler a chance to configure conflict strategy / infer scales
+        for handler in self._handlers:
+            handler.finalize_rating_strategy(self.deferred_tracks)
 
+        resolved_tracks: List[AudioTag] = []
+        total = len(self.deferred_tracks)
+        bar = self.status_mgr.start_phase("Resolving rating conflicts", total=total) if total > 100 else None
+
+        for entry in self.deferred_tracks:
+            track = entry["track"]
+            handler = entry["handler"]
+            raw = entry["raw"]
+
+            self.logger.debug(f"Resolving deferred rating for {track.artist} | {track.album} | {track.title}")
+            # new lifecycle: normalize & resolve from raw only
+            rating = handler.resolve_rating(raw, track)
+            track.rating = rating
+
+            # write back whichever rating (or unrated) was chosen
+            self.update_track_metadata(track.file_path, rating=track.rating)
+            resolved_tracks.append(track)
+
+            bar.update() if bar else None
+
+        bar.close() if bar else None
+
+        return resolved_tracks
+
+    # ------------------------------
+    # Phase 3: Playlist Operations
+    # ------------------------------
     def create_playlist(self, title: str, is_extm3u: bool = False) -> Playlist:
         """Create a new M3U playlist file."""
         if self.config_mgr.dry:
@@ -1011,3 +979,59 @@ class FileSystemProvider:
             self.logger.info(f"Removed track {track} from playlist {playlist_path}")
         except Exception as e:
             self.logger.error(f"Failed to remove track from playlist {playlist_path}: {e}")
+
+    # ------------------------------
+    # Utility (Low-Level Helpers)
+    # ------------------------------
+    def _open_audio_file(self, file_path: Union[Path, str]) -> Optional[mutagen.FileType]:
+        """Helper function to open an audio file using mutagen."""
+        try:
+            audio_file = mutagen.File(file_path, easy=False)
+            if not audio_file:
+                self.logger.warning(f"Unsupported audio format for file: {file_path}")
+                raise ValueError(f"Unsupported audio format: {file_path}")
+            return audio_file
+        except Exception as e:
+            self.logger.error(f"Error opening file {file_path}: {e}", exc_info=True)
+            return None
+
+    def _save_audio_file(self, audio_file: mutagen.FileType) -> bool:
+        """Helper function to save changes to an audio file."""
+        if self.config_mgr.dry:
+            self.logger.info(f"Dry run enabled. Changes to {audio_file.filename} will not be saved.")
+            return True  # Simulate a successful save
+
+        try:
+            if isinstance(audio_file, ID3FileType):
+                audio_file.save(v2_version=3)
+            else:
+                audio_file.save()
+            self.logger.info(f"Successfully saved changes to {audio_file.filename}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to save file {audio_file.filename}: {e}", exc_info=True)
+            return False
+
+    def _open_playlist(self, path: Path, mode: str = "r", encoding: str = "utf-8"):
+        try:
+            if "r" in mode and not path.exists():
+                raise FileNotFoundError(f"Playlist file not found: {path}")
+            return path.open(mode, encoding=encoding)
+        except Exception as e:
+            self.logger.error(f"Failed to open playlist file {path} with mode '{mode}': {e}")
+            return None
+
+    def _get_playlist_title(self, path: Path, base_title: Optional[str]) -> str:
+        candidate = base_title
+        rel_path = path.relative_to(self.playlist_path)
+        folders = list(reversed(rel_path.parts[:-1]))  # exclude file
+
+        parts = [base_title]
+        while candidate in self._playlist_title_map and self._playlist_title_map[candidate] != path:
+            if not folders:
+                self.logger.warning(f"Could not disambiguate duplicate playlist title: {base_title}")
+                break
+            parts.insert(0, folders.pop(0))
+            candidate = ".".join(parts)
+
+        return candidate

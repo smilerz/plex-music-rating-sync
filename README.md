@@ -80,12 +80,10 @@ Create a `config.ini` file based on the template `config.ini.template`:
 
 - **`tag_write_strategy`**: *Determines how rating tags are written to files.*
   - *`write_all`*: Write to all known and configured tags.
-  - *`write_existing`*: Only update tags that already exist in the file; if no rating tags exist, write to the `default_tag`.
   - *`write_default`*: Only write to the `default_tag`; do not remove other tags.
   - *`overwrite_default`*: Write only to the `default_tag` and delete all other rating tags.
 
 - **`default_tag`**: *The canonical tag to use for writing when applicable.*  
-  - *Required for `write_default` and `overwrite_default`; used as a fallback in `write_existing` if no tags exist.*
   - *Options*: Player values such as `MEDIAMONKEY`, `WINDOWSMEDIAPLAYER`, `MUSICBEE`, `WINAMP`, `TEXT`.
   - *Unknown/custom tags (e.g., `POPM:foobar@example.com`) are also allowed.*
 
@@ -107,7 +105,7 @@ Usage description:
 ```
 usage: sync_ratings.py [-h] [-c] [-d] --source SOURCE --destination DESTINATION --sync [SYNC ...] [--log LOG] [--cache-mode {metadata,matches,matches-only,disabled}]
                        [--server SERVER] [--username USERNAME] [--passwd PASSWD] [--token TOKEN] [--path PATH] [--playlist-path PLAYLIST_PATH]
-                       [--tag-write-strategy {write_all,write_existing,write_default,overwrite_default}] [--default-tag DEFAULT_TAG]
+                       [--tag-write-strategy {write_all,write_default,overwrite_default}] [--default-tag DEFAULT_TAG]
                        [--conflict-resolution-strategy {prioritized_order,highest,lowest,average, choice}] [--tag-priority-order TAG_PRIORITY_ORDER [TAG_PRIORITY_ORDER ...]] 
 
 Synchronizes ID3 and Vorbis music ratings between media players
@@ -138,7 +136,7 @@ optional arguments:
                       - matches-only: Persistent match caching only
                       - disabled: No caching
   --tag-write-strategy  Strategy for writing rating tags to files.
-                        Options: write_all, write_existing, write_default, overwrite_default.
+                        Options: write_all, write_default, overwrite_default.
   --default-tag        Canonical tag to use for writing ratings.
                         Options: Player values such as MEDIAMONKEY, WINDOWSMEDIAPLAYER, MUSICBEE, WINAMP, TEXT.
   --conflict-resolution-strategy

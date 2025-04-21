@@ -38,7 +38,6 @@ class AudioTag(object):
             return value
         return f"{value[:length - 3]}..." if from_end else f"...{value[-(length - 3):]}"
 
-    # TODO: evaluate if this is necessary
     def details(self, player: Optional["MediaPlayer"] = None) -> str:
         """Print formatted track details."""
         track_number = self.track or 0

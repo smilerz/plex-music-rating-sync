@@ -322,6 +322,8 @@ class MediaMonkey(MediaPlayer):
             native_results = self._collect_playlists(self.sdb.PlaylistByTitle(""))
 
         elif key == "title":
+            if not self._title_to_id_map:
+                self._search_playlists("all")
             playlist_id = self._title_to_id_map.get(value.lower())
             if playlist_id:
                 return self._search_playlists("id", playlist_id, return_native)
@@ -462,13 +464,6 @@ class PlexPlayer(MediaPlayer):
     def name() -> str:
         return "PlexPlayer"
 
-    @staticmethod
-    def format(track: plexapi.audio.Track) -> str:
-        try:
-            return " - ".join([track.artist().title, track.album().title, track.title])
-        except TypeError:
-            return " - ".join([track.artist, track.album, track.title])
-
     def connect(self) -> None:
         server = self.config_mgr.server
         username = self.config_mgr.username
@@ -538,6 +533,7 @@ class PlexPlayer(MediaPlayer):
         self.logger.error(f"Exiting after {self.maximum_connection_attempts} failed attempts ...")
         exit(1)
 
+    # --- Playlist Methods ---
     def _collect_playlists(self) -> List[Tuple[PlexPlaylist, str]]:
         results = []
         for playlist in self.plex_api_connection.playlists():
@@ -558,6 +554,9 @@ class PlexPlayer(MediaPlayer):
             native_results = self._collect_playlists()
 
         elif key == "title":
+            if not self._title_to_id_map:
+                self._search_playlists("all", True)
+
             playlist_id = self._title_to_id_map.get(value.lower())
             if playlist_id:
                 return self._search_playlists("id", playlist_id, return_native)
@@ -573,18 +572,6 @@ class PlexPlayer(MediaPlayer):
             return [pl for pl, _ in native_results]
         else:
             return [self._convert_playlist(pl) for pl, title in native_results]
-
-    def _read_track_metadata(self, track: plexapi.audio.Track) -> AudioTag:
-        return AudioTag(
-            artist=track.grandparentTitle,
-            album=track.parentTitle,
-            title=track.title,
-            file_path=track.locations[0],
-            rating=Rating.try_create(track.userRating, scale=self.rating_scale) or Rating.unrated(),
-            ID=track.key.split("/")[-1] if "/" in track.key else track.key,
-            track=track.index,
-            duration=int(track.duration / 1000) if track.duration else -1,  # Convert ms to seconds
-        )
 
     def _create_playlist(self, title: str, tracks: List[AudioTag]) -> Optional[PlexPlaylist]:
         if not tracks:
@@ -607,7 +594,7 @@ class PlexPlayer(MediaPlayer):
 
     def load_playlist_tracks(self, playlist: Playlist) -> None:
         """Read tracks from a native playlist"""
-        native_playlist = self._find_playlist(playlist.name, return_native=True)
+        native_playlist = self.search_playlists("title", playlist.name, return_native=True)[0]
         if not native_playlist:
             self.logger.warning(f"Native playlist not found for {playlist.name}")
             return
@@ -632,6 +619,61 @@ class PlexPlayer(MediaPlayer):
         """Read all playlists from the Plex server and convert them to internal Playlist objects."""
         self.logger.info(f"Reading playlists from the {self.name()} player")
         return self.search_playlists("all")
+
+    def _add_track_to_playlist(self, playlist: Union[Playlist, PlexPlaylist], track: AudioTag) -> None:
+        """Add a track to a playlist using the Playlist object"""
+        native_playlist = self._search_playlists("id", playlist.ID, return_native=True)[0]
+
+        if not native_playlist:
+            self.logger.warning(f"Native playlist not found for {playlist.name}")
+            return
+
+        try:
+            matches = self.search_tracks("id", track.ID, return_native=True)
+            if not matches:
+                self.logger.warning(f"No match found for track ID: {track.ID}")
+                return
+            native_playlist.addItems(matches[0])
+        except Exception as e:
+            self.logger.error(f"Failed to search for track {track.ID}: {e!s}")
+            raise
+
+    def _remove_track_from_playlist(self, playlist: Union[PlexPlaylist, Playlist], track: AudioTag) -> None:
+        """Remove a track from a playlist using the Playlist object"""
+        native_playlist = self._search_playlists("id", playlist.ID, return_native=True)[0]
+
+        if not native_playlist:
+            self.logger.warning(f"Native playlist not found for {playlist.name}")
+            return
+
+        try:
+            matches = self.search_tracks("id", track.ID, return_native=True)
+            if not matches:
+                self.logger.warning(f"No match found for track ID: {track.ID}")
+                return
+            native_playlist.removeItem(matches[0])
+        except Exception as e:
+            self.logger.error(f"Failed to search for track {track.ID}: {e!s}")
+            raise
+
+    def _read_native_playlist_tracks(self, native_playlist: PlexPlaylist) -> List[AudioTag]:
+        return [self._read_track_metadata(item) for item in native_playlist.items()]
+
+    def _get_native_playlist_track_count(self, native_playlist: PlexPlaylist) -> int:
+        return len(native_playlist.items())
+
+    # --- Track Methods ---
+    def _read_track_metadata(self, track: plexapi.audio.Track) -> AudioTag:
+        return AudioTag(
+            artist=track.grandparentTitle,
+            album=track.parentTitle,
+            title=track.title,
+            file_path=track.locations[0],
+            rating=Rating.try_create(track.userRating, scale=self.rating_scale) or Rating.unrated(),
+            ID=track.key.split("/")[-1] if "/" in track.key else track.key,
+            track=track.index,
+            duration=int(track.duration / 1000) if track.duration else -1,  # Convert ms to seconds
+        )
 
     def _search_tracks(self, key: str, value: Union[bool, str], return_native: bool = False) -> List[PlexTrack]:
         if key == "title":
@@ -676,48 +718,6 @@ class PlexPlayer(MediaPlayer):
             raise
         self.logger.info(f"Successfully updated rating for {track}")
 
-    def _add_track_to_playlist(self, playlist: Union[Playlist, PlexPlaylist], track: AudioTag) -> None:
-        """Add a track to a playlist using the Playlist object"""
-        native_playlist = self._search_playlists("id", playlist.ID, return_native=True)[0]
-
-        if not native_playlist:
-            self.logger.warning(f"Native playlist not found for {playlist.name}")
-            return
-
-        try:
-            matches = self.search_tracks("id", track.ID, return_native=True)
-            if not matches:
-                self.logger.warning(f"No match found for track ID: {track.ID}")
-                return
-            native_playlist.addItems(matches[0])
-        except Exception as e:
-            self.logger.error(f"Failed to search for track {track.ID}: {e!s}")
-            raise
-
-    def _remove_track_from_playlist(self, playlist: Union[PlexPlaylist, Playlist], track: AudioTag) -> None:
-        """Remove a track from a playlist using the Playlist object"""
-        native_playlist = self._search_playlists("id", playlist.ID, return_native=True)[0]
-
-        if not native_playlist:
-            self.logger.warning(f"Native playlist not found for {playlist.name}")
-            return
-
-        try:
-            matches = self.search_tracks("id", track.ID, return_native=True)
-            if not matches:
-                self.logger.warning(f"No match found for track ID: {track.ID}")
-                return
-            native_playlist.removeItem(matches[0])
-        except Exception as e:
-            self.logger.error(f"Failed to search for track {track.ID}: {e!s}")
-            raise
-
-    def _read_native_playlist_tracks(self, native_playlist: PlexPlaylist) -> List[AudioTag]:
-        return [self._read_track_metadata(item) for item in native_playlist.items()]
-
-    def _get_native_playlist_track_count(self, native_playlist: PlexPlaylist) -> int:
-        return len(native_playlist.items())
-
 
 class FileSystemPlayer(MediaPlayer):
     RATING_SCALE = RatingScale.NORMALIZED
@@ -753,6 +753,7 @@ class FileSystemPlayer(MediaPlayer):
             bar.update()
         bar.close() if bar else None
 
+    # --- Track Methods ---
     def _read_track_metadata(self, file_path: Union[Path, str]) -> AudioTag:
         """Retrieve metadata from cache or read from file."""
         str_path = str(file_path)
@@ -796,6 +797,7 @@ class FileSystemPlayer(MediaPlayer):
         self.cache_mgr.set_metadata(self.name(), track.ID, track, force_enable=True)
         self.logger.info(f"Successfully updated rating for {track}")
 
+    # --- Playlist Methods ---
     def _create_playlist(self, title: str, tracks: List[AudioTag]) -> Optional[Playlist]:
         """Create a new M3U playlist file"""
         if not tracks:
