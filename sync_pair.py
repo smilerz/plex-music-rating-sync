@@ -304,11 +304,14 @@ class TrackPair(SyncPair):
         )
         return np.average(scores)
 
-    def sync(self, force: bool = False) -> bool:
+    def sync(self, force: bool = False, source_to_destination: bool = False) -> bool:
         """Synchronizes the source and destination replicas.:return: True if synchronization was successful, False otherwise"""
         destination_unrated = self.rating_destination is None or self.rating_destination.is_unrated
         if destination_unrated or force:
-            self.source_player.update_rating(self.source, self.rating_destination)
+            if source_to_destination:
+                self.destination_player.update_rating(self.destination, self.rating_source)
+            else:
+                self.source_player.update_rating(self.source, self.rating_destination)
             self.stats_mgr.increment("tracks_updated")
             return True
         return False
@@ -327,7 +330,8 @@ class PlaylistPair(SyncPair):
 
     def match(self) -> bool:
         """Find matching playlist on destination player based on name."""
-        self.destination = self.destination_player.search_playlists("title", self.source.name)[0]
+        matches = self.destination_player.search_playlists("title", self.source.name)
+        self.destination = matches[0] if matches else None
 
         if self.destination is None:
             self.sync_state = SyncState.NEEDS_UPDATE
@@ -335,10 +339,10 @@ class PlaylistPair(SyncPair):
             return False
 
         if not self.source.tracks:
-            self.source_player.read_playlist_tracks(self.source)
+            self.source_player.load_playlist_tracks(self.source)
 
         if not self.destination.tracks:
-            self.destination_player.read_playlist_tracks(self.destination)
+            self.destination_player.load_playlist_tracks(self.destination)
 
         missing = self.destination.missing_tracks(self.source)
         missing = self.destination.missing_tracks(self.source)
@@ -372,13 +376,9 @@ class PlaylistPair(SyncPair):
         """Update an existing playlist on the destination player with missing tracks."""
         updates = []
         if len(track_pairs) > 0:
-            bar = self.status_mgr.start_phase(f"Updating playlist '{self.source.name}'", total=len(track_pairs))
             for pair in track_pairs:
                 if not self.destination.has_track(pair.destination):
                     self.logger.warning(f"Track not found in playlist {self.destination}: {pair.destination}")
-                    updates.append((pair.destination, True))
-                bar.update()
-            bar.close()
 
         if updates:
             self.logger.debug(f"Adding {len(updates)} missing tracks to playlist {self.destination}")
@@ -389,18 +389,14 @@ class PlaylistPair(SyncPair):
             self.logger.debug(f"Playlist {self.source.name} is up to date")
             return False
 
-    def sync(self, force: bool = False) -> bool:
-        """Non-destructive one-way sync from source to destination."""
-        if self.sync_state is SyncState.UP_TO_DATE:
-            return True
-
-        self.logger.info(f"Synchronizing playlist {self.source.name}")
-        self.logger.debug(f"Source playlist has {len(self.source.tracks)} tracks")
-
+    def _match_tracks(self) -> Tuple[List[TrackPair], List[AudioTag]]:
+        """Helper method to match tracks from the source playlist."""
         track_pairs = []
         unmatched = []
+
         if len(self.source.tracks) == 0:
-            self.source_player.read_playlist_tracks(self.source)
+            self.source_player.load_playlist_tracks(self.source)
+
         if len(self.source.tracks) > 0:
             bar = None
             if len(self.source.tracks) > 50:
@@ -414,6 +410,18 @@ class PlaylistPair(SyncPair):
                 else:
                     unmatched.append(track)
             bar.close() if bar else None
+
+        return track_pairs, unmatched
+
+    def sync(self, force: bool = False) -> bool:
+        """Non-destructive one-way sync from source to destination."""
+        if self.sync_state is SyncState.UP_TO_DATE:
+            return True
+
+        self.logger.info(f"Synchronizing playlist {self.source.name}")
+        self.logger.debug(f"Source playlist has {len(self.source.tracks)} tracks")
+
+        track_pairs, unmatched = self._match_tracks()
 
         self.logger.info(f"Matched {len(track_pairs)}/{len(self.source.tracks)} tracks for playlist {self.source.name}")
         if unmatched:

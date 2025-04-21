@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, List, Optional, Union
+from typing import TYPE_CHECKING, List, Optional
 
 if TYPE_CHECKING:
     from MediaPlayer import MediaPlayer
@@ -82,18 +82,6 @@ class Playlist(object):
 
     def __str__(self) -> str:
         return f"Playlist: {self.name}"
-
-    def add_tracks(self, tracks: Union[List[AudioTag], AudioTag]) -> None:
-        if not isinstance(tracks, (list, tuple)):
-            tracks = [tracks]
-        for track in tracks:
-            self.add_track(track)
-
-    def remove_tracks(self, tracks: Union[List[AudioTag], AudioTag]) -> None:
-        if not isinstance(tracks, (list, tuple)):
-            tracks = [tracks]
-        for track in tracks:
-            self.remove_track(track)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, type(self)):

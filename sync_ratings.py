@@ -220,39 +220,50 @@ class PlexSync:
             bar.close()
 
     def print_summary(self) -> None:
-        # TODO: debug log summary as well including cache hits, misses
+        """Print and log the sync summary."""
         elapsed = time.time() - self.start_time
         elapsed_time = str(timedelta(seconds=int(elapsed)))
 
-        print("\nSync Summary:")
-        print("-" * 50)
-        print(f"Total time: {elapsed_time}")
+        summary_lines = [
+            "\nSync Summary:",
+            "-" * 50,
+            f"Total time: {elapsed_time}",
+        ]
 
-        if SyncItem.TRACKS in self.config_mgr.sync:  # Use enum directly instead of string
-            print("Tracks:")
-            print(f"- Processed: {self.stats_mgr.get('tracks_processed')}")
-            print(f"- Matched: {self.stats_mgr.get('tracks_matched')}")
-            print(f"- Updated: {self.stats_mgr.get('tracks_updated')}")
-            print(f"- Conflicts: {self.stats_mgr.get('tracks_conflicts')}")
+        if SyncItem.TRACKS in self.config_mgr.sync:
+            summary_lines.append("Tracks:")
+            summary_lines.append(f"- Processed: {self.stats_mgr.get('tracks_processed')}")
+            summary_lines.append(f"- Matched: {self.stats_mgr.get('tracks_matched')}")
+            summary_lines.append(f"- Updated: {self.stats_mgr.get('tracks_updated')}")
+            summary_lines.append(f"- Conflicts: {self.stats_mgr.get('tracks_conflicts')}")
 
-            print("\nMatch Quality:")
-            print(f"- Perfect matches (100%): {self.stats_mgr.get('perfect_matches')}")
-            print(f"- Good matches (80-99%): {self.stats_mgr.get('good_matches')}")
-            print(f"- Poor matches (30-79%): {self.stats_mgr.get('poor_matches')}")
-            print(f"- No matches (<30%): {self.stats_mgr.get('no_matches')}")
+            summary_lines.append("\nMatch Quality:")
+            summary_lines.append(f"- Perfect matches (100%): {self.stats_mgr.get('perfect_matches')}")
+            summary_lines.append(f"- Good matches (80-99%): {self.stats_mgr.get('good_matches')}")
+            summary_lines.append(f"- Poor matches (30-79%): {self.stats_mgr.get('poor_matches')}")
+            summary_lines.append(f"- No matches (<30%): {self.stats_mgr.get('no_matches')}")
             if self.config_mgr.log == "DEBUG":
-                print(f"- Cache hits: {self.stats_mgr.get('cache_hits')}")
+                summary_lines.append(f"- Cache hits: {self.stats_mgr.get('cache_hits')}")
 
-        if SyncItem.PLAYLISTS in self.config_mgr.sync:  # Use enum directly instead of string
-            print("\nPlaylists:")
-            print(f"- Processed: {self.stats_mgr.get('playlists_processed')}")
-            print(f"- Matched: {self.stats_mgr.get('playlists_matched')}")
-            print(f"- Created: {self.stats_mgr.get('playlists_created')}")
-            print(f"- Updated: {self.stats_mgr.get('playlists_updated')}")
+        if SyncItem.PLAYLISTS in self.config_mgr.sync:
+            summary_lines.append("\nPlaylists:")
+            summary_lines.append(f"- Processed: {self.stats_mgr.get('playlists_processed')}")
+            summary_lines.append(f"- Matched: {self.stats_mgr.get('playlists_matched')}")
+            summary_lines.append(f"- Created: {self.stats_mgr.get('playlists_created')}")
+            summary_lines.append(f"- Updated: {self.stats_mgr.get('playlists_updated')}")
 
         if self.config_mgr.dry:
-            print("\nThis was a DRY RUN - no changes were actually made.")
-        print("-" * 50)
+            summary_lines.append("\nThis was a DRY RUN - no changes were actually made.")
+        summary_lines.append("-" * 50)
+
+        # Log the summary to the debug log
+        for line in summary_lines:
+            self.logger.debug(line)
+
+        # Print the summary only if the logger level is not DEBUG
+        if self.config_mgr.log != logging.DEBUG:
+            for line in summary_lines:
+                print(line)
 
 
 if __name__ == "__main__":

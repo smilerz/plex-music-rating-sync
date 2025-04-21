@@ -39,6 +39,9 @@ class Rating:
         if not (0.0 <= self._normalized <= 1.0):
             raise ValueError(f"Normalized rating out of bounds: {self._normalized} for value {value} with scale {self.scale.name}")
 
+    def __str__(self) -> str:
+        raise NotImplementedError("Use `to_str()` or `to_display()` for explicit rating string output.")
+
     def __repr__(self) -> str:
         return f"<Rating raw={self.raw}, normalized={self._normalized:.3f}, scale={self.scale.name}>"
 
@@ -185,9 +188,3 @@ class Rating:
         elif isinstance(other, (int, float)):
             return self._normalized >= other
         return NotImplemented
-
-    def __str__(self) -> str:
-        raise NotImplementedError("Use `to_str()` or `to_display()` for explicit rating string output.")
-
-    def __repr__(self) -> str:
-        return f"<Rating normalized={self._normalized:.3f}>"

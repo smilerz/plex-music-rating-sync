@@ -132,10 +132,7 @@ class AudioTagHandler(abc.ABC):
     # ------------------------------
     @abc.abstractmethod
     def extract_metadata(self, audio_file: mutagen.FileType) -> Tuple[AudioTag, Dict[str, Any]]:
-        """
-        Read *only* raw rating‐tag values from the file.
-        Return (AudioTag(without rating), {tag_key: raw_value, …})
-        """
+        """Read *only* raw rating-tag values from the file."""
         raise NotImplementedError("extract_metadata() not implemented")
 
     # ------------------------------
@@ -186,38 +183,43 @@ class AudioTagHandler(abc.ABC):
             self.logger.warning(f"Unsupported strategy {strat}; defaulting to HIGHEST")
             strat = ConflictResolutionStrategy.HIGHEST
 
-        if strat == ConflictResolutionStrategy.CHOICE:
-            return self._manual_conflict_resolution(ratings_by_tag, track)
+        strategy_handler = {
+            ConflictResolutionStrategy.CHOICE: self._resolve_choice,
+            ConflictResolutionStrategy.PRIORITIZED_ORDER: self._resolve_prioritized_order,
+            ConflictResolutionStrategy.HIGHEST: self._resolve_highest,
+            ConflictResolutionStrategy.LOWEST: self._resolve_lowest,
+            ConflictResolutionStrategy.AVERAGE: self._resolve_average,
+        }.get(strat, self._resolve_unknown_strategy)
 
-        if strat == ConflictResolutionStrategy.PRIORITIZED_ORDER:
-            if not self.tag_priority_order:
-                self.logger.warning("No tag_priority_order for PRIORITIZED_ORDER")
-                raise ValueError("No tag_priority_order for PRIORITIZED_ORDER")
-            for key in self.tag_priority_order:
-                if key in ratings_by_tag:
-                    return ratings_by_tag[key]
-            return Rating.unrated()
+        return strategy_handler(ratings_by_tag, track)
 
-        if strat == ConflictResolutionStrategy.HIGHEST:
-            return max(ratings_by_tag.values())
+    def _resolve_prioritized_order(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Optional[Rating]:
+        if not self.tag_priority_order:
+            self.logger.warning("No tag_priority_order for PRIORITIZED_ORDER")
+            raise ValueError("No tag_priority_order for PRIORITIZED_ORDER")
+        for key in self.tag_priority_order:
+            if key in ratings_by_tag:
+                return ratings_by_tag[key]
+        return Rating.unrated()
 
-        if strat == ConflictResolutionStrategy.LOWEST:
-            return min(ratings_by_tag.values())
+    def _resolve_highest(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Optional[Rating]:
+        return max(ratings_by_tag.values())
 
-        if strat == ConflictResolutionStrategy.AVERAGE:
-            vals = [r.to_float(RatingScale.NORMALIZED) for r in ratings_by_tag.values()]
-            return Rating(sum(vals) / len(vals)) if vals else None
+    def _resolve_lowest(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Optional[Rating]:
+        return min(ratings_by_tag.values())
 
-        self.logger.warning(f"Unknown conflict strategy {strat}")
+    def _resolve_average(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Optional[Rating]:
+        vals = [r.to_float(RatingScale.NORMALIZED) for r in ratings_by_tag.values()]
+        return Rating(sum(vals) / len(vals)) if vals else None
+
+    def _resolve_unknown_strategy(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Optional[Rating]:
+        self.logger.warning(f"Unknown conflict strategy {self.conflict_resolution_strategy}")
         return None
 
-    def _manual_conflict_resolution(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Optional[Rating]:
-        """
-        Default interactive chooser: list each tag and rating, let user pick or skip.
-        Subclasses may override for custom UI.
-        """
+    def _resolve_choice(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Optional[Rating]:
+        """Default interactive chooser: list each tag and rating, let user pick or skip."""
         items = list(ratings_by_tag.items())
-        print(f"\nConflicting ratings for {track.artist} – {track.album} – {track.title}:")
+        print(f"\nConflicting ratings for {track.artist} - {track.album} - {track.title}:")
         for idx, (key, rating) in enumerate(items, start=1):
             print(f"  {idx}) {key:<20} : {rating.to_display()}")
         print(f"  {len(items)+1}) Skip / defer")
@@ -233,7 +235,7 @@ class AudioTagHandler(abc.ABC):
             print("Invalid choice; try again.")
 
     def is_strategy_supported(self, strategy: ConflictResolutionStrategy) -> bool:
-        """Override if a strategy isn’t valid for this format."""
+        """Override if a strategy isn't valid for this format."""
         return True
 
     # ------------------------------
@@ -241,7 +243,7 @@ class AudioTagHandler(abc.ABC):
     # ------------------------------
     def read_tags(self, audio_file: mutagen.FileType) -> Tuple[AudioTag, Optional[Dict[str, Any]]]:
         """
-        Full tag‐reading workflow:
+        Full tag-reading workflow:
           1. extract_metadata()
           2. resolve_rating()
           3. return (AudioTag, None) if we got a rating,
@@ -866,7 +868,6 @@ class FileSystemProvider:
 
     def update_track_metadata(self, file_path: Union[Path, str], metadata: Optional[dict] = None, rating: Optional[Rating] = None) -> Optional[mutagen.File]:
         """Update metadata and/or rating in the audio file."""
-        # TODO: add logic to handle relative paths
         file_path = Path(file_path)
         if not file_path.exists():
             self.logger.error(f"File not found: {file_path}")
@@ -933,8 +934,11 @@ class FileSystemProvider:
         title = playlist_path.stem
         is_extm3u = False
 
-        # TODO: what happens if the open fails?
-        with self._open_playlist(playlist_path) as file:
+        file = self._open_playlist(playlist_path)
+        if not file:
+            self.logger.error(f"Failed to open playlist file: {playlist_path}")
+            return None
+        with file:
             for line in file:
                 line = line.strip()
                 if line.startswith("#EXTM3U"):
