@@ -8,7 +8,7 @@ from fuzzywuzzy import fuzz
 
 from manager import get_manager
 from MediaPlayer import MediaPlayer
-from ratings import Rating, RatingScale
+from ratings import Rating
 from sync_items import AudioTag, Playlist
 
 
@@ -27,16 +27,6 @@ class MatchThresholds:
     PERFECT_MATCH = 100
 
 
-class ConflictResolutionOptions:
-    PROMPT = {
-        "1": "Apply source rating to destination",
-        "2": "Apply destination rating to source",
-        "3": "Enter a new rating",
-        "4": "Skip this track",
-        "5": "Cancel resolving conflicts",
-    }
-
-
 class SyncPair(abc.ABC):
     source = None
     destination = None
@@ -52,10 +42,6 @@ class SyncPair(abc.ABC):
     @abc.abstractmethod
     def match(self, *args, **kwargs) -> bool:
         """Tries to find a match on the destination player that matches the source replica as good as possible"""
-
-    @abc.abstractmethod
-    def resolve_conflict(self) -> bool:
-        """Tries to resolve a conflict as good as possible and optionally prompts the user to resolve it manually"""
 
     @abc.abstractmethod
     def similarity(self, candidate: AudioTag) -> float:
@@ -86,6 +72,19 @@ class TrackPair(SyncPair):
             self.stats_mgr.increment("poor_matches")
         else:
             self.stats_mgr.increment("no_matches")
+
+    def reversed(self) -> "TrackPair":
+        """Return a new TrackPair with source and destination roles swapped."""
+        reversed_pair = TrackPair(
+            source_player=self.destination_player,
+            destination_player=self.source_player,
+            source_track=self.destination,
+        )
+        reversed_pair.destination = self.source
+        reversed_pair.rating_source = self.rating_destination
+        reversed_pair.rating_destination = self.rating_source
+        reversed_pair.score = self.score
+        return reversed_pair
 
     @staticmethod
     def display_pair_details(category: str, sync_pairs: List["TrackPair"]) -> None:
@@ -234,64 +233,6 @@ class TrackPair(SyncPair):
         self.score = score
         return True
 
-    def _get_new_rating(self) -> Optional[Rating]:
-        """Prompt for and validate a new rating."""
-        choice = input("Select the correct rating (0-5, half-star increments allowed): ").strip()
-        validated = Rating.validate(choice, scale=RatingScale.ZERO_TO_FIVE)
-        if validated is not None:
-            return Rating(choice, scale=RatingScale.ZERO_TO_FIVE)
-        print("Invalid input. Please enter a number between 0 and 5 in half-star increments.")
-        return None
-
-    def _apply_resolution(self, choice: str) -> bool:
-        """Display conflict menu and apply the selected resolution."""
-
-        if not choice:
-            self.display_pair_details("Conflicting Tracks", [self])
-            print("".join(f"\t[{key}]: {value}\n" for key, value in ConflictResolutionOptions.PROMPT.items()))
-            return False
-
-        if choice == "1":
-            self.logger.info(f"Applying source rating {self.rating_source.to_display()}  to destination track {self.destination}")
-            self.destination_player.update_rating(self.destination, self.rating_source)
-            return True
-        elif choice == "2":
-            self.logger.info(f"Applying destination rating {self.rating_destination.to_display()} to source track {self.source}")
-            self.source_player.update_rating(self.source, self.rating_destination)
-            return True
-        elif choice == "3":
-            new_rating = self._get_new_rating()
-            if new_rating is not None:
-                self.logger.info(f"Applying new rating {new_rating.to_display()}  to both source and destination tracks")
-                self.destination_player.update_rating(self.destination, new_rating)
-                self.source_player.update_rating(self.source, new_rating)
-                return True
-            return False
-        elif choice == "4":
-            return True
-        elif choice == "5":
-            return False
-        else:
-            print(f"{choice} is not a valid choice, please try again.")
-            return False
-
-    def resolve_conflict(self) -> bool:
-        choice = ""
-        while True:
-            # Call _apply_resolution with empty choice to display menu first time
-            if not choice:
-                self._apply_resolution(choice)
-
-            choice = input("Select how to resolve conflicting rating: ")
-            resolution_applied = self._apply_resolution(choice)
-
-            if resolution_applied or choice == "5":
-                return resolution_applied
-
-            # Reset choice to empty string if we need to show the menu again
-            if choice not in ConflictResolutionOptions.PROMPT:
-                choice = ""
-
     def similarity(self, candidate: AudioTag) -> float:
         """Determines the matching similarity of @candidate with the source query track"""
         scores = np.array(
@@ -304,17 +245,16 @@ class TrackPair(SyncPair):
         )
         return np.average(scores)
 
-    def sync(self, force: bool = False, source_to_destination: bool = False) -> bool:
-        """Synchronizes the source and destination replicas.:return: True if synchronization was successful, False otherwise"""
-        destination_unrated = self.rating_destination is None or self.rating_destination.is_unrated
-        if destination_unrated or force:
-            if source_to_destination:
-                self.destination_player.update_rating(self.destination, self.rating_source)
-            else:
-                self.source_player.update_rating(self.source, self.rating_destination)
-            self.stats_mgr.increment("tracks_updated")
-            return True
-        return False
+    def sync(self) -> bool:
+        """Synchronizes the source and destination replicas. Always assumes this instance is oriented correctly."""
+        if self.rating_destination is None or self.rating_destination.is_unrated:
+            target_rating = self.rating_source
+        else:
+            target_rating = self.rating_source  # Overwrite case already resolved externally
+
+        self.destination_player.update_rating(self.destination, target_rating)
+        self.stats_mgr.increment("tracks_updated")
+        return True
 
 
 class PlaylistPair(SyncPair):
@@ -355,10 +295,6 @@ class PlaylistPair(SyncPair):
 
         self.stats_mgr.increment("playlists_matched")
         return True
-
-    def resolve_conflict(self) -> bool:
-        """Resolves conflicts for playlists."""
-        raise NotImplementedError
 
     def similarity(self, candidate: Playlist) -> float:
         """Determines the similarity of the playlist with a candidate."""

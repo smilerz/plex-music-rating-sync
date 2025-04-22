@@ -8,8 +8,11 @@ from typing import List
 from manager import get_manager
 from manager.config_manager import PlayerType, SyncItem
 from MediaPlayer import FileSystemPlayer, MediaMonkey, MediaPlayer, PlexPlayer
+from ratings import Rating, RatingScale
 from sync_items import AudioTag
-from sync_pair import PlaylistPair, SyncState, TrackPair
+from sync_pair import MatchThresholds, PlaylistPair, SyncState, TrackPair
+from ui.help import ShowHelp
+from ui.prompt import UserPrompt
 
 
 class PlexSync:
@@ -81,107 +84,191 @@ class PlexSync:
         bar.close()
         return sync_pairs
 
-    def _sync_matched_tracks(self, sync_pairs: List[TrackPair]) -> None:
-        """Sync tracks that need updates"""
-        pairs_need_update = [pair for pair in sync_pairs if pair.sync_state is SyncState.NEEDS_UPDATE]
-        self.logger.info(f"Synchronizing {len(pairs_need_update)} matching tracks without conflicts")
+    def _sync_ratings(self, pairs: List[TrackPair]) -> None:
+        """Apply ratings for oriented TrackPairs. Assumes each pair is already in the correct sync direction."""
 
-        bar = self.status_mgr.start_phase("Syncing tracks", total=len(pairs_need_update))
-        for pair in pairs_need_update:
+        if not pairs:
+            print("No applicable tracks to update.")
+            return
+
+        source = pairs[0].source_player.name()
+        destination = pairs[0].destination_player.name()
+        label = f"{source} → {destination}"
+
+        self.logger.info(f"Syncing ratings ({label}) for {len(pairs)} tracks.")
+
+        bar = self.status_mgr.start_phase(f"Syncing ratings ({label})", total=len(pairs))
+        for pair in pairs:
             pair.sync()
             bar.update()
         bar.close()
 
-    def _display_conflict_options(self) -> str:
-        """Display conflict resolution options and get user choice."""
-        # TODO: add only update perfect and only update good & perfect matches, selection would loop back to this menu
-        #     it add would replace selected option with All and replace the word all in option two with selected option
-        prompt = {
-            "1": f"Keep all ratings from {self.source_player.name()} and update {self.destination_player.name()}",
-            "2": f"Keep all ratings from {self.destination_player.name()} and update {self.source_player.name()}",
-            "3": "Choose rating for each track",
-            "4": "Display all conflicts",  # TODO add display by match quality
-            "5": "Display track match details",
-            "6": "Don't resolve conflicts",
-        }
-        print("\n")
-        for key in prompt:
-            print(f"\t[{key}]: {prompt[key]}")
-        return input("Select how to resolve conflicting rating: ")
+    def _display_matches_by_category(self, sync_pairs: List[TrackPair], category_filters: dict, prompt: UserPrompt) -> None:
+        # Filter to only categories with matches
+        nonempty_filters = {k: fn for k, fn in category_filters.items() if any(fn(p) for p in sync_pairs)}
 
-    def _apply_ratings(self, pairs_conflicting: List[TrackPair], source_to_destination: bool) -> None:
-        """Apply ratings from one player to another for all conflicting track pairs."""
-        if not pairs_conflicting:
+        if not nonempty_filters:
+            print("No matching categories to display.")
             return
 
-        bar = self.status_mgr.start_phase("Resolving conflicts", total=len(pairs_conflicting))
-        for pair in pairs_conflicting:
-            pair.sync(force=True, source_to_destination=source_to_destination)
-            bar.update()
-        bar.close()
+        options = ["Show all", *list(nonempty_filters.keys())]
+        selection = prompt.choice("Which match categories would you like to view?", options)
+        selected_keys = list(nonempty_filters.keys()) if selection == "Show all" else [selection]
 
-    def _display_track_details(self, sync_pairs: List[TrackPair]) -> None:
-        """Display track match details based on user selection."""
-        valid_choices = {"G", "P", "N"}
-        choice_labels = {"G": "Good", "P": "Poor", "N": "No"}
+        for label in selected_keys:
+            filter_fn = category_filters[label]
+            matches = [p for p in sync_pairs if filter_fn(p)]
+            if not matches:
+                continue
 
-        while True:
-            sub_choice = input("Select tracks to display: To Be [G]ood Matches, [P]oor Matches, [N]o Matches: ").strip().upper()
-            if sub_choice in valid_choices:
-                break
-            print("Invalid choice. Please select [G], [P], or [N].")
+            print(f"\n{label}: {len(matches)} tracks")
+            header_line = AudioTag.DISPLAY_HEADER
 
-        filters = {
-            "G": lambda pair: pair.score is not None and pair.score >= 80,
-            "P": lambda pair: pair.score is not None and 30 <= pair.score < 80,
-            "N": lambda pair: pair.score is None or pair.score < 30,
-        }
-        TrackPair.display_pair_details(f"{choice_labels[sub_choice]} Matches", [pair for pair in sync_pairs if filters[sub_choice](pair)])
+            for i, pair in enumerate(matches, 1):
+                if (i - 1) % 100 == 0:
+                    print("-" * 137)
+                    print(header_line)
+                    print("-" * 137)
 
-    def _resolve_conflicts(self, pairs_conflicting: List[TrackPair], sync_pairs: List[TrackPair]) -> None:
-        """Resolve conflicts between source and destination ratings"""
-        self.stats_mgr.set("tracks_conflicts", len(pairs_conflicting))
+                print(pair.source.details(pair.source_player))
+                if pair.destination:
+                    print(pair.destination.details(pair.destination_player))
+                else:
+                    print("(No destination track matched)")
+                print("-" * 137)
 
-        while True:
-            choice = self._display_conflict_options()
-            if choice == "1":
-                self._apply_ratings(pairs_conflicting, source_to_destination=True)
-                break
-            elif choice == "2":
-                self._apply_ratings(pairs_conflicting, source_to_destination=False)
-                break
-            elif choice == "3":
-                for i, pair in enumerate(pairs_conflicting, start=1):
-                    print(f"\nResolving conflict {i} of {len(pairs_conflicting)}:")
-                    result = pair.resolve_conflict()
-                    if not result:
+                if i % 100 == 0 and i != len(matches):
+                    if not prompt.confirm_continue(f"[{i}/{len(matches)}] in {label} — Press Enter to continue or 'q' to quit: "):
                         break
-                break
-            elif choice == "4":
-                TrackPair.display_pair_details("Conflicting Matches", pairs_conflicting)
-            elif choice == "5":
-                self._display_track_details(sync_pairs)
-            elif choice == "6":
-                break
-            else:
-                print(f"{choice} is not a valid choice, please try again.")
 
     def sync_tracks(self) -> None:
-        tracks = self.source_player.search_tracks(key="rating", value=True)
+        SYNC_OPTIONS = {
+            "unrated": "Update only unrated destination tracks",
+            "src_to_dst": "Overwrite destination ratings with source ratings",
+            "dst_to_src": "Overwrite source ratings with destination ratings",
+            "manual": "Manually resolve all ratings",
+            "summary": "View a summary of match quality and conflict stats",
+            "actionable_details": "Show details for tracks with pending updates (unrated or conflicting)",
+            "all_match_details": "Show details for all tracks (matched, unmatched, or unchanged)",
+            "cancel": "Cancel and exit without syncing",
+        }
+        prompt = UserPrompt()
 
+        tracks = self.source_player.search_tracks(key="rating", value=True)
         self.stats_mgr.increment("tracks_processed", len(tracks))
-        if len(tracks) == 0:
+
+        if not tracks:
             self.logger.warning("No tracks found")
             return
+
         self.logger.info(f"Attempting to match {len(tracks)} tracks")
-
         sync_pairs = self._match_tracks(tracks)
-        self._sync_matched_tracks(sync_pairs)
 
-        pairs_conflicting = [pair for pair in sync_pairs if pair.sync_state is SyncState.CONFLICTING]
+        # Build summary counts
+        conflicts = [p for p in sync_pairs if p.sync_state == SyncState.CONFLICTING]
+        unrated = [p for p in sync_pairs if p.sync_state == SyncState.NEEDS_UPDATE]
+        if not conflicts and not unrated:
+            return
+        options = list(SYNC_OPTIONS.values())
 
-        if pairs_conflicting:
-            self._resolve_conflicts(pairs_conflicting, sync_pairs)
+        if not unrated:
+            options.remove(SYNC_OPTIONS["unrated"])
+
+        if not (conflicts or unrated):
+            options.remove(SYNC_OPTIONS["src_to_dst"])
+
+        if not conflicts:
+            options.remove(SYNC_OPTIONS["dst_to_src"])
+            options.remove(SYNC_OPTIONS["manual"])
+
+        while True:
+            if self.config_mgr.dry:
+                print("[DRY RUN] No changes will be written.")
+            choice = prompt.choice("How would you like to proceed?", options, help_text=ShowHelp.SyncOptions)
+
+            if choice == SYNC_OPTIONS["unrated"]:
+                self._sync_ratings(unrated)
+                break
+
+            elif choice == SYNC_OPTIONS["src_to_dst"]:
+                self._sync_ratings(conflicts + unrated)
+                break
+
+            elif choice == SYNC_OPTIONS["dst_to_src"]:
+                reversed_conflicts = [pair.reversed() for pair in conflicts]
+                self._sync_ratings(reversed_conflicts)
+                break
+
+            elif choice == SYNC_OPTIONS["manual"]:
+                for i, pair in enumerate(conflicts, 1):
+                    src_desc = f"{pair.source_player.name():<20}: ({pair.source.title}) - Rating: {pair.rating_source.to_display()}"
+                    dst_desc = f"{pair.destination_player.name():<20}: ({pair.destination.title}) - Rating: {pair.rating_destination.to_display()}"
+
+                    manual_options = {
+                        "src_to_dst": f"{src_desc}",
+                        "dst_to_src": f"{dst_desc}",
+                        "manual": "Enter a new rating",
+                        "skip": "Skip this track",
+                        "cancel": "Cancel conflict resolution",
+                    }
+
+                    print(f"Resolving conflict {i} of {len(conflicts)}:")
+                    prompt_choice = prompt.choice("Choose how to resolve this conflict:", list(manual_options.values()))
+
+                    if prompt_choice == manual_options["src_to_dst"]:
+                        pair.sync()
+                    elif prompt_choice == manual_options["dst_to_src"]:
+                        pair.reversed().sync()
+                    elif prompt_choice == manual_options["manual"]:
+                        rating_input = prompt.text(
+                            "Enter a new rating (0-5, half-star increments):",
+                            validator=lambda val: Rating.validate(val, scale=RatingScale.ZERO_TO_FIVE) is not None,
+                            help_text="Allowed values: 0, 0.5, 1, ..., 5",
+                        )
+                        if rating_input is not None:
+                            rating = Rating(rating_input, scale=RatingScale.ZERO_TO_FIVE)
+                            pair.source_player.update_rating(pair.source, rating)
+                            pair.destination_player.update_rating(pair.destination, rating)
+                    elif prompt_choice == manual_options["skip"]:
+                        continue
+                    elif prompt_choice == manual_options["cancel"]:
+                        print("Manual resolution canceled.")
+                        break
+                break
+
+            elif choice == SYNC_OPTIONS["summary"]:
+                print("\n=== Match Summary ===")
+                print(f"Unrated destination tracks: {len(unrated)}")
+                print(f"Conflicts (perfect matches): {len([p for p in conflicts if p.score == MatchThresholds.PERFECT_MATCH])}")
+                print(f"Conflicts (good matches):    {len([p for p in conflicts if MatchThresholds.GOOD_MATCH <= (p.score or 0) < MatchThresholds.PERFECT_MATCH])}")
+                print(f"Conflicts (poor matches):    {len([p for p in conflicts if MatchThresholds.POOR_MATCH <= (p.score or 0) < MatchThresholds.GOOD_MATCH])}")
+                print(f"No matches:                  {len([p for p in sync_pairs if (p.score or 0) < MatchThresholds.POOR_MATCH])}")
+
+            elif choice == SYNC_OPTIONS["actionable_details"]:
+                sync_category_filters = {
+                    "Unrated": lambda p: p.sync_state == SyncState.NEEDS_UPDATE,
+                    "Perfect": lambda p: p.sync_state == SyncState.CONFLICTING and p.score == MatchThresholds.PERFECT_MATCH,
+                    "Good": lambda p: p.sync_state == SyncState.CONFLICTING and MatchThresholds.GOOD_MATCH <= (p.score or 0) < MatchThresholds.PERFECT_MATCH,
+                    "Poor": lambda p: p.sync_state == SyncState.CONFLICTING and MatchThresholds.POOR_MATCH <= (p.score or 0) < MatchThresholds.GOOD_MATCH,
+                    "No Match": lambda p: p.sync_state == SyncState.CONFLICTING and (p.score or 0) < MatchThresholds.POOR_MATCH,
+                }
+                print("\n=== Rating Details by Sync State and Quality ===")
+                self._display_matches_by_category(sync_pairs, sync_category_filters, prompt)
+
+            elif choice == SYNC_OPTIONS["all_match_details"]:
+                score_category_filters = {
+                    "Unrated": lambda p: p.sync_state == SyncState.NEEDS_UPDATE,
+                    "Perfect": lambda p: p.score == MatchThresholds.PERFECT_MATCH,
+                    "Good": lambda p: MatchThresholds.GOOD_MATCH <= (p.score or 0) < MatchThresholds.PERFECT_MATCH,
+                    "Poor": lambda p: MatchThresholds.POOR_MATCH <= (p.score or 0) < MatchThresholds.GOOD_MATCH,
+                    "No Match": lambda p: (p.score or 0) < MatchThresholds.POOR_MATCH,
+                }
+                print("\n=== Match Details by Match Quality ===")
+                self._display_matches_by_category(sync_pairs, score_category_filters, prompt)
+            elif choice == SYNC_OPTIONS["cancel"]:
+                print("Sync tracks canceled.")
+                break
+        self.print_summary()
 
     def sync_playlists(self) -> None:
         # Start discovery phase

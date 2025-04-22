@@ -84,3 +84,30 @@ Example:
   If you primarily use MediaMonkey, choose the corresponding tag.
   This ensures your ratings are written in a format that MediaMonkey can read.
 """
+
+    SyncOptions = """
+=== Help: Sync Options ===
+
+This menu lets you choose how to apply ratings between the source and destination libraries.
+
+  - Update unrated destination tracks only:
+      Only destination tracks that have no rating will be updated. Safe, non-destructive.
+
+  - Overwrite destination ratings with source ratings:
+      Updates destination ratings even if one already exists. Includes both unrated and conflicting tracks.
+
+  - Overwrite source ratings with destination ratings:
+      Updates source ratings, but only for tracks where a conflict exists.
+
+  - Manually review and resolve conflicts:
+      Step through each conflicting track and choose how to resolve it individually.
+
+  - Show match summary:
+      View how many tracks fall into each match category: unrated, conflicting (by quality), unmatched.
+
+  - Show match details by quality:
+      Display detailed track information, grouped by match quality category.
+
+  - Cancel:
+      Exit without making any changes.
+"""

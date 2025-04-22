@@ -352,7 +352,7 @@ class VorbisHandler(AudioTagHandler):
     # ------------------------------
     def finalize_rating_strategy(self, conflicts: List[dict]) -> None:
         conflicts = [c for c in conflicts if c.get("handler") is self]
-        self._print_summary()
+        # self._print_summary()
 
         def pick_scale(field: VorbisField) -> Optional[RatingScale]:
             stats = self.stats_mgr.get(f"VorbisHandler::inferred_scale::{field.value}")
