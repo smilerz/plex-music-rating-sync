@@ -86,28 +86,130 @@ Example:
 """
 
     SyncOptions = """
-=== Help: Sync Options ===
+=== Help: Sync Menu ===
 
-This menu lets you choose how to apply ratings between the source and destination libraries.
+This menu lets you manage how ratings are synchronized between your source and destination libraries.
+All actions apply to discovered tracks — those that were matched between both libraries.
 
-  - Update unrated destination tracks only:
-      Only destination tracks that have no rating will be updated. Safe, non-destructive.
+Menu Options:
 
-  - Overwrite destination ratings with source ratings:
-      Updates destination ratings even if one already exists. Includes both unrated and conflicting tracks.
+  • Sync now:
+      Apply rating updates based on your current filter settings.
+      This typically includes unrated destination tracks and/or tracks with rating conflicts.
 
-  - Overwrite source ratings with destination ratings:
-      Updates source ratings, but only for tracks where a conflict exists.
+  • Change sync filter:
+      Adjust what kinds of track pairs are eligible for syncing — such as whether to include unrated tracks,
+      set a minimum match quality, or reverse the sync direction.
 
-  - Manually review and resolve conflicts:
-      Step through each conflicting track and choose how to resolve it individually.
+  • Manually resolve rating conflicts:
+      Step through each discovered conflict and choose how to resolve it (use source, use destination, or set a custom rating).
 
-  - Show match summary:
-      View how many tracks fall into each match category: unrated, conflicting (by quality), unmatched.
+  • View track pair details:
+      Browse discovered tracks grouped by match quality or update status. Useful for inspection before syncing.
 
-  - Show match details by quality:
-      Display detailed track information, grouped by match quality category.
+  • Cancel and exit:
+      Leave this menu without applying any changes.
+"""
+    SyncFilter = """
+=== Help: Sync Filter ===
 
-  - Cancel:
-      Exit without making any changes.
+This menu lets you control which discovered tracks are eligible for syncing.
+
+Options:
+
+  • Reverse sync direction:
+      Change whether ratings sync from source → destination or the opposite.
+
+  • Sync tracks with rating conflicts:
+      Enable or disable syncing for discovered track pairs where both sides have different ratings.
+      When enabled, these conflicts will be included in sync actions.
+
+  • Sync tracks where the destination is unrated:
+      Includes discovered tracks where the configured destination player (from your config file) has no rating.
+      Note: this is always based on the configured destination — it does not change if you reverse the sync direction.
+
+  • Select minimum match quality:
+      Controls which track pairs are eligible for syncing based on their match score.
+
+      Tracks are matched using a weighted similarity score based on:
+        - Artist name
+        - Album name
+        - Track title
+        - File path
+
+      Match quality is grouped into:
+        - Perfect: nearly identical across all fields
+        - Good: high similarity in core fields
+        - Poor: significant metadata differences, but identical file paths
+
+      By default, tracks with Poor or better quality are eligible for syncing.
+      This threshold represents the minimum confidence level that the two tracks refer to the same file — even when metadata differs.
+
+  • Cancel and return:
+      Leave this menu without changing the current sync filter.
+"""
+    MatchQuality = """
+=== Help: Match Quality ===
+
+Match quality determines how closely a track in the source library matches one in the destination library.
+Each discovered track pair is assigned a score based on the similarity of the following fields:
+
+  • Artist name
+  • Album name
+  • Track title
+  • File path
+
+The better the alignment, the higher the score.
+
+Match Categories:
+
+  • Perfect:
+      All fields match exactly or near-exactly.
+      → Example: "Coldplay - Parachutes - Yellow" in both libraries.
+
+  • Good:
+      Minor metadata differences, but core values align.
+      → Example: "Kendrick Lamar - DAMN. - LOVE."
+           vs. "Kendrick Lamar - DAMN. - LOVE. (feat. Zacari)"
+
+      These may differ in punctuation, casing, or “featuring” credits,
+      but still represent a strong match based on artist, album, and file path.
+
+  • Poor:
+      Major differences in metadata, but identical file paths (usually file name and folder structure match).
+      This is still considered safe for syncing because the path provides strong identity.
+
+      → Example:
+         Source: "Unknown Artist - Track 01"
+         Destination: "Radiohead - OK Computer - No Surprises"
+         File path: `/Music/Radiohead/OK Computer/No Surprises.mp3` in both
+
+      Even though artist, title, and album are mismatched, the identical path implies they are the same file.
+
+  • No Match:
+      Track did not meet the minimum similarity threshold. These are not considered discovered and will not sync.
+
+Threshold Behavior:
+
+By default, any match rated Poor or better is eligible for syncing. This represents the minimum level of confidence
+that two files refer to the same track — even if metadata differs significantly.
+"""
+    ManualConflictResolution = """
+=== Help: Manual Conflict Resolution ===
+
+You're resolving rating conflicts between matched tracks in your source and destination libraries.
+
+Options:
+
+  • Choose the source or destination rating:
+      Select which rating should be applied to the track. The chosen rating will overwrite the other.
+
+  • Enter a new rating:
+      Input a custom rating manually. The new rating will be applied to both the source and destination tracks.
+
+  • Skip this track:
+      Leave this conflict unresolved for now. No rating changes will be made.
+
+  • Cancel:
+      Exit the manual resolution process. Previously resolved tracks (if any) will be kept.
 """

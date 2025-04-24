@@ -1,6 +1,6 @@
 import abc
 import logging
-from enum import Enum, auto
+from enum import Enum, IntEnum, auto
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -20,11 +20,14 @@ class SyncState(Enum):
     ERROR = auto()
 
 
-class MatchThresholds:
+class MatchThreshold(IntEnum):
     MINIMUM_ACCEPTABLE = 30
     POOR_MATCH = MINIMUM_ACCEPTABLE
     GOOD_MATCH = 80
     PERFECT_MATCH = 100
+
+    def __str__(self) -> str:
+        return self.name.replace("_MATCH", "").title()
 
 
 class SyncPair(abc.ABC):
@@ -62,16 +65,40 @@ class TrackPair(SyncPair):
         self.logger = logging.getLogger("PlexSync.TrackPair")
         self.source = source_track
 
+    @property
+    def quality(self) -> Optional[MatchThreshold]:
+        if self.score is None or self.sync_state in {SyncState.ERROR, SyncState.UNKNOWN}:
+            return None
+        if self.score >= MatchThreshold.PERFECT_MATCH:
+            return MatchThreshold.PERFECT_MATCH
+        if self.score >= MatchThreshold.GOOD_MATCH:
+            return MatchThreshold.GOOD_MATCH
+        if self.score >= MatchThreshold.POOR_MATCH:
+            return MatchThreshold.POOR_MATCH
+        return None
+
+    def has_min_quality(self, quality: MatchThreshold) -> bool:
+        return self.quality is not None and self.quality >= quality
+
+    def is_sync_candidate(self) -> bool:
+        """Eligible for syncing: either unrated or conflicting."""
+        return self.sync_state in {SyncState.NEEDS_UPDATE, SyncState.CONFLICTING}
+
+    def is_unmatched(self) -> bool:
+        """Failed to match due to system or search failure."""
+        return self.sync_state in {SyncState.UNKNOWN, SyncState.ERROR}
+
     def _record_match_quality(self, score: int) -> None:
         """Track match quality statistics based on the score."""
-        if score >= MatchThresholds.PERFECT_MATCH:
-            self.stats_mgr.increment("perfect_matches")
-        elif score >= MatchThresholds.GOOD_MATCH:
-            self.stats_mgr.increment("good_matches")
-        elif score >= MatchThresholds.POOR_MATCH:
-            self.stats_mgr.increment("poor_matches")
-        else:
-            self.stats_mgr.increment("no_matches")
+        match self.quality:
+            case MatchThreshold.PERFECT_MATCH:
+                self.stats_mgr.increment("perfect_matches")
+            case MatchThreshold.GOOD_MATCH:
+                self.stats_mgr.increment("good_matches")
+            case MatchThreshold.POOR_MATCH:
+                self.stats_mgr.increment("poor_matches")
+            case _:
+                self.stats_mgr.increment("no_matches")
 
     def reversed(self) -> "TrackPair":
         """Return a new TrackPair with source and destination roles swapped."""
@@ -109,7 +136,7 @@ class TrackPair(SyncPair):
         if destination is None:
             destination = self.destination
         if self.both_albums_empty(destination=destination):
-            return MatchThresholds.PERFECT_MATCH
+            return MatchThreshold.PERFECT_MATCH
         else:
             return fuzz.ratio(self.source.album, destination.album)
 
@@ -126,7 +153,7 @@ class TrackPair(SyncPair):
 
         cached_id, cached_score = self.cache_mgr.get_match(self.source.ID, source_name=self.source_player.name(), dest_name=self.destination_player.name())
 
-        if not cached_id:
+        if not cached_id or cached_score < MatchThreshold.GOOD_MATCH:
             return None
 
         candidates = self.destination_player.search_tracks(key="id", value=cached_id)
@@ -154,7 +181,7 @@ class TrackPair(SyncPair):
             self.logger.error(f"Search failed for '{self.source.title}.")
             raise e
 
-    def _get_best_match(self, candidates: List[AudioTag], match_threshold: int = MatchThresholds.MINIMUM_ACCEPTABLE) -> Tuple[Optional[AudioTag], int]:
+    def _get_best_match(self, candidates: List[AudioTag], match_threshold: int = MatchThreshold.MINIMUM_ACCEPTABLE) -> Tuple[Optional[AudioTag], int]:
         """Find the best matching track from a list of candidates based on similarity score."""
         if not candidates:
             return None, 0
@@ -177,7 +204,7 @@ class TrackPair(SyncPair):
 
         self.cache_mgr.set_match(self.source.ID, best_match.ID, self.source_player.name(), self.destination_player.name(), score)
 
-    def find_best_match(self, candidates: Optional[List[AudioTag]] = None, match_threshold: int = MatchThresholds.MINIMUM_ACCEPTABLE) -> Tuple[Optional[AudioTag], int]:
+    def find_best_match(self, candidates: Optional[List[AudioTag]] = None, match_threshold: int = MatchThreshold.MINIMUM_ACCEPTABLE) -> Tuple[Optional[AudioTag], int]:
         """Find the best matching track from candidates or by searching."""
         cached_match = self._get_cache_match()
         if cached_match:
@@ -196,31 +223,29 @@ class TrackPair(SyncPair):
             self._set_cache_match(best_match, best_score)
 
             self.logger.debug(f"Found match with score {best_score} for {self.source} - : - {best_match}")
-            if best_score != MatchThresholds.PERFECT_MATCH:
+            if best_score != MatchThreshold.PERFECT_MATCH:
                 self.logger.info(f"Found match with score {best_score} for {self.source}: {best_match}")
-            if best_score < MatchThresholds.GOOD_MATCH:
+            if best_score < MatchThreshold.GOOD_MATCH:
                 self.logger.debug(f"Source: {self.source}")
                 self.logger.debug(f"Best Match: {best_match}")
 
         return best_match, best_score
 
-    def match(self, candidates: Optional[List[AudioTag]] = None, match_threshold: int = MatchThresholds.MINIMUM_ACCEPTABLE) -> bool:
+    def match(self, candidates: Optional[List[AudioTag]] = None, match_threshold: int = MatchThreshold.MINIMUM_ACCEPTABLE) -> bool:
         """Find matching track on destination player"""
         if self.source is None:
             raise RuntimeError("Source track not set")
 
         best_match, score = self.find_best_match(candidates, match_threshold)
-        self._record_match_quality(score)
 
         if not best_match:
             self.sync_state = SyncState.ERROR
             return False
 
         self.destination = best_match
-        self.stats_mgr.increment("tracks_matched")
 
-        src = self.rating_source = self.source.rating  # or Rating.unrated()
-        dst = self.rating_destination = self.destination.rating  # or Rating.unrated()
+        src = self.rating_source = self.source.rating
+        dst = self.rating_destination = self.destination.rating
 
         if src == dst:
             self.sync_state = SyncState.UP_TO_DATE
@@ -231,6 +256,8 @@ class TrackPair(SyncPair):
             self.logger.warning(f"Found match with conflicting ratings: {self.source} " f"(Source: {src.to_display()} | " f"Destination: {dst.to_display()})")
 
         self.score = score
+        self._record_match_quality(score)
+        self.stats_mgr.increment("tracks_matched")
         return True
 
     def similarity(self, candidate: AudioTag) -> float:
@@ -239,7 +266,7 @@ class TrackPair(SyncPair):
             [
                 fuzz.ratio(self.source.title, candidate.title),
                 fuzz.ratio(self.source.artist, candidate.artist),
-                MatchThresholds.PERFECT_MATCH if self.source.track == candidate.track else 0,
+                MatchThreshold.PERFECT_MATCH if self.source.track == candidate.track else 0,
                 self.albums_similarity(destination=candidate),
             ]
         )
@@ -284,7 +311,6 @@ class PlaylistPair(SyncPair):
         if not self.destination.tracks:
             self.destination_player.load_playlist_tracks(self.destination)
 
-        missing = self.destination.missing_tracks(self.source)
         missing = self.destination.missing_tracks(self.source)
         if missing:
             self.sync_state = SyncState.NEEDS_UPDATE

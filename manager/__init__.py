@@ -3,7 +3,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .cache_manager import CacheManager
     from .config_manager import ConfigManager
-    from .log_manager import LogManager
     from .stats_manager import StatsManager, StatusManager
 
 

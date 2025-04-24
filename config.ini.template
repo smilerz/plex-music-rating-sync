@@ -2,7 +2,7 @@
 source = mediamonkey    #Source player (plex, mediamonkey or filesystem)
 destination = plex      #Destination player (plex, mediamonkey or filesystem)
 sync = [tracks]         #items to sync between players, one or more of [tracks, playlists]
-log =                   #log level (CRITICAL, ERROR, WARNING, INFO, DEBUG) [default: WARNING]
+log =                   #log level (CRITICAL, ERROR, WARNING, INFO, DEBUG, TRACE) [default: WARNING]
 cache-mode =            #Cache mode: metadata, matches, matches-only, disabled [default: metadata]
 
 [plex]

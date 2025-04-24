@@ -3,13 +3,7 @@ from typing import List, Optional, Union
 
 class UserPrompt:
     def choice(
-        self,
-        message: str,
-        options: List[str],
-        *,
-        default: Optional[Union[int, List[int]]] = None,
-        allow_multiple: bool = False,
-        help_text: Optional[str] = None,
+        self, message: str, options: List[str], *, default: Optional[Union[int, List[int]]] = None, allow_multiple: bool = False, help_text: Optional[str] = None
     ) -> Union[str, List[str]]:
         """Prompt the user to select from a list of options."""
         while True:

@@ -56,8 +56,7 @@ class MediaPlayer(abc.ABC):
     @staticmethod
     @abc.abstractmethod
     def name() -> str:
-        """The name of this media player"""
-        return NotImplemented
+        raise NotImplementedError("Subclasses must implement this method.")
 
     def album_empty(self, album: str) -> bool:
         if not isinstance(album, str):
@@ -75,7 +74,7 @@ class MediaPlayer(abc.ABC):
 
     def search_tracks(self, key: str, value: Union[bool, str], return_native: bool = False) -> List[AudioTag]:
         """Search tracks and convert to AudioTag format"""
-        self.logger.debug(f"Searching tracks with {key}={value}")
+        self.logger.trace(f"Searching {self.name()} for tracks with {key}={value}")
         if not value:
             self.logger.error("Search value cannot be empty")
             raise ValueError("value can not be empty.")
@@ -120,8 +119,23 @@ class MediaPlayer(abc.ABC):
         return None
 
     @abc.abstractmethod
+    def _update_rating(self, track: AudioTag, rating: Rating) -> None:
+        """Player-specific implementation for updating a track's rating."""
+        pass
+
     def update_rating(self, track: AudioTag, rating: Rating) -> None:
         """Updates the rating of the track, unless in dry run"""
+        if self.dry_run:
+            self.logger.info(f"DRY RUN: Would update rating for {track} to {rating.to_display()}")
+            return
+
+        self.logger.debug(f"Updating rating on {self.name()} for {track} to {rating.to_display()}")
+        try:
+            self._update_rating(track, rating)
+        except Exception as e:
+            self.logger.error(f"Failed to update rating: {e!s}")
+            raise
+        self.logger.info(f"Successfully updated rating for {track}")
 
     def update_playlist(self, playlist: Playlist, track: AudioTag, present: bool) -> None:
         """Updates the playlist by adding or removing a track"""
@@ -377,7 +391,6 @@ class MediaMonkey(MediaPlayer):
         else:
             raise KeyError(f"Invalid search mode {key}.")
 
-        self.logger.debug(f"Executing query [{query}] against {self.name()}")
         it = self.sdb.Database.QuerySongs(query)
 
         results = []
@@ -396,11 +409,7 @@ class MediaMonkey(MediaPlayer):
         bar.close() if bar else None
         return results
 
-    def update_rating(self, track: AudioTag, rating: Rating) -> None:
-        if self.dry_run:
-            self.logger.info(f"DRY RUN: Would update rating for {track} to {rating.to_display()}")
-            return
-
+    def _update_rating(self, track: AudioTag, rating: Rating) -> None:
         self.logger.debug(f"Updating rating for {track} to {rating.to_display()}")
         try:
             song = self.search_tracks("id", track.ID, return_native=True)[0]
@@ -447,7 +456,7 @@ class MediaMonkey(MediaPlayer):
         return native_playlist.Tracks.Count
 
 
-class PlexPlayer(MediaPlayer):
+class Plex(MediaPlayer):
     abbr = "PP"
     rating_scale = RatingScale.ZERO_TO_TEN
     maximum_connection_attempts = 3
@@ -462,7 +471,7 @@ class PlexPlayer(MediaPlayer):
 
     @staticmethod
     def name() -> str:
-        return "PlexPlayer"
+        return "Plex"
 
     def connect(self) -> None:
         server = self.config_mgr.server
@@ -499,6 +508,7 @@ class PlexPlayer(MediaPlayer):
             self.music_library = next(iter(music_libraries.values()))
             self.logger.debug("Found 1 music library")
         else:
+            # TODO: refactor to use UserPrompt
             print("Found multiple music libraries:")
             for key, library in music_libraries.items():
                 print(f"\t[{key}]: {library.title}")
@@ -703,12 +713,8 @@ class PlexPlayer(MediaPlayer):
         bar.close() if bar else None
         return tracks
 
-    def update_rating(self, track: AudioTag, rating: Rating) -> None:
-        if self.dry_run:
-            self.logger.info(f"DRY RUN: Would update rating for {track} to {rating.to_display()}")
-            return
-
-        self.logger.debug(f"Updating rating for {track} to {rating.to_display()}")
+    def _update_rating(self, track: AudioTag, rating: Rating) -> None:
+        self.logger.debug(f"Updating rating on {self.name()} for {track} to {rating.to_display()}")
 
         try:
             song = self.search_tracks("id", track.ID, return_native=True)[0]
@@ -719,9 +725,8 @@ class PlexPlayer(MediaPlayer):
         self.logger.info(f"Successfully updated rating for {track}")
 
 
-class FileSystemPlayer(MediaPlayer):
+class FileSystem(MediaPlayer):
     RATING_SCALE = RatingScale.NORMALIZED
-    album_empty_alias = "[Unknown Album]"
     SEARCH_THRESHOLD = 75  # Fuzzy search threshold for track title matching
 
     def __init__(self):
@@ -732,7 +737,7 @@ class FileSystemPlayer(MediaPlayer):
 
     @staticmethod
     def name() -> str:
-        return "FileSystemPlayer"
+        return "FileSystem"
 
     def connect(self) -> None:
         """Connect to filesystem music library with additional options."""
@@ -760,7 +765,7 @@ class FileSystemPlayer(MediaPlayer):
 
         cached = self.cache_mgr.get_metadata(self.name(), str_path, force_enable=True)
         if cached:
-            self.logger.debug(f"Cache hit for {file_path}")
+            self.logger.trace(f"Cache hit for {file_path}")
             return cached
 
         tag = self.fsp.read_track_metadata(file_path)
@@ -786,12 +791,7 @@ class FileSystemPlayer(MediaPlayer):
             tracks = self.cache_mgr.get_tracks_by_filter(player_mask & rating_mask)
         return tracks
 
-    def update_rating(self, track: AudioTag, rating: Rating) -> None:
-        """Update rating for a track."""
-        if self.dry_run:
-            self.logger.info(f"DRY RUN: Would update rating for {track} to {rating.to_display()})")
-            return
-
+    def _update_rating(self, track: AudioTag, rating: Rating) -> None:
         self.fsp.update_track_metadata(file_path=track.ID, rating=rating)
         track.rating = rating
         self.cache_mgr.set_metadata(self.name(), track.ID, track, force_enable=True)

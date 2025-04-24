@@ -94,29 +94,7 @@ class LogManager:
         """Initializes custom logging with log rotation and multi-level console output."""
         os.makedirs(self.log_dir, exist_ok=True)
         self._rotate_logs()
-
         self.logger.setLevel(logging.DEBUG)
-
-        # File Handler: Always at DEBUG, dynamic formatting
-        file_formatter = LevelBasedFormatter(datefmt="%H:%M:%S")
-        log_file_path = os.path.join(self.log_dir, self.log_file)
-        fh = logging.FileHandler(filename=log_file_path, encoding="utf-8", mode="w")
-        fh.setLevel(logging.DEBUG)
-        fh.setFormatter(file_formatter)
-        self.logger.addHandler(fh)
-
-        # Console: Warning+ => stderr with TqdmLoggingHandler
-        warn_format = logging.Formatter("%(levelname)s [%(funcName)s:%(lineno)d]: %(message)s")
-        ch_err = TqdmLoggingHandler(stream=sys.stderr, level=logging.WARNING)
-        ch_err.setFormatter(warn_format)
-        self.logger.addHandler(ch_err)
-
-        # Console: Info => stdout with TqdmLoggingHandler
-        info_format = logging.Formatter("%(levelname)s: %(message)s")
-        ch_std = TqdmLoggingHandler(stream=sys.stdout)
-        ch_std.setFormatter(info_format)
-        ch_std.addFilter(InfoFilter())
-        self.logger.addHandler(ch_std)
 
         level = -1
         if isinstance(log_level, str):
@@ -135,7 +113,34 @@ class LogManager:
             print(f"Valid logging levels: {valid_levels}")
             raise RuntimeError(f"Invalid logging level selected: {log_level}")
 
-        ch_err.setLevel(level)
-        ch_std.setLevel(level)
+        # File Handler: Always at DEBUG, dynamic formatting
+        file_formatter = LevelBasedFormatter(datefmt="%H:%M:%S")
+        log_file_path = os.path.join(self.log_dir, self.log_file)
+        fh = logging.FileHandler(filename=log_file_path, encoding="utf-8", mode="w")
+        fh.setLevel(level if level <= logging.DEBUG else logging.DEBUG)
+        fh.setFormatter(file_formatter)
+        self.logger.addHandler(fh)
+
+        # Console: Warning+ => stderr with TqdmLoggingHandler
+        warn_format = logging.Formatter("%(levelname)s [%(funcName)s:%(lineno)d]: %(message)s")
+        ch_err = TqdmLoggingHandler(stream=sys.stderr, level=logging.WARNING)
+        ch_err.setFormatter(warn_format)
+        self.logger.addHandler(ch_err)
+
+        # Console: Info => stdout with TqdmLoggingHandler
+        info_format = logging.Formatter("%(levelname)s: %(message)s")
+        ch_std = TqdmLoggingHandler(stream=sys.stdout)
+        ch_std.setFormatter(info_format)
+        ch_std.addFilter(InfoFilter())
+        self.logger.addHandler(ch_std)
+
+        # Set the overall logger level to the user-selected threshold
+        self.logger.setLevel(level)
+
+        # ch_err shows WARNING and above
+        ch_err.setLevel(logging.WARNING)
+
+        # ch_std always shows TRACE/DEBUG/INFO, limited by InfoFilter
+        ch_std.setLevel(TRACE_LEVEL)
         self.logger.info("Logging initialized with custom settings.")
         return self.logger

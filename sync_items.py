@@ -21,7 +21,7 @@ class AudioTag(object):
         self.rating = kwargs.get("rating")
         self.genre = kwargs.get("genre")
         self.file_path = kwargs.get("file_path")
-        self.track = int(kwargs.get("track"))
+        self.track = int(kwargs.get("track") if kwargs.get("track") else 0)
         self.duration = kwargs.get("duration", -1)
 
     def __str__(self) -> str:

@@ -2,6 +2,7 @@ import logging
 import os
 import pickle
 import warnings
+from datetime import datetime
 from typing import List, Optional
 
 import pandas as pd
@@ -16,8 +17,9 @@ warnings.simplefilter(action="ignore", category=pd.errors.PerformanceWarning)
 class Cache:
     """Generic Cache class to handle common operations for caching."""
 
-    def __init__(self, filepath: str, columns: list, dtype: dict, save_threshold: int = 100) -> None:
+    def __init__(self, filepath: str, columns: list, dtype: dict, save_threshold: int = 100, max_age_hours: Optional[int] = 720) -> None:
         self.filepath = filepath
+        self.max_age_hours = max_age_hours
         self.columns = columns
         self.dtype = dtype
         self.save_threshold = save_threshold
@@ -44,6 +46,20 @@ class Cache:
                 self.logger.error(f"Failed to load cache from {self.filepath}: {e}")
                 self.logger.warning("Falling back to new cache initialization")
                 self.cache = self._initialize_cache()
+                # 👇 New: check age of cache
+
+            if self.max_age_hours is not None:
+                file_mtime = os.path.getmtime(self.filepath)
+                now = datetime.now().timestamp()
+                age_seconds = now - file_mtime
+                age_hours = age_seconds / (60 * 60)
+
+                if age_hours > self.max_age_hours:
+                    self.logger.warning(f"Cache file {self.filepath} is {age_hours:.1f} hours old — exceeding max age of {self.max_age_hours} hours.")
+                    self.logger.warning("Discarding cache and reinitializing.")
+                    self.cache = self._initialize_cache()
+                    return
+
         else:
             self.logger.debug(f"No existing cache found at {self.filepath}. Initializing new cache.")
             self.cache = self._initialize_cache()
@@ -137,10 +153,7 @@ class CacheManager:
         if self.is_metadata_cache_enabled():
             self.logger.debug("Initializing metadata cache")
             self.metadata_cache = Cache(
-                filepath=self.METADATA_CACHE_FILE,
-                columns=self._get_metadata_cache_columns(),
-                dtype=object,
-                save_threshold=self.SAVE_THRESHOLD,
+                filepath=self.METADATA_CACHE_FILE, columns=self._get_metadata_cache_columns(), dtype=object, save_threshold=self.SAVE_THRESHOLD, max_age_hours=24
             )
             self.metadata_cache.load()
 
@@ -199,6 +212,7 @@ class CacheManager:
 
         match = self._safe_get_value(row, dest_name)
         score = self._safe_get_value(row, "score")
+        self.logger.trace(f"Match cache hit for {source_name}:{source_id} and {dest_name}:{match}")
         self.stats_mgr.increment("cache_hits")
         return match, score
 
