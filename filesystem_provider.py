@@ -12,6 +12,7 @@ from manager.config_manager import ConflictResolutionStrategy, TagWriteStrategy
 from ratings import Rating, RatingScale
 from sync_items import AudioTag, Playlist
 from ui.help import ShowHelp
+from ui.prompt import UserPrompt
 
 
 class ID3Field(StrEnum):
@@ -119,6 +120,7 @@ class AudioTagHandler(abc.ABC):
         self.tag_write_strategy = tagging_policy.get("tag_write_strategy") if tagging_policy else None
         self.default_tag = tagging_policy.get("default_tag") if tagging_policy else None
         self.tag_priority_order = tagging_policy.get("tag_priority_order") if tagging_policy else None
+        self.prompt = UserPrompt()
 
     # ------------------------------
     # Phase 1: Metadata Extraction
@@ -217,19 +219,15 @@ class AudioTagHandler(abc.ABC):
     def _resolve_choice(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Optional[Rating]:
         """Default interactive chooser: list each tag and rating, let user pick or skip."""
         items = list(ratings_by_tag.items())
-        while True:
-            print(f"\nConflicting ratings for {track.artist} - {track.album} - {track.title}:")
-            for idx, (key, rating) in enumerate(items, start=1):
-                player_name = self.tag_registry.get_player_name_for_key(key)
-                print(f"  {idx}) {player_name:<30} : {rating.to_display()}")
-            choice = input(f"Select [1-{len(items)}]: ").strip()
-            if choice.isdigit():
-                i = int(choice)
-                if 1 <= i <= len(items):
-                    return items[i - 1][1]
-                if i == len(items) + 1:
-                    return None
-            print("Invalid choice; try again.")
+        options = [f"{self.tag_registry.get_player_name_for_key(key):<30} : {rating.to_display()}" for key, rating in items]
+        options.append("Skip (no rating)")
+        choice = self.prompt.choice(
+            f"Conflicting ratings for {track.artist} - {track.album} - {track.title}:", options, help_text="Select the rating to use for this track, or skip to leave unrated."
+        )
+        idx = options.index(choice)
+        if idx == len(items):
+            return None
+        return items[idx][1]
 
     def is_strategy_supported(self, strategy: ConflictResolutionStrategy) -> bool:
         """Override if a strategy isn't valid for this format."""
@@ -410,6 +408,7 @@ class ID3Handler(AudioTagHandler):
         super().__init__(tagging_policy=tagging_policy, **kwargs)
         self.tag_registry = ID3TagRegistry()
         self.discovered_rating_tags: set[str] = set()
+        self.prompt = UserPrompt()
 
     # ------------------------------
     # Phase 1: Metadata Extraction
@@ -471,11 +470,6 @@ class ID3Handler(AudioTagHandler):
     # ------------------------------
 
     def finalize_rating_strategy(self, conflicts: list[dict]) -> None:
-        def _is_valid_choice(choice: str, max_value: int, allow_help: bool = True) -> bool:
-            if allow_help and choice in ("?", "h", "help"):
-                return True
-            return choice.isdigit() and 1 <= int(choice) <= max_value
-
         conflicts = [c for c in conflicts if c.get("handler") is self]
         tag_counts = self.stats_mgr.get("ID3Handler::tags_used") or {}
         unique = [
@@ -507,88 +501,55 @@ class ID3Handler(AudioTagHandler):
 
         # Conflict resolution strategy prompt
         if self.conflict_resolution_strategy is None and has_conflicts:
-            print("\nHow should rating conflicts be resolved when different media players have stored different ratings for the same track?")
-            print("Choose a strategy below. This affects how those ratings are interpreted:")
-
-            while True:
-                for i, strat in enumerate(ConflictResolutionStrategy, start=1):
-                    print(f"  {i}) {strat.display}")
-                print(f"  {len(ConflictResolutionStrategy)+1}) Show conflicts")
-                choice = input(f"Select [1-{len(ConflictResolutionStrategy) + 1}] or '?' for help: ").strip().lower()
-
-                if choice in ("?", "h", "help"):
-                    print(ShowHelp.ConflictResolution)
-                    continue
-
-                if choice == str(len(ConflictResolutionStrategy) + 1):
-                    self._show_conflicts(conflicts)
-                    continue
-
-                if _is_valid_choice(choice, len(ConflictResolutionStrategy), allow_help=False):
-                    idx = int(choice)
-                    self.conflict_resolution_strategy = list(ConflictResolutionStrategy)[idx - 1]
-                    needs_save = True
-                    break
-
-                print("Invalid choice. Enter a number, '?' or 'help'.")
+            options = [strat.display for strat in ConflictResolutionStrategy] + ["Show conflicts"]
+            choice = self.prompt.choice(
+                "\nHow should rating conflicts be resolved when different media players have stored different ratings for the same track?\nChoose a strategy below. This affects how those ratings are interpreted:",
+                options,
+                help_text=ShowHelp.ConflictResolution,
+            )
+            if choice == "Show conflicts":
+                self._show_conflicts(conflicts)
+                # re-prompt
+                return self.finalize_rating_strategy(conflicts)
+            else:
+                idx = options.index(choice)
+                self.conflict_resolution_strategy = list(ConflictResolutionStrategy)[idx]
+                needs_save = True
 
         # Tag priority order prompt
         if self.conflict_resolution_strategy == ConflictResolutionStrategy.PRIORITIZED_ORDER and has_multiple and not self.tag_priority_order:
-            print("\nMultiple media players have written ratings to this file. Please choose the order of preference (highest first).")
-            print("This determines which player's rating takes priority when they conflict.")
-            while True:
-                print("Enter the numbers as a comma-separated list.")
-                for i, info in enumerate(unique, start=1):
-                    print(f"  {i}) {info['player']}")
-                choice = input("Your order (comma-separated), or '?' for help: ").strip().lower()
-                if choice in ("?", "h", "help"):
-                    print(ShowHelp.TagPriority)
-                    continue
-                try:
-                    idxs = [int(x) for x in choice.split(",")]
-                    if all(1 <= x <= len(unique) for x in idxs):
-                        self.tag_priority_order = [unique[x - 1]["key"] for x in idxs]
-                        needs_save = True
-                        break
-                except ValueError:
-                    pass
-                print("Invalid input.")
+            options = [info["player"] for info in unique]
+            order = self.prompt.choice(
+                "\nMultiple media players have written ratings to this file. Please choose the order of preference (highest first).\nThis determines which player's rating takes priority when they conflict.",
+                options,
+                allow_multiple=True,
+                help_text=ShowHelp.TagPriority,
+            )
+            # order is a list of player names; map back to keys
+            self.tag_priority_order = [unique[options.index(player)]["key"] for player in order]
+            needs_save = True
 
         # Write strategy prompt
         if has_multiple and not self.tag_write_strategy:
-            print("\nHow should ratings be written back to your files?")
-            print("Choose a write strategy. This controls which tags are updated:")
-
-            while True:
-                for i, strat in enumerate(TagWriteStrategy, start=1):
-                    print(f"  {i}) {strat.display}")
-                choice = input(f"Select [1-{len(TagWriteStrategy)}], or '?' for help: ").strip().lower()
-                if choice in ("?", "h", "help"):
-                    print(ShowHelp.WriteStrategy)
-                    continue
-                if _is_valid_choice(choice, len(TagWriteStrategy), allow_help=False):
-                    self.tag_write_strategy = list(TagWriteStrategy)[int(choice) - 1]
-                    needs_save = True
-                    break
-                print("Invalid choice.")
+            options = [strat.display for strat in TagWriteStrategy]
+            choice = self.prompt.choice(
+                "\nHow should ratings be written back to your files?\nChoose a write strategy. This controls which tags are updated:", options, help_text=ShowHelp.WriteStrategy
+            )
+            idx = options.index(choice)
+            self.tag_write_strategy = list(TagWriteStrategy)[idx]
+            needs_save = True
 
         # Preferred player tag prompt
         if self.tag_write_strategy and self.tag_write_strategy.requires_default_tag() and not self.default_tag:
-            print("Which media player do you use most often to view or manage ratings?")
-            print("Select the one whose format should be used to store ratings in your files:")
-
-            while True:
-                for i, info in enumerate(unique, start=1):
-                    print(f"  {i}) {info['player']}")
-                choice = input(f"Select [1-{len(unique)}], or '?' for help: ").strip().lower()
-                if choice in ("?", "h", "help"):
-                    print(ShowHelp.PreferredPlayerTag)
-                    continue
-                if _is_valid_choice(choice, len(unique), allow_help=False):
-                    self.default_tag = unique[int(choice) - 1]["key"]
-                    needs_save = True
-                    break
-                print("Invalid choice.")
+            options = [info["player"] for info in unique]
+            choice = self.prompt.choice(
+                "Which media player do you use most often to view or manage ratings?\nSelect the one whose format should be used to store ratings in your files:",
+                options,
+                help_text=ShowHelp.PreferredPlayerTag,
+            )
+            idx = options.index(choice)
+            self.default_tag = unique[idx]["key"]
+            needs_save = True
 
         # Save config if changed
         if needs_save:
@@ -598,14 +559,8 @@ class ID3Handler(AudioTagHandler):
             cfg.default_tag = self.default_tag
             cfg.tag_priority_order = self.tag_priority_order
 
-            while True:
-                choice = input("\nSave settings to config.ini? (y/n): ").strip().lower()
-                if choice in ("y", "yes"):
-                    cfg.save_config()
-                    break
-                if choice in ("n", "no"):
-                    break
-                print("Please enter y or n.")
+            if self.prompt.yes_no("\nSave settings to config.ini?"):
+                cfg.save_config()
 
     def _print_summary(self) -> None:
         print("\nMP3 Ratings Summary:")

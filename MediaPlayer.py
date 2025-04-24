@@ -180,7 +180,7 @@ class MediaPlayer(abc.ABC):
                 bar.close()
 
     def _register_playlist_title(self, title: str, ID: Union[str, int]) -> None:
-        """Register a playlist title → ID mapping, enforcing uniqueness across this player."""
+        """Register a playlist title → ID mapping (both directions), enforcing uniqueness across this player."""
         key = title.lower()
         existing = self._title_to_id_map.get(key)
 
@@ -191,6 +191,7 @@ class MediaPlayer(abc.ABC):
             )
 
         self._title_to_id_map[key] = ID
+        self._title_to_id_map[str(ID)] = title
 
     @abc.abstractmethod
     def _read_native_playlist_tracks(self, native_playlist: Union[NativePlaylist, Playlist]) -> List[AudioTag]:
@@ -308,6 +309,7 @@ class MediaMonkey(MediaPlayer):
             self.logger.warning("Invalid playlist conversion request")
             return None
 
+        title = self._title_to_id_map.get(str(native_playlist.ID), title)
         playlist = Playlist(ID=native_playlist.ID, name=title)
         playlist.is_auto_playlist = native_playlist.isAutoplaylist
 
@@ -621,7 +623,8 @@ class Plex(MediaPlayer):
 
     def _convert_playlist(self, native_playlist: PlexPlaylist) -> Optional[Playlist]:
         ID = native_playlist.key.split("/")[-1] if "/" in native_playlist.key else native_playlist.key
-        playlist = Playlist(ID=ID, name=native_playlist.title)
+        title = self._title_to_id_map.get(str(ID), native_playlist.title)
+        playlist = Playlist(ID=ID, name=title)
         playlist.is_auto_playlist = native_playlist.smart
         return playlist
 
