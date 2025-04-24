@@ -7,7 +7,7 @@ from typing import List, Optional
 import pandas as pd
 
 from manager import get_manager
-from MediaPlayer import FileSystemPlayer, MediaMonkey, PlexPlayer
+from MediaPlayer import FileSystem, MediaMonkey, Plex
 from sync_items import AudioTag
 
 warnings.simplefilter(action="ignore", category=pd.errors.PerformanceWarning)
@@ -97,7 +97,7 @@ class Cache:
 class CacheManager:
     """Handles caching for metadata and track matches, supporting multiple caching modes."""
 
-    KNOWN_PLAYERS = [MediaMonkey, PlexPlayer, FileSystemPlayer]
+    KNOWN_PLAYERS = [MediaMonkey, Plex, FileSystem]
     MATCH_CACHE_FILE = "matches_cache.pkl"
     METADATA_CACHE_FILE = "metadata_cache.pkl"
     SAVE_THRESHOLD = 100
@@ -248,7 +248,7 @@ class CacheManager:
 
         # Convert row data to AudioTag
         data = {key: self._safe_get_value(row, key) for key in row.columns}
-        self.logger.debug(f"Metadata cache hit for {player_name}:{track_id}")
+        self.logger.trace(f"Metadata cache hit for {player_name}:{track_id}")
         self.stats_mgr.increment("cache_hits")
         return AudioTag.from_dict(data)
 

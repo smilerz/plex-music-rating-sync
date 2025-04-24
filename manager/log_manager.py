@@ -7,10 +7,24 @@ from tqdm import tqdm
 
 from manager.config_manager import LogLevel
 
+# add TRACE level to logging
+TRACE_LEVEL = 5
+logging.addLevelName(TRACE_LEVEL, "TRACE")
+
+
+def trace(self, message, *args, **kwargs):  # noqa
+    if self.isEnabledFor(TRACE_LEVEL):
+        self._log(TRACE_LEVEL, message, args, **kwargs)
+
+
+logging.Logger.trace = trace
+
 
 class InfoFilter(logging.Filter):
+    """Filter out stdout messages from the logger. Otherwise output interferes with tqdm."""
+
     def filter(self, rec: logging.LogRecord) -> bool:
-        return rec.levelno in (logging.DEBUG, logging.INFO)
+        return rec.levelno in (TRACE_LEVEL, logging.DEBUG, logging.INFO)
 
 
 class TqdmLoggingHandler(logging.Handler):
@@ -43,6 +57,7 @@ class LevelBasedFormatter(logging.Formatter):
 
 class LogManager:
     LOG_LEVEL_MAP = {
+        LogLevel.TRACE: TRACE_LEVEL,
         LogLevel.CRITICAL: logging.CRITICAL,
         LogLevel.ERROR: logging.ERROR,
         LogLevel.WARNING: logging.WARNING,

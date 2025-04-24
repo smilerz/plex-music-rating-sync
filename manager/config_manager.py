@@ -43,6 +43,7 @@ class LogLevel(ConfigEnum):
     WARNING = "warning"
     INFO = "info"
     DEBUG = "debug"
+    TRACE = "trace"
 
 
 class PlayerType(ConfigEnum):

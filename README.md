@@ -126,7 +126,7 @@ optional arguments:
   -c                    Clear existing cache files before starting
   -d, --dry             Does not apply any changes
   --sync [SYNC ...]     Selects which items to sync: one or more of [tracks, playlists]
-  --log LOG             Sets the logging level (critical, error, [warning], info, debug)
+  --log LOG             Sets the logging level (critical, error, [warning], info, debug, trace)
   --passwd PASSWD       The password for the plex user. NOT RECOMMENDED TO USE!
   --token TOKEN         Plex API token. See Plex documentation for details
   --playlist-path PLAYLIST_PATH   Path to playlists directory for filesystem player
