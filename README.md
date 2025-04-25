@@ -1,10 +1,12 @@
 # plex-music-rating-sync
-Plex Agents do not read music ratings when importing music files and they don't write back ratings and playlists to disk.
-This makes sense from a server-side-of-view.
-You don't want all users to have the same ratings or playlists.
-Every user should be able to set his / her own ratings and collect his favorite songs in playlists.
+Plex Agents do not read music ratings from files during import, nor do they write ratings or playlists back to disk. 
+This makes sense server-side — every Plex user should be able to maintain their own ratings and playlists independently.
 
-This project aims to provide a simple sync tool that synchronizes the track ratings and playlists with a specific PLEX user account and server.
+This project began as a way to bridge that gap: a simple sync tool to push track ratings and playlists into a specific Plex user account and server, 
+preserving personal curation from MediaMonkey.
+
+Over time, it has evolved. What started as a one-way bridge has grown into a powerful any-to-any sync engine 
+between Plex, MediaMonkey, and filesystem-based libraries. Ratings and playlists can now be transferred in either direction.
 
 ## Features
 * synchronize: track ratings, playlists (not automatically generated)
@@ -45,7 +47,7 @@ This application now supports using a local file system directory as a media pla
    ```
 
 Optional installations:
-- For development tools (linting, type checking):
+- For development tools (linting, type checking, testing):
   ```bash
   pip install ".[dev]"
   ```
@@ -73,30 +75,6 @@ Create a `config.ini` file based on the template `config.ini.template`:
 - ** Required Settings **
   - `path` = Path to music directory for filesystem player
   - `playlist-path` = Path to playlists directory [default: path]
-
-### Rating Tag Handling
-
-**Note**: The following settings will, optionally, be written to `config.ini` after the first run, if necessary.
-
-- **`tag_write_strategy`**: *Determines how rating tags are written to files.*
-  - *`write_all`*: Write to all known and configured tags.
-  - *`write_default`*: Only write to the `default_tag`; do not remove other tags.
-  - *`overwrite_default`*: Write only to the `default_tag` and delete all other rating tags.
-
-- **`default_tag`**: *The canonical tag to use for writing when applicable.*  
-  - *Options*: Player values such as `MEDIAMONKEY`, `WINDOWSMEDIAPLAYER`, `MUSICBEE`, `WINAMP`, `TEXT`.
-  - *Unknown/custom tags (e.g., `POPM:foobar@example.com`) are also allowed.*
-
-- **`conflict_resolution_strategy`**: *Determines how to resolve conflicting rating values across tags.*
-  - *`prioritized_order`*: Use the tag with the highest priority in the list below.
-  - *`highest`*: Use the highest numeric rating found.
-  - *`lowest`*: Use the lowest numeric rating found.
-  - *`average`*: Use the average of all numeric ratings.
-  - *`choice`*: Prompt user to manually enter a rating.
-
-- **`tag_priority_order`**: *Ordered list of tag identifiers used for resolving conflicts.*  
-  - *Recognized values*: Player values such as `MEDIAMONKEY`, `WINDOWSMEDIAPLAYER`, `MUSICBEE`, `WINAMP`, `TEXT`.  
-  - *Unknown/custom tags (e.g., `POPM:foobar@example.com`) are also allowed.*
 
 ## How to run
 The main file is `sync_ratings.py`.
@@ -167,6 +145,35 @@ The sync tool supports different caching strategies to optimize performance:
 - **disabled**: No caching, all operations performed directly
 
 Cache files are stored in the application directory and can be cleared using `--clear-cache`.
+
+###  Advanced Tag Configuration (Optional)
+
+**Note**
+For most users, you don't need to configure anything about tag formats or rating strategies manually. The tool will:
+- Detect which tags are used in your files
+- Infer the most appropriate rating scales
+- Prompt you for resolution strategy only if conflicting ratings are found
+- Optionally write to `config.ini` after the first run, if necessary.
+
+- **`tag_write_strategy`**: *Determines how rating tags are written to files.*
+  - *`write_all`*: Write to all known and configured tags.
+  - *`write_default`*: Only write to the `default_tag`; do not remove other tags.
+  - *`overwrite_default`*: Write only to the `default_tag` and delete all other rating tags.
+
+- **`default_tag`**: *The canonical tag to use for writing when applicable.*  
+  - *Options*: Player values such as `MEDIAMONKEY`, `WINDOWSMEDIAPLAYER`, `MUSICBEE`, `WINAMP`, `TEXT`.
+  - *Unknown/custom tags (e.g., `POPM:foobar@example.com`) are also allowed.*
+
+- **`conflict_resolution_strategy`**: *Determines how to resolve conflicting rating values across tags.*
+  - *`prioritized_order`*: Use the tag with the highest priority in the list below.
+  - *`highest`*: Use the highest numeric rating found.
+  - *`lowest`*: Use the lowest numeric rating found.
+  - *`average`*: Use the average of all numeric ratings.
+  - *`choice`*: Prompt user to manually enter a rating.
+
+- **`tag_priority_order`**: *Ordered list of tag identifiers used for resolving conflicts.*  
+  - *Recognized values*: Player values such as `MEDIAMONKEY`, `WINDOWSMEDIAPLAYER`, `MUSICBEE`, `WINAMP`, `TEXT`.  
+  - *Unknown/custom tags (e.g., `POPM:foobar@example.com`) are also allowed.*
 
 ## Current issues
 * the [PlexAPI](https://pypi.org/project/PlexAPI/) seems to be only working for the administrator of the PMS.

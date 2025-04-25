@@ -5,21 +5,25 @@ description = "synchronize track ratings and playlists between Media Players"
 requires-python = ">=3.12"
 dependencies = [
 	"PlexAPI>=4.16.1",
-	"fuzzywuzzy",
-	"pypiwin32",
-	"numpy",
+	"fuzzywuzzy==0.18.0",
+	"pypiwin32==223",
+	"numpy==2.2.3",
 	"ConfigArgParse",
     "configupdater",
-    "pandas",
-    "tqdm",
-    "mutagen"
+    "pandas==2.2.3",
+    "tqdm==4.67.1",
+    "mutagen==1.47.0"
 ]
 
 [project.optional-dependencies]
 dev = [
     "ruff==0.8.3",  # linter, formatter, import sort
     "mypy==1.13.0",
-    "colorlog==6.9.0",
+    "pytest==8.3.5",
+    "pytest-mock==3.14.0",
+    "pytest-cov==6.1.1",
+    "pytest-html==4.1.1",
+    "pytest-xdist==3.6.1"
 ]
 fuzzy = [
     "Levenshtein==0.27.1"
@@ -55,7 +59,7 @@ fixable=["ALL"]
 extend-select = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
-
+"tests/**/*.py" = ["ANN201", "ANN202", "ANN001", "ANN002", "ANN003", "ANN101", "ANN102"]
 
 [tool.ruff.lint.flake8-annotations]
 suppress-dummy-args = true
@@ -75,3 +79,16 @@ select = ["I002", "TCH004"]
 [lint.isort]
 required-imports = ["from __future__ import annotations"]
 
+[tool.pytest.ini_options]
+addopts = " --tb=short --cov=. --cov-report=html --junitxml=docs/reports/tests/pytest.xml --html=docs/reports/tests/tests.html"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.coverage.run]
+branch = true
+source = ["."]
+omit = ["tests/*", "*/__init__.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
