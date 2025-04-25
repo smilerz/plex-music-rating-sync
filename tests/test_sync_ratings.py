@@ -1,1 +1,0 @@
-# TODO: Functional tests for PlexSync lifecycle and sync filtering

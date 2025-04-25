@@ -503,7 +503,8 @@ class ID3Handler(AudioTagHandler):
         if self.conflict_resolution_strategy is None and has_conflicts:
             options = [strat.display for strat in ConflictResolutionStrategy] + ["Show conflicts"]
             choice = self.prompt.choice(
-                "\nHow should rating conflicts be resolved when different media players have stored different ratings for the same track?\nChoose a strategy below. This affects how those ratings are interpreted:",
+                "\nHow should rating conflicts be resolved when different media players have stored different ratings for the same track?\n \
+                    Choose a strategy below. This affects how those ratings are interpreted:",
                 options,
                 help_text=ShowHelp.ConflictResolution,
             )
@@ -520,7 +521,8 @@ class ID3Handler(AudioTagHandler):
         if self.conflict_resolution_strategy == ConflictResolutionStrategy.PRIORITIZED_ORDER and has_multiple and not self.tag_priority_order:
             options = [info["player"] for info in unique]
             order = self.prompt.choice(
-                "\nMultiple media players have written ratings to this file. Please choose the order of preference (highest first).\nThis determines which player's rating takes priority when they conflict.",
+                "\nMultiple media players have written ratings to this file. Please choose the order of preference (highest first).\n\
+                    This determines which player's rating takes priority when they conflict.",
                 options,
                 allow_multiple=True,
                 help_text=ShowHelp.TagPriority,

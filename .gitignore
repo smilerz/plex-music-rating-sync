@@ -107,3 +107,6 @@ config.ini
 *.pkl
 logs/
 docs/reports/
+docs/testing/
+*.zip
+*.tar.gz
