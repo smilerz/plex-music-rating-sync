@@ -204,7 +204,7 @@ class TrackPair(SyncPair):
 
         self.cache_mgr.set_match(self.source.ID, best_match.ID, self.source_player.name(), self.destination_player.name(), score)
 
-    def find_best_match(self, candidates: [List[AudioTag]] | None = None, match_threshold: int = MatchThreshold.MINIMUM_ACCEPTABLE) -> Tuple[AudioTag | None, int]:
+    def find_best_match(self, candidates: List[AudioTag] | None = None, match_threshold: int = MatchThreshold.MINIMUM_ACCEPTABLE) -> Tuple[AudioTag | None, int]:
         """Find the best matching track from candidates or by searching."""
         cached_match = self._get_cache_match()
         if cached_match:

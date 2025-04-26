@@ -1,4 +1,5 @@
 from enum import Enum
+from typing import Optional, Union
 
 
 class RatingScale(Enum):
@@ -71,7 +72,7 @@ class Rating:
         return cls(0, scale=RatingScale.NORMALIZED)
 
     @classmethod
-    def try_create(cls, value: str | float, scale: RatingScale | None = None, *, aggressive: bool = False) -> "Rating" | None:
+    def try_create(cls, value: str | float, scale: RatingScale | None = None, *, aggressive: bool = False) -> Optional["Rating"]:
         if value is None or value == "":
             return None
         try:
@@ -157,35 +158,35 @@ class Rating:
     def __hash__(self):
         return hash(self._normalized)
 
-    def __eq__(self, other: "Rating" | float) -> bool:
+    def __eq__(self, other: Union["Rating", float]) -> bool:
         if isinstance(other, Rating):
             return self._normalized == other._normalized
         elif isinstance(other, (int, float)):
             return self._normalized == other
         return NotImplemented
 
-    def __lt__(self, other: "Rating" | float) -> bool:
+    def __lt__(self, other: Union["Rating", float]) -> bool:
         if isinstance(other, Rating):
             return self._normalized < other._normalized
         elif isinstance(other, (int, float)):
             return self._normalized < other
         return NotImplemented
 
-    def __le__(self, other: "Rating" | float) -> bool:
+    def __le__(self, other: Union["Rating", float]) -> bool:
         if isinstance(other, Rating):
             return self._normalized <= other._normalized
         elif isinstance(other, (int, float)):
             return self._normalized <= other
         return NotImplemented
 
-    def __gt__(self, other: "Rating" | float) -> bool:
+    def __gt__(self, other: Union["Rating", float]) -> bool:
         if isinstance(other, Rating):
             return self._normalized > other._normalized
         elif isinstance(other, (int, float)):
             return self._normalized > other
         return NotImplemented
 
-    def __ge__(self, other: "Rating" | float) -> bool:
+    def __ge__(self, other: Union["Rating", float]) -> bool:
         if isinstance(other, Rating):
             return self._normalized >= other._normalized
         elif isinstance(other, (int, float)):

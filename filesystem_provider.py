@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import mutagen
+from mutagen import FileType
 from mutagen.id3 import ID3, POPM, TALB, TIT2, TPE1, TRCK, TXXX, ID3FileType
 
 from manager import get_manager
@@ -134,12 +135,12 @@ class AudioTagHandler(abc.ABC):
     # Phase 1: Metadata Extraction
     # ------------------------------
     @abc.abstractmethod
-    def can_handle(self, file: mutagen.FileType) -> bool:
+    def can_handle(self, file: FileType) -> bool:
         """Return True if this handler supports the given file."""
         raise NotImplementedError("can_handle() not implemented")
 
     @abc.abstractmethod
-    def extract_metadata(self, audio_file: mutagen.FileType) -> Tuple[AudioTag, Dict[str, Any]]:
+    def extract_metadata(self, audio_file: FileType) -> Tuple[AudioTag, Dict[str, Any]]:
         """Read *only* raw rating-tag values from the file."""
         raise NotImplementedError("extract_metadata() not implemented")
 
@@ -255,14 +256,14 @@ class AudioTagHandler(abc.ABC):
     # Phase 4: Writing
     # ------------------------------
     @abc.abstractmethod
-    def apply_tags(self, audio_file: mutagen.FileType, audio_tag: Optional[Dict[str, Any]], rating: Rating | None = None) -> mutagen.FileType:
+    def apply_tags(self, audio_file: FileType, audio_tag: Optional[Dict[str, Any]], rating: Rating | None = None) -> FileType:
         """Write metadata fields and the resolved rating back to the file."""
         raise NotImplementedError("apply_tags() not implemented")
 
     # ------------------------------
     # Phase 5: Orchestration
     # ------------------------------
-    def read_tags(self, audio_file: mutagen.FileType) -> Tuple[AudioTag, Dict[str, str | int | float] | None]:
+    def read_tags(self, audio_file: FileType) -> Tuple[AudioTag, Dict[str, str | int | float] | None]:
         """
         Full tag-reading workflow:
           1. extract_metadata()
@@ -309,7 +310,7 @@ class VorbisHandler(AudioTagHandler):
     # ------------------------------
     # Phase 1: Metadata Extraction
     # ------------------------------
-    def extract_metadata(self, audio_file: mutagen.FileType) -> Tuple[AudioTag, Dict[str, Any]]:
+    def extract_metadata(self, audio_file: FileType) -> Tuple[AudioTag, Dict[str, Any]]:
         tag = self._get_audiotag(audio_file, audio_file.filename)
         raw: Dict[str, Any] = {}
         for field in (VorbisField.FMPS_RATING, VorbisField.RATING):
@@ -318,7 +319,7 @@ class VorbisHandler(AudioTagHandler):
                 raw[key] = audio_file.get(key, [None])[0]
         return tag, raw
 
-    def _get_audiotag(self, audio_file: mutagen.FileType, file_path: str) -> AudioTag:
+    def _get_audiotag(self, audio_file: FileType, file_path: str) -> AudioTag:
         track_num = audio_file.get(VorbisField.TRACKNUMBER, ["0"])[0]
         duration = getattr(getattr(audio_file, "info", None), "length", -1)
         return AudioTag(
@@ -388,7 +389,7 @@ class VorbisHandler(AudioTagHandler):
     # ------------------------------
     # Phase 4: Writing
     # ------------------------------
-    def apply_tags(self, audio_file: mutagen.FileType, audio_tag: AudioTag | None = None, rating: Rating | None = None) -> mutagen.FileType:
+    def apply_tags(self, audio_file: FileType, audio_tag: AudioTag | None = None, rating: Rating | None = None) -> FileType:
         """Write metadata fields and resolved rating back into the Vorbis tags."""
         if audio_tag:
             if audio_tag.title:
@@ -411,7 +412,7 @@ class VorbisHandler(AudioTagHandler):
     # ------------------------------
     # Utility
     # ------------------------------
-    def can_handle(self, file: mutagen.FileType) -> bool:
+    def can_handle(self, file: FileType) -> bool:
         return hasattr(file, "tags") and (VorbisField.FMPS_RATING.value in file.tags or VorbisField.RATING.value in file.tags)
 
 
@@ -425,7 +426,7 @@ class ID3Handler(AudioTagHandler):
     # ------------------------------
     # Phase 1: Metadata Extraction
     # ------------------------------
-    def extract_metadata(self, audio_file: mutagen.FileType) -> Tuple[AudioTag, Dict[str, Any]]:
+    def extract_metadata(self, audio_file: FileType) -> Tuple[AudioTag, Dict[str, Any]]:
         # Build the AudioTag skeleton
         track = self._get_audiotag(
             audio_file.tags,
@@ -450,7 +451,7 @@ class ID3Handler(AudioTagHandler):
 
         return track, raw
 
-    def _get_audiotag(self, audio_file: mutagen.FileType, file_path: str, duration: int = -1) -> AudioTag:
+    def _get_audiotag(self, audio_file: FileType, file_path: str, duration: int = -1) -> AudioTag:
         def _safe(field: str) -> str:
             return audio_file.get(field).text[0] if audio_file.get(field) else ""
 
@@ -593,7 +594,7 @@ class ID3Handler(AudioTagHandler):
     # ------------------------------
     # Phase 4: Writing
     # ------------------------------
-    def _apply_metadata_fields(self, audio_file: mutagen.FileType, audio_tag: AudioTag) -> None:
+    def _apply_metadata_fields(self, audio_file: FileType, audio_tag: AudioTag) -> None:
         if audio_tag.title:
             audio_file.tags[ID3Field.TITLE] = TIT2(encoding=3, text=audio_tag.title)
         if audio_tag.artist:
@@ -613,7 +614,7 @@ class ID3Handler(AudioTagHandler):
         else:
             return set()
 
-    def apply_tags(self, audio_file: mutagen.FileType, audio_tag: AudioTag | None = None, rating: Rating | None = None) -> mutagen.FileType:
+    def apply_tags(self, audio_file: FileType, audio_tag: AudioTag | None = None, rating: Rating | None = None) -> FileType:
         if audio_file.tags is None or not isinstance(audio_file.tags, ID3):
             audio_file.tags = ID3()
 
@@ -630,7 +631,7 @@ class ID3Handler(AudioTagHandler):
 
         return audio_file
 
-    def _apply_rating(self, audio_file: mutagen.FileType, rating: Rating, tag_keys: set[str]) -> mutagen.FileType:
+    def _apply_rating(self, audio_file: FileType, rating: Rating, tag_keys: set[str]) -> FileType:
         for key in tag_keys:
             id3_tag = self.tag_registry.get_id3_tag_for_key(key)
             if not id3_tag:
@@ -654,7 +655,7 @@ class ID3Handler(AudioTagHandler):
 
         return audio_file
 
-    def _remove_existing_id3_tags(self, audio_file: mutagen.FileType) -> None:
+    def _remove_existing_id3_tags(self, audio_file: FileType) -> None:
         for frame in list(audio_file.keys()):
             if frame == "TXXX:RATING" or frame.startswith("POPM:"):
                 del audio_file[frame]
@@ -662,7 +663,7 @@ class ID3Handler(AudioTagHandler):
     # ------------------------------
     # Utility
     # ------------------------------
-    def can_handle(self, file: mutagen.FileType) -> bool:
+    def can_handle(self, file: FileType) -> bool:
         return isinstance(file, ID3FileType) or (hasattr(file, "tags") and any(key.startswith("POPM:") or key == "TXXX:RATING" for key in getattr(file, "tags", {}).keys()))
 
     def _get_label(self, tag_key: str) -> str:
@@ -691,7 +692,7 @@ class FileSystemProvider:
     # ------------------------------
     # Core Handler Dispatch
     # ------------------------------
-    def _get_handler(self, audio_file: mutagen.FileType) -> AudioTagHandler | None:
+    def _get_handler(self, audio_file: FileType) -> AudioTagHandler | None:
         """Determine the appropriate handler for the given audio file."""
         return next((handler for handler in self._handlers if handler.can_handle(audio_file)), None)
 
@@ -797,7 +798,7 @@ class FileSystemProvider:
         self.logger.debug(f"Successfully read metadata for {file_path}")
         return tag
 
-    def update_track_metadata(self, file_path: Path | str, audio_tag: AudioTag | None = None, rating: Rating | None = None) -> mutagen.File | None:
+    def update_track_metadata(self, file_path: Path | str, audio_tag: AudioTag | None = None, rating: Rating | None = None) -> FileType | None:
         """Update metadata and/or rating in the audio file."""
         file_path = Path(file_path)
         if not file_path.exists():
@@ -967,7 +968,7 @@ class FileSystemProvider:
     # ------------------------------
     # Utility (Low-Level Helpers)
     # ------------------------------
-    def _open_audio_file(self, file_path: Path | str) -> mutagen.FileType | None:
+    def _open_audio_file(self, file_path: Path | str) -> FileType | None:
         """Helper function to open an audio file using mutagen."""
         try:
             audio_file = mutagen.File(file_path, easy=False)
@@ -979,7 +980,7 @@ class FileSystemProvider:
             self.logger.error(f"Error opening file {file_path}: {e}", exc_info=True)
             return None
 
-    def _save_audio_file(self, audio_file: mutagen.FileType) -> bool:
+    def _save_audio_file(self, audio_file: FileType) -> bool:
         """Helper function to save changes to an audio file."""
         if self.config_mgr.dry:
             self.logger.info(f"Dry run enabled. Changes to {audio_file.filename} will not be saved.")
