@@ -2,7 +2,7 @@ import abc
 import logging
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import mutagen
 from mutagen.id3 import ID3, POPM, TALB, TIT2, TPE1, TRCK, TXXX, ID3FileType
@@ -54,7 +54,7 @@ class ID3TagRegistry:
         for tag_key, entry in initial_entries.items():
             self.register(id3_tag=entry["id3_tag"], tag_key=tag_key, player_name=entry["player_name"])
 
-    def register(self, id3_tag: str, tag_key: Optional[str] = None, player_name: Optional[str] = None) -> str:
+    def register(self, id3_tag: str, tag_key: str | None = None, player_name: str | None = None) -> str:
         """Register a tag by ID3 tag string, returning its tag_key (creating one if necessary)."""
         tag_key = tag_key.upper() if tag_key else f"UNKNOWN{len(self._entries_by_key)}"
 
@@ -70,27 +70,27 @@ class ID3TagRegistry:
 
         return tag_key
 
-    def get_id3_tag_for_key(self, tag_key: str) -> Optional[str]:
+    def get_id3_tag_for_key(self, tag_key: str) -> str | None:
         return self._entries_by_key.get(tag_key.upper(), {}).get("id3_tag")
 
-    def get_player_name_for_key(self, tag_key: str) -> Optional[str]:
+    def get_player_name_for_key(self, tag_key: str) -> str | None:
         return self._entries_by_key.get(tag_key.upper(), {}).get("player_name")
 
-    def get_key_for_id3_tag(self, id3_tag: str) -> Optional[str]:
+    def get_key_for_id3_tag(self, id3_tag: str) -> str | None:
         id3_tag_upper = id3_tag.upper()
         for key, entry in self._entries_by_key.items():
             if entry["id3_tag"].upper() == id3_tag_upper:
                 return key
         return None
 
-    def get_key_for_player_name_name(self, player_name: str) -> Optional[str]:
+    def get_key_for_player_name_name(self, player_name: str) -> str | None:
         player_lower = player_name.lower()
         for key, entry in self._entries_by_key.items():
             if entry["player_name"].lower() == player_lower:
                 return key
         return None
 
-    def resolve_key_from_input(self, input_str: str) -> Optional[str]:
+    def resolve_key_from_input(self, input_str: str) -> str | None:
         upper = input_str.upper()
         if upper in self._entries_by_key:
             return upper
@@ -112,7 +112,7 @@ class ID3TagRegistry:
         tag_key = self.resolve_key_from_input(value)
         return self.get_player_name_for_key(tag_key) or value
 
-    def get_popm_email_for_key(self, key: str) -> Optional[str]:
+    def get_popm_email_for_key(self, key: str) -> str | None:
         tag = self.get_id3_tag_for_key(key)
         if tag and tag.upper().startswith("POPM:"):
             return tag.split(":", 1)[1]
@@ -120,7 +120,7 @@ class ID3TagRegistry:
 
 
 class AudioTagHandler(abc.ABC):
-    def __init__(self, tagging_policy: Optional[dict] = None, **kwargs):
+    def __init__(self, tagging_policy: dict | None = None, **kwargs):
         self.logger = logging.getLogger(f"PlexSync.{self.__class__.__name__}")
         self.stats_mgr = get_manager().get_stats_manager()
 
@@ -147,14 +147,14 @@ class AudioTagHandler(abc.ABC):
     # Phase 2: Normalization
     # ------------------------------
     @abc.abstractmethod
-    def _try_normalize(self, raw_value: Union[str, float], tag_key: str) -> Optional[Rating]:
+    def _try_normalize(self, raw_value: str | float, tag_key: str) -> Rating | None:
         """
         Attempt to convert a single raw tag_value into a Rating.
         Subclasses implement scale inference or parsing here.
         """
         raise NotImplementedError("Subclasses must implement _try_normalize()")
 
-    def resolve_rating(self, raw_ratings: Dict[str, Union[str, float]], track: AudioTag) -> Optional[Rating]:
+    def resolve_rating(self, raw_ratings: Dict[str, str | float], track: AudioTag) -> Rating | None:
         """Attempt to resolve a final rating based on raw values and context."""
         normalized: Dict[str, Rating] = {}
         failed: set[str] = set()
@@ -182,7 +182,7 @@ class AudioTagHandler(abc.ABC):
         # genuine conflict
         return self._resolve_conflict(normalized, track)
 
-    def _resolve_conflict(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Optional[Rating]:
+    def _resolve_conflict(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Rating | None:
         strat = self.conflict_resolution_strategy
         if not strat:
             return None
@@ -201,7 +201,7 @@ class AudioTagHandler(abc.ABC):
 
         return strategy_handler(ratings_by_tag, track)
 
-    def _resolve_prioritized_order(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Optional[Rating]:
+    def _resolve_prioritized_order(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Rating | None:
         if not self.tag_priority_order:
             self.logger.warning("No tag_priority_order for PRIORITIZED_ORDER")
             raise ValueError("No tag_priority_order for PRIORITIZED_ORDER")
@@ -210,21 +210,21 @@ class AudioTagHandler(abc.ABC):
                 return ratings_by_tag[key]
         return Rating.unrated()
 
-    def _resolve_highest(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Optional[Rating]:
+    def _resolve_highest(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Rating | None:
         return max(ratings_by_tag.values())
 
-    def _resolve_lowest(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Optional[Rating]:
+    def _resolve_lowest(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Rating | None:
         return min(ratings_by_tag.values())
 
-    def _resolve_average(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Optional[Rating]:
+    def _resolve_average(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Rating | None:
         vals = [r.to_float(RatingScale.NORMALIZED) for r in ratings_by_tag.values()]
         return Rating(sum(vals) / len(vals)) if vals else None
 
-    def _resolve_unknown_strategy(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Optional[Rating]:
+    def _resolve_unknown_strategy(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Rating | None:
         self.logger.warning(f"Unknown conflict strategy {self.conflict_resolution_strategy}")
         return None
 
-    def _resolve_choice(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Optional[Rating]:
+    def _resolve_choice(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Rating | None:
         """Default interactive chooser: list each tag and rating, let user pick or skip."""
         items = list(ratings_by_tag.items())
         options = [f"{self.tag_registry.get_player_name_for_key(key):<30} : {rating.to_display()}" for key, rating in items]
@@ -255,14 +255,14 @@ class AudioTagHandler(abc.ABC):
     # Phase 4: Writing
     # ------------------------------
     @abc.abstractmethod
-    def apply_tags(self, audio_file: mutagen.FileType, audio_tag: Optional[Dict[str, Any]], rating: Optional[Rating] = None) -> mutagen.FileType:
+    def apply_tags(self, audio_file: mutagen.FileType, audio_tag: Optional[Dict[str, Any]], rating: Rating | None = None) -> mutagen.FileType:
         """Write metadata fields and the resolved rating back to the file."""
         raise NotImplementedError("apply_tags() not implemented")
 
     # ------------------------------
     # Phase 5: Orchestration
     # ------------------------------
-    def read_tags(self, audio_file: mutagen.FileType) -> Tuple[AudioTag, Optional[Dict[str, Any]]]:
+    def read_tags(self, audio_file: mutagen.FileType) -> Tuple[AudioTag, Dict[str, str | int | float] | None]:
         """
         Full tag-reading workflow:
           1. extract_metadata()
@@ -299,10 +299,10 @@ class AudioTagHandler(abc.ABC):
 
 
 class VorbisHandler(AudioTagHandler):
-    def __init__(self, tagging_policy: Optional[dict] = None, **kwargs):
+    def __init__(self, tagging_policy: dict | None = None, **kwargs):
         super().__init__(tagging_policy=tagging_policy, **kwargs)
-        self.fmps_rating_scale: Optional[RatingScale] = None
-        self.rating_scale: Optional[RatingScale] = None
+        self.fmps_rating_scale: RatingScale | None = None
+        self.rating_scale: RatingScale | None = None
         self.aggressive_inference = False
         self.conflict_resolution_strategy = ConflictResolutionStrategy.HIGHEST
 
@@ -335,7 +335,7 @@ class VorbisHandler(AudioTagHandler):
     # ------------------------------
     # Phase 2: Normalization Hook
     # ------------------------------
-    def _try_normalize(self, raw_value: Union[str, float], tag_key: str) -> Optional[Rating]:
+    def _try_normalize(self, raw_value: str | float, tag_key: str) -> Rating | None:
         scale = self.fmps_rating_scale if tag_key == VorbisField.FMPS_RATING.value else self.rating_scale
         rating = Rating.try_create(raw_value, scale=scale, aggressive=self.aggressive_inference)
 
@@ -361,7 +361,7 @@ class VorbisHandler(AudioTagHandler):
         # self._print_summary()
 
         # NOTE: Vorbis tags have two different rating scales in common use:
-        def pick_scale(field: VorbisField) -> Optional[RatingScale]:
+        def pick_scale(field: VorbisField) -> RatingScale | None:
             stats = self.stats_mgr.get(f"VorbisHandler::inferred_scale::{field.value}")
             if not stats:
                 return None
@@ -388,7 +388,7 @@ class VorbisHandler(AudioTagHandler):
     # ------------------------------
     # Phase 4: Writing
     # ------------------------------
-    def apply_tags(self, audio_file: mutagen.FileType, audio_tag: Optional[AudioTag] = None, rating: Optional[Rating] = None) -> mutagen.FileType:
+    def apply_tags(self, audio_file: mutagen.FileType, audio_tag: AudioTag | None = None, rating: Rating | None = None) -> mutagen.FileType:
         """Write metadata fields and resolved rating back into the Vorbis tags."""
         if audio_tag:
             if audio_tag.title:
@@ -416,7 +416,7 @@ class VorbisHandler(AudioTagHandler):
 
 
 class ID3Handler(AudioTagHandler):
-    def __init__(self, tagging_policy: Optional[dict] = None, **kwargs):
+    def __init__(self, tagging_policy: dict | None = None, **kwargs):
         super().__init__(tagging_policy=tagging_policy, **kwargs)
         self.tag_registry = ID3TagRegistry()
         self.discovered_rating_tags: set[str] = set()
@@ -469,7 +469,7 @@ class ID3Handler(AudioTagHandler):
     # ------------------------------
     # Phase 2: Normalization
     # ------------------------------
-    def _try_normalize(self, raw_value: Union[str, float], tag_key: str) -> Optional[Rating]:
+    def _try_normalize(self, raw_value: str | float, tag_key: str) -> Rating | None:
         id3_tag = self.tag_registry.get_id3_tag_for_key(tag_key) or ""
         if id3_tag.upper().startswith("POPM:"):
             scale = RatingScale.POPM
@@ -613,7 +613,7 @@ class ID3Handler(AudioTagHandler):
         else:
             return set()
 
-    def apply_tags(self, audio_file: mutagen.FileType, audio_tag: Optional[AudioTag] = None, rating: Optional[Rating] = None) -> mutagen.FileType:
+    def apply_tags(self, audio_file: mutagen.FileType, audio_tag: AudioTag | None = None, rating: Rating | None = None) -> mutagen.FileType:
         if audio_file.tags is None or not isinstance(audio_file.tags, ID3):
             audio_file.tags = ID3()
 
@@ -691,7 +691,7 @@ class FileSystemProvider:
     # ------------------------------
     # Core Handler Dispatch
     # ------------------------------
-    def _get_handler(self, audio_file: mutagen.FileType) -> Optional[AudioTagHandler]:
+    def _get_handler(self, audio_file: mutagen.FileType) -> AudioTagHandler | None:
         """Determine the appropriate handler for the given audio file."""
         return next((handler for handler in self._handlers if handler.can_handle(audio_file)), None)
 
@@ -749,7 +749,7 @@ class FileSystemProvider:
         """Return all discovered audio files."""
         return [t for t in self._media_files if t.suffix.lower() in self.AUDIO_EXT]
 
-    def get_playlists(self, title: Optional[str] = None, path: Optional[Union[str, Path]] = None) -> List[Playlist]:
+    def get_playlists(self, title: str | None = None, path: Path | str | None = None) -> List[Playlist]:
         """Return all discovered Playlist objects, optionally filtered by title or resolved path."""
         playlist_paths = [p for p in self._media_files if p.suffix.lower() in self.PLAYLIST_EXT]
 
@@ -773,7 +773,7 @@ class FileSystemProvider:
     # ------------------------------
     # Phase 2: Metadata Access and Update
     # ------------------------------
-    def read_track_metadata(self, file_path: Union[Path, str]) -> Optional[AudioTag]:
+    def read_track_metadata(self, file_path: Path | str) -> AudioTag | None:
         audio_file = self._open_audio_file(file_path)
         if not audio_file:
             return None
@@ -797,7 +797,7 @@ class FileSystemProvider:
         self.logger.debug(f"Successfully read metadata for {file_path}")
         return tag
 
-    def update_track_metadata(self, file_path: Union[Path, str], audio_tag: Optional[AudioTag] = None, rating: Optional[Rating] = None) -> Optional[mutagen.File]:
+    def update_track_metadata(self, file_path: Path | str, audio_tag: AudioTag | None = None, rating: Rating | None = None) -> mutagen.File | None:
         """Update metadata and/or rating in the audio file."""
         file_path = Path(file_path)
         if not file_path.exists():
@@ -881,7 +881,7 @@ class FileSystemProvider:
 
         return self.read_playlist_metadata(str(playlist_path))
 
-    def read_playlist_metadata(self, playlist_path: Union[Path, str]) -> Optional[Playlist]:
+    def read_playlist_metadata(self, playlist_path: Path | str) -> Playlist | None:
         playlist_path = Path(playlist_path).resolve()
         title = playlist_path.stem
         is_extm3u = False
@@ -909,7 +909,7 @@ class FileSystemProvider:
         playlist.is_extm3u = is_extm3u
         return playlist
 
-    def get_tracks_from_playlist(self, playlist_path: Union[str, Path]) -> List[Path]:
+    def get_tracks_from_playlist(self, playlist_path: Path | str) -> List[Path]:
         """Retrieve resolved track paths from a playlist file, scoped to self.path."""
         playlist_path = Path(playlist_path)
         tracks = []
@@ -967,7 +967,7 @@ class FileSystemProvider:
     # ------------------------------
     # Utility (Low-Level Helpers)
     # ------------------------------
-    def _open_audio_file(self, file_path: Union[Path, str]) -> Optional[mutagen.FileType]:
+    def _open_audio_file(self, file_path: Path | str) -> mutagen.FileType | None:
         """Helper function to open an audio file using mutagen."""
         try:
             audio_file = mutagen.File(file_path, easy=False)
@@ -1005,7 +1005,7 @@ class FileSystemProvider:
             self.logger.error(f"Failed to open playlist file {path} with mode '{mode}': {e}")
             return None
 
-    def _get_playlist_title(self, path: Path, base_title: Optional[str]) -> str:
+    def _get_playlist_title(self, path: Path, base_title: str | None) -> str:
         candidate = base_title
         rel_path = path.relative_to(self.playlist_path)
         folders = list(reversed(rel_path.parts[:-1]))  # exclude file

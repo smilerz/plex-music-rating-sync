@@ -1,5 +1,3 @@
-from typing import Optional
-
 from tqdm import tqdm
 
 
@@ -26,7 +24,7 @@ class StatusManager:
             if self.desc in self.handler.bars:
                 del self.handler.bars[self.desc]
 
-    def start_phase(self, desc: str, initial: int = 0, total: Optional[int] = None) -> tqdm:
+    def start_phase(self, desc: str, initial: int = 0, total: int | None = None) -> tqdm:
         """Start a new phase with a separate progress bar and return it for direct manipulation."""
         if desc in self.bars:
             self.bars[desc].close()  # Close existing bar if restarting phase

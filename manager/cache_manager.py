@@ -3,7 +3,7 @@ import os
 import pickle
 import warnings
 from datetime import datetime
-from typing import List, Optional
+from typing import List
 
 import pandas as pd
 
@@ -17,7 +17,7 @@ warnings.simplefilter(action="ignore", category=pd.errors.PerformanceWarning)
 class Cache:
     """Generic Cache class to handle common operations for caching."""
 
-    def __init__(self, filepath: str, columns: list, dtype: dict, save_threshold: int = 100, max_age_hours: Optional[int] = 720) -> None:
+    def __init__(self, filepath: str, columns: list, dtype: dict, save_threshold: int = 100, max_age_hours: int = 720) -> None:
         self.filepath = filepath
         self.max_age_hours = max_age_hours
         self.columns = columns
@@ -157,7 +157,7 @@ class CacheManager:
             )
             self.metadata_cache.load()
 
-    def _safe_get_value(self, row: pd.DataFrame, column_name: str) -> Optional[object]:
+    def _safe_get_value(self, row: pd.DataFrame, column_name: str) -> object | None:
         """Safely extract a value from a pandas row, converting NaN to None."""
         value = row[column_name].iloc[0]
         return None if pd.isna(value) else value
@@ -201,7 +201,7 @@ class CacheManager:
             self._metadata_update_count = 0
 
     ### MATCH CACHING (PERSISTENT) ###
-    def get_match(self, source_id: str, source_name: str, dest_name: str) -> Optional[str]:
+    def get_match(self, source_id: str, source_name: str, dest_name: str) -> str | None:
         """Retrieve a cached match for a track."""
         if not self.is_match_cache_enabled() or self.match_cache is None or self.match_cache.is_empty():
             return None, None
@@ -216,7 +216,7 @@ class CacheManager:
         self.stats_mgr.increment("cache_hits")
         return match, score
 
-    def set_match(self, source_id: str, dest_id: str, source_name: str, dest_name: str, score: Optional[float] = None) -> None:
+    def set_match(self, source_id: str, dest_id: str, source_name: str, dest_name: str, score: float | None = None) -> None:
         """Store or update a track match between source and destination, including a score."""
         if not self.is_match_cache_enabled() or self.match_cache is None or self.match_cache.is_empty():
             return
@@ -245,7 +245,7 @@ class CacheManager:
         self.match_cache.update_count += 1
         self.match_cache.auto_save()
 
-    def get_metadata(self, player_name: str, track_id: str, force_enable: bool = False) -> Optional[AudioTag]:
+    def get_metadata(self, player_name: str, track_id: str, force_enable: bool = False) -> AudioTag | None:
         """Retrieve cached metadata by player name and track ID."""
 
         if not (force_enable or self.is_metadata_cache_enabled()) or self.metadata_cache is None or self.metadata_cache.is_empty():

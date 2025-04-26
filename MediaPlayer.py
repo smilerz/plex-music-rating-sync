@@ -3,7 +3,7 @@ import getpass
 import logging
 import time
 from pathlib import Path
-from typing import Any, List, Optional, Tuple, Union
+from typing import Any, List, Tuple
 
 import plexapi.audio
 import plexapi.playlist
@@ -67,12 +67,12 @@ class MediaPlayer(abc.ABC):
     def connect(self, *args, **kwargs) -> None:
         """Connect to the media player."""
 
-    def search_playlists(self, key: str = "all", value: Optional[Union[str, int]] = None, return_native: bool = False) -> List[Playlist]:
+    def search_playlists(self, key: str = "all", value: str | int | None = None, return_native: bool = False) -> List[Playlist]:
         if key not in {"all", "title", "id"}:
             raise ValueError(f"Invalid search key: {key}")
         return self._search_playlists(key, value, return_native)
 
-    def search_tracks(self, key: str, value: Union[bool, str], return_native: bool = False) -> List[AudioTag]:
+    def search_tracks(self, key: str, value: bool | str, return_native: bool = False) -> List[AudioTag]:
         """Search tracks and convert to AudioTag format"""
         self.logger.trace(f"Searching {self.name()} for tracks with {key}={value}")
         if not value:
@@ -101,7 +101,7 @@ class MediaPlayer(abc.ABC):
             bar.close()
         self.logger.debug("Playlist sync completed")
 
-    def create_playlist(self, title: str, tracks: List[AudioTag]) -> Optional[Playlist]:
+    def create_playlist(self, title: str, tracks: List[AudioTag]) -> Playlist | None:
         """Create a new playlist with the given tracks"""
         if self.dry_run:
             self.logger.info(f"DRY RUN: Would create playlist '{title}' with {len(tracks)} tracks")
@@ -179,7 +179,7 @@ class MediaPlayer(abc.ABC):
             if bar:
                 bar.close()
 
-    def _register_playlist_title(self, title: str, ID: Union[str, int]) -> None:
+    def _register_playlist_title(self, title: str, ID: str | int) -> None:
         """Register a playlist title → ID mapping (both directions), enforcing uniqueness across this player."""
         key = title.lower()
         existing = self._title_to_id_map.get(key)
@@ -194,11 +194,11 @@ class MediaPlayer(abc.ABC):
         self._title_to_id_map[str(ID)] = title
 
     @abc.abstractmethod
-    def _read_native_playlist_tracks(self, native_playlist: Union[NativePlaylist, Playlist]) -> List[AudioTag]:
+    def _read_native_playlist_tracks(self, native_playlist: Playlist | NativePlaylist) -> List[AudioTag]:
         """Read tracks from a native playlist. Must be implemented by subclasses."""
 
     @abc.abstractmethod
-    def _get_native_playlist_track_count(self, native_playlist: Union[NativePlaylist, Playlist]) -> int:
+    def _get_native_playlist_track_count(self, native_playlist: Playlist | NativePlaylist) -> int:
         """Get the total number of tracks in a native playlist. Must be implemented by subclasses."""
 
     @abc.abstractmethod
@@ -206,23 +206,23 @@ class MediaPlayer(abc.ABC):
         """Reads the metadata of a track."""
 
     @abc.abstractmethod
-    def _create_playlist(self, title: str, tracks: List[AudioTag]) -> Optional[Playlist]:
+    def _create_playlist(self, title: str, tracks: List[AudioTag]) -> Playlist | None:
         """Create a native playlist in the player"""
 
     @abc.abstractmethod
-    def _search_playlists(self, key: str, value: Optional[Union[str, int]] = None, return_native: bool = False) -> List[Playlist]:
+    def _search_playlists(self, key: str, value: str | int | None = None, return_native: bool = False) -> List[Playlist]:
         """Search for playlists by key: 'all', 'title', or 'id'"""
 
     @abc.abstractmethod
-    def _search_tracks(self, key: str, value: Union[bool, str], return_native: bool = False) -> List[Union[AudioTag, NativeTrack]]:
+    def _search_tracks(self, key: str, value: str | bool, return_native: bool = False) -> List[AudioTag | NativeTrack]:
         """Search for tracks in the native player format"""
 
     @abc.abstractmethod
-    def _add_track_to_playlist(self, playlist: Union[NativePlaylist, Playlist], track: AudioTag) -> None:
+    def _add_track_to_playlist(self, playlist: Playlist | NativePlaylist, track: AudioTag) -> None:
         """Add a track to a native playlist"""
 
     @abc.abstractmethod
-    def _remove_track_from_playlist(self, playlist: Union[NativePlaylist, Playlist], track: AudioTag) -> None:
+    def _remove_track_from_playlist(self, playlist: Playlist | NativePlaylist, track: AudioTag) -> None:
         """Remove a track from a native playlist"""
 
 
@@ -251,7 +251,7 @@ class MediaMonkey(MediaPlayer):
             self.logger.error(f"Failed to connect to MediaMonkey: {e!s}")
             raise
 
-    def _create_playlist(self, title: str, tracks: List[AudioTag]) -> Optional[MediaMonkeyPlaylist]:
+    def _create_playlist(self, title: str, tracks: List[AudioTag]) -> MediaMonkeyPlaylist | None:
         if not title or not tracks:
             self.logger.warning("Title or tracks are empty for playlist creation")
             raise ValueError("Title and tracks cannot be empty.")
@@ -303,7 +303,7 @@ class MediaMonkey(MediaPlayer):
                     self.logger.debug(f"Reading track {track} from playlist {playlist.name}")
             bar.close() if bar else None
 
-    def _convert_playlist(self, native_playlist: MediaMonkeyPlaylist, title: str) -> Optional[Playlist]:
+    def _convert_playlist(self, native_playlist: MediaMonkeyPlaylist, title: str) -> Playlist | None:
         """Convert a MediaMonkey native playlist to a standard Playlist object. Also register the title → ID mapping."""
         if not native_playlist or not title:
             self.logger.warning("Invalid playlist conversion request")
@@ -327,7 +327,7 @@ class MediaMonkey(MediaPlayer):
                 results.extend(self._collect_playlists(pl, title))
         return results
 
-    def _search_playlists(self, key: str, value: Optional[Union[str, int]] = None, return_native: bool = False) -> List[Union[Playlist, MediaMonkeyPlaylist]]:
+    def _search_playlists(self, key: str, value: str | int | None = None, return_native: bool = False) -> List[Playlist | MediaMonkeyPlaylist]:
         """Search for playlists by 'all', 'title', or 'id' using COM interface."""
         if key not in {"all", "title", "id"}:
             raise ValueError(f"Invalid search key: {key}")
@@ -376,7 +376,7 @@ class MediaMonkey(MediaPlayer):
 
         return tag
 
-    def _search_tracks(self, key: str, value: Union[bool, str], return_native: bool = False) -> List[MediaMonkeyTrack]:
+    def _search_tracks(self, key: str, value: str | bool, return_native: bool = False) -> List[MediaMonkeyTrack]:
         if key == "title":
             title = value.replace('"', r'""')
             query = f'SongTitle = "{title}"'
@@ -421,7 +421,7 @@ class MediaMonkey(MediaPlayer):
             self.logger.error(f"Failed to update rating: {e!s}")
             raise
 
-    def _add_track_to_playlist(self, playlist: Union[MediaMonkeyPlaylist, Playlist], track: AudioTag) -> None:
+    def _add_track_to_playlist(self, playlist: Playlist | MediaMonkeyPlaylist, track: AudioTag) -> None:
         """Add a track to a playlist using the Playlist object"""
         native_playlist = self.search_playlists("id", playlist.ID, return_native=True)[0]
 
@@ -435,7 +435,7 @@ class MediaMonkey(MediaPlayer):
             return
         native_playlist.AddTrack(matches[0])
 
-    def _remove_track_from_playlist(self, playlist: Union[MediaMonkeyPlaylist, Playlist], track: AudioTag) -> None:
+    def _remove_track_from_playlist(self, playlist: Playlist | MediaMonkeyPlaylist, track: AudioTag) -> None:
         """Remove a track from a playlist using the Playlist object"""
         native_playlist = self.search_playlists("id", playlist.ID, return_native=True)[0]
         if not native_playlist:
@@ -556,7 +556,7 @@ class Plex(MediaPlayer):
             results.append((playlist, title))
         return results
 
-    def _search_playlists(self, key: str, value: Union[str, int], return_native: bool = False) -> List[Union[Playlist, PlexPlaylist]]:
+    def _search_playlists(self, key: str, value: str | int, return_native: bool = False) -> List[Playlist | PlexPlaylist]:
         if key not in {"all", "title", "id"}:
             raise ValueError(f"Invalid search key: {key}")
 
@@ -585,7 +585,7 @@ class Plex(MediaPlayer):
         else:
             return [self._convert_playlist(pl) for pl, title in native_results]
 
-    def _create_playlist(self, title: str, tracks: List[AudioTag]) -> Optional[PlexPlaylist]:
+    def _create_playlist(self, title: str, tracks: List[AudioTag]) -> PlexPlaylist | None:
         if not tracks:
             return None
         plex_tracks = []
@@ -621,7 +621,7 @@ class Plex(MediaPlayer):
                 self.logger.debug(f"Reading track {item} from playlist {playlist.name}") if bar else None
             bar.close() if bar else None
 
-    def _convert_playlist(self, native_playlist: PlexPlaylist) -> Optional[Playlist]:
+    def _convert_playlist(self, native_playlist: PlexPlaylist) -> Playlist | None:
         ID = native_playlist.key.split("/")[-1] if "/" in native_playlist.key else native_playlist.key
         title = self._title_to_id_map.get(str(ID), native_playlist.title)
         playlist = Playlist(ID=ID, name=title)
@@ -633,7 +633,7 @@ class Plex(MediaPlayer):
         self.logger.info(f"Reading playlists from the {self.name()} player")
         return self.search_playlists("all")
 
-    def _add_track_to_playlist(self, playlist: Union[Playlist, PlexPlaylist], track: AudioTag) -> None:
+    def _add_track_to_playlist(self, playlist: Playlist | PlexPlaylist, track: AudioTag) -> None:
         """Add a track to a playlist using the Playlist object"""
         native_playlist = self._search_playlists("id", playlist.ID, return_native=True)[0]
 
@@ -651,7 +651,7 @@ class Plex(MediaPlayer):
             self.logger.error(f"Failed to search for track {track.ID}: {e!s}")
             raise
 
-    def _remove_track_from_playlist(self, playlist: Union[PlexPlaylist, Playlist], track: AudioTag) -> None:
+    def _remove_track_from_playlist(self, playlist: Playlist | PlexPlaylist, track: AudioTag) -> None:
         """Remove a track from a playlist using the Playlist object"""
         native_playlist = self._search_playlists("id", playlist.ID, return_native=True)[0]
 
@@ -688,7 +688,7 @@ class Plex(MediaPlayer):
             duration=int(track.duration / 1000) if track.duration else -1,  # Convert ms to seconds
         )
 
-    def _search_tracks(self, key: str, value: Union[bool, str], return_native: bool = False) -> List[PlexTrack]:
+    def _search_tracks(self, key: str, value: str | bool, return_native: bool = False) -> List[PlexTrack]:
         if key == "title":
             matches = self.music_library.searchTracks(title=value)
         elif key == "rating":
@@ -762,7 +762,7 @@ class FileSystem(MediaPlayer):
         bar.close() if bar else None
 
     # --- Track Methods ---
-    def _read_track_metadata(self, file_path: Union[Path, str]) -> AudioTag:
+    def _read_track_metadata(self, file_path: Path | str) -> AudioTag:
         """Retrieve metadata from cache or read from file."""
         str_path = str(file_path)
 
@@ -775,7 +775,7 @@ class FileSystem(MediaPlayer):
         self.cache_mgr.set_metadata(self.name(), tag.ID, tag, force_enable=True) if tag else None
         return tag
 
-    def _search_tracks(self, key: str, value: Union[bool, str], return_native: bool = False) -> List[AudioTag]:
+    def _search_tracks(self, key: str, value: str | bool, return_native: bool = False) -> List[AudioTag]:
         """Search for audio files matching criteria"""
         _ = return_native
 
@@ -801,7 +801,7 @@ class FileSystem(MediaPlayer):
         self.logger.info(f"Successfully updated rating for {track}")
 
     # --- Playlist Methods ---
-    def _create_playlist(self, title: str, tracks: List[AudioTag]) -> Optional[Playlist]:
+    def _create_playlist(self, title: str, tracks: List[AudioTag]) -> Playlist | None:
         """Create a new M3U playlist file"""
         if not tracks:
             return None
@@ -816,7 +816,7 @@ class FileSystem(MediaPlayer):
             bar.close() if bar else None
         return playlist
 
-    def _search_playlists(self, key: str, value: Optional[Union[str, int]] = None, return_native: bool = False) -> List[Playlist]:
+    def _search_playlists(self, key: str, value: str | int | None = None, return_native: bool = False) -> List[Playlist]:
         if key == "all":
             playlists = self.fsp.get_playlists()
         elif key == "title":

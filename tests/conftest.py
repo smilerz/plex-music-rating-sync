@@ -124,7 +124,7 @@ def mp3_file_factory():
 
 @pytest.fixture
 def vorbis_file_factory():
-    def _factory(fmps_rating: str | None = "5", standard_rating: str | None = "5"):
+    def _factory(fmps_rating: str = "5", standard_rating: str = "5"):
         from unittest.mock import MagicMock
 
         vorbis = MagicMock(spec=FileType)

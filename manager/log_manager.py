@@ -1,7 +1,7 @@
 import logging
 import os
 import sys
-from typing import Optional, TextIO
+from typing import TextIO
 
 from tqdm import tqdm
 
@@ -68,7 +68,7 @@ class LogManager:
     LOG_FILE: str = "sync_ratings.log"
     MAX_BACKUPS: int = 5
 
-    def __init__(self, log_dir: Optional[str] = None, log_file: Optional[str] = None, max_backups: Optional[int] = None) -> None:
+    def __init__(self, log_dir: str | None = None, log_file: str | None = None, max_backups: int | None = None) -> None:
         """Initialize logging manager with configurable paths and settings."""
         self.logger = logging.getLogger("PlexSync")
         self.log_dir = log_dir or self.LOG_DIR

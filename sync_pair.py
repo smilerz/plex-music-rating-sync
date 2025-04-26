@@ -1,7 +1,7 @@
 import abc
 import logging
 from enum import Enum, IntEnum, auto
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 import numpy as np
 from fuzzywuzzy import fuzz
@@ -56,9 +56,9 @@ class SyncPair(abc.ABC):
 
 
 class TrackPair(SyncPair):
-    rating_source: Optional[Rating] = None
-    rating_destination: Optional[Rating] = None
-    score: Optional[int] = None
+    rating_source: Rating | None = None
+    rating_destination: Rating | None = None
+    score: int | None = None
 
     def __init__(self, source_player: MediaPlayer, destination_player: MediaPlayer, source_track: AudioTag) -> None:
         super(TrackPair, self).__init__(source_player, destination_player)
@@ -66,7 +66,7 @@ class TrackPair(SyncPair):
         self.source = source_track
 
     @property
-    def quality(self) -> Optional[MatchThreshold]:
+    def quality(self) -> MatchThreshold | None:
         if self.score is None or self.sync_state in {SyncState.ERROR, SyncState.UNKNOWN}:
             return None
         if self.score >= MatchThreshold.PERFECT_MATCH:
@@ -131,7 +131,7 @@ class TrackPair(SyncPair):
                 print(pair.destination.details(pair.destination_player))
                 print(separator)
 
-    def albums_similarity(self, destination: Optional[AudioTag] = None) -> int:
+    def albums_similarity(self, destination: AudioTag | None = None) -> int:
         """Determines how similar two album names are. It takes into account different conventions for empty album names."""
         if destination is None:
             destination = self.destination
@@ -140,13 +140,13 @@ class TrackPair(SyncPair):
         else:
             return fuzz.ratio(self.source.album, destination.album)
 
-    def both_albums_empty(self, destination: Optional[AudioTag] = None) -> bool:
+    def both_albums_empty(self, destination: AudioTag | None = None) -> bool:
         if destination is None:
             destination = self.destination
 
         return self.source_player.album_empty(self.source.album) and self.destination_player.album_empty(destination.album)
 
-    def _get_cache_match(self) -> Optional[AudioTag]:
+    def _get_cache_match(self) -> AudioTag | None:
         """Attempt to retrieve a cached match for the current source track."""
         if not self.cache_mgr.match_cache:
             return None
@@ -181,7 +181,7 @@ class TrackPair(SyncPair):
             self.logger.error(f"Search failed for '{self.source.title}.")
             raise e
 
-    def _get_best_match(self, candidates: List[AudioTag], match_threshold: int = MatchThreshold.MINIMUM_ACCEPTABLE) -> Tuple[Optional[AudioTag], int]:
+    def _get_best_match(self, candidates: List[AudioTag], match_threshold: int = MatchThreshold.MINIMUM_ACCEPTABLE) -> Tuple[AudioTag | None, int]:
         """Find the best matching track from a list of candidates based on similarity score."""
         if not candidates:
             return None, 0
@@ -197,14 +197,14 @@ class TrackPair(SyncPair):
         best_match = candidates[best_idx]
         return best_match, best_score
 
-    def _set_cache_match(self, best_match: AudioTag, score: Optional[float] = None) -> None:
+    def _set_cache_match(self, best_match: AudioTag, score: float | None = None) -> None:
         """Store a successful match in the cache along with its score."""
         if not self.cache_mgr.match_cache:
             return
 
         self.cache_mgr.set_match(self.source.ID, best_match.ID, self.source_player.name(), self.destination_player.name(), score)
 
-    def find_best_match(self, candidates: Optional[List[AudioTag]] = None, match_threshold: int = MatchThreshold.MINIMUM_ACCEPTABLE) -> Tuple[Optional[AudioTag], int]:
+    def find_best_match(self, candidates: [List[AudioTag]] | None = None, match_threshold: int = MatchThreshold.MINIMUM_ACCEPTABLE) -> Tuple[AudioTag | None, int]:
         """Find the best matching track from candidates or by searching."""
         cached_match = self._get_cache_match()
         if cached_match:
@@ -231,7 +231,7 @@ class TrackPair(SyncPair):
 
         return best_match, best_score
 
-    def match(self, candidates: Optional[List[AudioTag]] = None, match_threshold: int = MatchThreshold.MINIMUM_ACCEPTABLE) -> bool:
+    def match(self, candidates: List[AudioTag] | None = None, match_threshold: int = MatchThreshold.MINIMUM_ACCEPTABLE) -> bool:
         """Find matching track on destination player"""
         if self.source is None:
             raise RuntimeError("Source track not set")
@@ -286,7 +286,7 @@ class TrackPair(SyncPair):
 
 class PlaylistPair(SyncPair):
     source: Playlist
-    destination: Optional[Playlist] = None
+    destination: Playlist | None = None
 
     def __init__(self, source_player: MediaPlayer, destination_player: MediaPlayer, source_playlist: Playlist) -> None:
         """Initialize playlist pair with consistent naming"""

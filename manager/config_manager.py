@@ -1,6 +1,6 @@
 import logging
 from enum import StrEnum
-from typing import List, Optional, Union
+from typing import List
 
 import configargparse
 from configupdater import ConfigUpdater
@@ -219,7 +219,7 @@ class ConfigManager:
 
         self._update_config_file(changes)
 
-    def _get_runtime_config_changes(self, current_config: Optional[dict] = None) -> dict:
+    def _get_runtime_config_changes(self, current_config: dict | None = None) -> dict:
         if current_config is None:
             current_config = self.to_dict()
 
@@ -276,7 +276,7 @@ class ConfigManager:
         updater.update_file(self.CONFIG_FILE)
 
 
-def stringify_value(new_value: Union[str, bool, List], existing_line: str = "") -> str:
+def stringify_value(new_value: str | bool | List[str], existing_line: str = "") -> str:
     """
     Converts the new value into a config file string while preserving inline comments and padding.
     - `existing_line` should be the original raw value string (e.g., 'true     # keep this')

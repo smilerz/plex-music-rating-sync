@@ -3,7 +3,7 @@ import locale
 import logging
 import time
 from datetime import timedelta
-from typing import Callable, List, Optional
+from typing import Callable, List
 
 from manager import get_manager
 from manager.config_manager import PlayerType, SyncItem
@@ -213,7 +213,7 @@ class PlexSync:
 
         return " and ".join(parts) + " tracks" if parts else "no tracks"
 
-    def _prompt_user_action(self) -> Optional[list[TrackPair]]:
+    def _prompt_user_action(self) -> List[TrackPair] | None:
         prompt = UserPrompt()
 
         while True:
@@ -306,7 +306,7 @@ class PlexSync:
                 self.logger.info(f"Updated track filter: {self.track_filter}")
                 return
 
-    def _prompt_select_quality_threshold(self) -> Optional[MatchThreshold]:
+    def _prompt_select_quality_threshold(self) -> MatchThreshold | None:
         thresholds = [
             ("All", None),
             ("Perfect", MatchThreshold.PERFECT_MATCH),
@@ -485,7 +485,7 @@ class PlexSync:
     def _get_track_filter(
         self,
         *,
-        quality: Optional[MatchThreshold] = None,
+        quality: MatchThreshold = None,
         include_unmatched: bool = False,
         include_needs_update: bool = True,
         include_conflicts: bool = True,

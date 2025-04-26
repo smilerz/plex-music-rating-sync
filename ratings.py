@@ -1,5 +1,4 @@
 from enum import Enum
-from typing import Optional, Union
 
 
 class RatingScale(Enum):
@@ -26,7 +25,7 @@ POPM_MAP = [
 
 
 class Rating:
-    def __init__(self, raw: Union[float, str], scale: Optional[RatingScale] = None, *, aggressive: bool = False) -> None:
+    def __init__(self, raw: float | str, scale: RatingScale | None = None, *, aggressive: bool = False) -> None:
         self.raw = raw
         value = float(self.raw)
 
@@ -50,7 +49,7 @@ class Rating:
         return self._normalized <= 0.0
 
     @staticmethod
-    def infer(value: float, aggressive: bool = False) -> Optional[RatingScale]:
+    def infer(value: float, aggressive: bool = False) -> RatingScale | None:
         popm_values = {byte for _, byte in POPM_MAP[1:]}  # exclude zero
         if value in popm_values:
             return RatingScale.POPM
@@ -72,7 +71,7 @@ class Rating:
         return cls(0, scale=RatingScale.NORMALIZED)
 
     @classmethod
-    def try_create(cls, value: Union[str, float], scale: Optional[RatingScale] = None, *, aggressive: bool = False) -> Optional["Rating"]:
+    def try_create(cls, value: str | float, scale: RatingScale | None = None, *, aggressive: bool = False) -> "Rating" | None:
         if value is None or value == "":
             return None
         try:
@@ -80,7 +79,7 @@ class Rating:
         except ValueError:
             return None
 
-    def to_float(self, scale: Optional[RatingScale] = None) -> float:
+    def to_float(self, scale: RatingScale | None = None) -> float:
         """Return this rating as a float in the given scale (default: self.scale)."""
         target_scale = scale or self.scale
         if target_scale is None:
@@ -89,7 +88,7 @@ class Rating:
             return self._to_popm(self._normalized)
         return round(self._normalized * target_scale.value, 3)
 
-    def to_str(self, scale: Optional[RatingScale] = None) -> str:
+    def to_str(self, scale: RatingScale | None = None) -> str:
         """Convert the rating to a string for writing to file (e.g., POPM, Vorbis)."""
         target_scale = scale or self.scale
         if target_scale is None:
@@ -100,7 +99,7 @@ class Rating:
             return str(int(value))
         return str(round(value, 1))
 
-    def to_int(self, scale: Optional[RatingScale] = None) -> int:
+    def to_int(self, scale: RatingScale | None = None) -> int:
         """Return the rating as a rounded int in the target scale (e.g., for POPM)."""
         target_scale = scale or self.scale
         if target_scale is None:
@@ -119,7 +118,7 @@ class Rating:
         self.scale = other.scale if self.scale is None else self.scale
 
     @staticmethod
-    def validate(value: Union[str, float], scale: RatingScale = RatingScale.ZERO_TO_FIVE) -> Optional[float]:
+    def validate(value: str | float, scale: RatingScale = RatingScale.ZERO_TO_FIVE) -> float | None:
         """
         Validate that a value is within the expected scale and aligned to 0.5 steps (if applicable).
         Returns the normalized value or None if invalid.
@@ -158,35 +157,35 @@ class Rating:
     def __hash__(self):
         return hash(self._normalized)
 
-    def __eq__(self, other: Union["Rating", float]) -> bool:
+    def __eq__(self, other: "Rating" | float) -> bool:
         if isinstance(other, Rating):
             return self._normalized == other._normalized
         elif isinstance(other, (int, float)):
             return self._normalized == other
         return NotImplemented
 
-    def __lt__(self, other: Union["Rating", float]) -> bool:
+    def __lt__(self, other: "Rating" | float) -> bool:
         if isinstance(other, Rating):
             return self._normalized < other._normalized
         elif isinstance(other, (int, float)):
             return self._normalized < other
         return NotImplemented
 
-    def __le__(self, other: Union["Rating", float]) -> bool:
+    def __le__(self, other: "Rating" | float) -> bool:
         if isinstance(other, Rating):
             return self._normalized <= other._normalized
         elif isinstance(other, (int, float)):
             return self._normalized <= other
         return NotImplemented
 
-    def __gt__(self, other: Union["Rating", float]) -> bool:
+    def __gt__(self, other: "Rating" | float) -> bool:
         if isinstance(other, Rating):
             return self._normalized > other._normalized
         elif isinstance(other, (int, float)):
             return self._normalized > other
         return NotImplemented
 
-    def __ge__(self, other: Union["Rating", float]) -> bool:
+    def __ge__(self, other: "Rating" | float) -> bool:
         if isinstance(other, Rating):
             return self._normalized >= other._normalized
         elif isinstance(other, (int, float)):

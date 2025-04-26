@@ -1,10 +1,8 @@
-from typing import List, Optional, Union
+from typing import Callable, List
 
 
 class UserPrompt:
-    def choice(
-        self, message: str, options: List[str], *, default: Optional[Union[int, List[int]]] = None, allow_multiple: bool = False, help_text: Optional[str] = None
-    ) -> Union[str, List[str]]:
+    def choice(self, message: str, options: List[str], *, default: int | List[int] | None = None, allow_multiple: bool = False, help_text: str | None = None) -> str | List[str]:
         """Prompt the user to select from a list of options."""
         while True:
             print("\n" + message)
@@ -68,7 +66,7 @@ class UserPrompt:
             else:
                 print("Please respond with 'y' or 'n'.")
 
-    def text(self, message: str, *, validator=None, help_text=None) -> str:
+    def text(self, message: str, *, validator: Callable | None = None, help_text: str | None = None) -> str:
         """
         Prompt the user for freeform input with optional validation.
 

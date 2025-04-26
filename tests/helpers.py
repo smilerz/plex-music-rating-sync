@@ -1,4 +1,4 @@
-from typing import List, Optional, Union
+from typing import List
 
 from mutagen.id3 import ID3, POPM, TALB, TIT2, TPE1, TRCK, TXXX
 
@@ -10,7 +10,7 @@ def get_popm_email(tag_name: str) -> str:
     return tag_name.split(":", 1)[1] if ":" in tag_name else ""
 
 
-def make_raw_rating(tag_key: str, normalized: float, *, rating_scale: Optional[RatingScale] = None) -> Union[str, int]:
+def make_raw_rating(tag_key: str, normalized: float, *, rating_scale: RatingScale | None = None) -> str | int:
     """
     Returns a raw rating value for a given tag key.
 
@@ -78,12 +78,12 @@ def _update_popm_rating(audio_file, rating_obj, tag_name):
 def add_or_update_id3frame(
     audio_file,
     *,
-    album: Optional[str] = None,
-    artist: Optional[str] = None,
-    title: Optional[str] = None,
-    track: Optional[str] = None,
-    rating: Optional[float] = None,
-    rating_tags: Optional[Union[List[str], str]] = None,
+    album: str | None = None,
+    artist: str | None = None,
+    title: str | None = None,
+    track: str | None = None,
+    rating: float | None = None,
+    rating_tags: List[str] | str | None = None,
 ):
     """
     Updates ID3 tags in an audio file, including basic metadata and ratings.

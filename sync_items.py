@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, List
 
 if TYPE_CHECKING:
     from MediaPlayer import MediaPlayer
@@ -38,7 +38,7 @@ class AudioTag(object):
             return value
         return f"{value[:length - 3]}..." if from_end else f"...{value[-(length - 3):]}"
 
-    def details(self, player: Optional["MediaPlayer"] = None) -> str:
+    def details(self, player: "MediaPlayer" | None = None) -> str:
         """Print formatted track details."""
         track_number = self.track or 0
         track_rating = self.rating.to_display() if self.rating else "N/A"
