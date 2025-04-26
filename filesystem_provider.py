@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import mutagen
-from mutagen.id3 import POPM, TXXX, ID3FileType
+from mutagen.id3 import ID3, POPM, TALB, TIT2, TPE1, TRCK, TXXX, ID3FileType
 
 from manager import get_manager
 from manager.config_manager import ConflictResolutionStrategy, TagWriteStrategy
@@ -13,6 +13,14 @@ from ratings import Rating, RatingScale
 from sync_items import AudioTag, Playlist
 from ui.help import ShowHelp
 from ui.prompt import UserPrompt
+
+
+class DefaultPlayerTags(StrEnum):
+    WINDOWSMEDIAPLAYER = "POPM:Windows Media Player 9 Series"
+    MEDIAMONKEY = "POPM:no@email"
+    MUSICBEE = "POPM:MusicBee"
+    WINAMP = "POPM:rating@winamp.com"
+    TEXT = "TXXX:RATING"
 
 
 class ID3Field(StrEnum):
@@ -36,11 +44,11 @@ class ID3TagRegistry:
         self._entries_by_key = {}
 
         initial_entries = {
-            "WINDOWSMEDIAPLAYER": {"id3_tag": "POPM:Windows Media Player 9 Series", "player_name": "Windows Media Player"},
-            "MEDIAMONKEY": {"id3_tag": "POPM:no@email", "player_name": "MediaMonkey"},
-            "MUSICBEE": {"id3_tag": "POPM:MusicBee", "player_name": "MusicBee"},
-            "WINAMP": {"id3_tag": "POPM:rating@winamp.com", "player_name": "Winamp"},
-            "TEXT": {"id3_tag": "TXXX:RATING", "player_name": "Text"},
+            "WINDOWSMEDIAPLAYER": {"id3_tag": DefaultPlayerTags.WINDOWSMEDIAPLAYER, "player_name": "Windows Media Player"},
+            "MEDIAMONKEY": {"id3_tag": DefaultPlayerTags.MEDIAMONKEY, "player_name": "MediaMonkey"},
+            "MUSICBEE": {"id3_tag": DefaultPlayerTags.MUSICBEE, "player_name": "MusicBee"},
+            "WINAMP": {"id3_tag": DefaultPlayerTags.WINAMP, "player_name": "Winamp"},
+            "TEXT": {"id3_tag": DefaultPlayerTags.TEXT, "player_name": "Text"},
         }
 
         for tag_key, entry in initial_entries.items():
@@ -247,7 +255,7 @@ class AudioTagHandler(abc.ABC):
     # Phase 4: Writing
     # ------------------------------
     @abc.abstractmethod
-    def apply_tags(self, audio_file: mutagen.FileType, metadata: Optional[Dict[str, Any]], rating: Optional[Rating] = None) -> mutagen.FileType:
+    def apply_tags(self, audio_file: mutagen.FileType, audio_tag: Optional[Dict[str, Any]], rating: Optional[Rating] = None) -> mutagen.FileType:
         """Write metadata fields and the resolved rating back to the file."""
         raise NotImplementedError("apply_tags() not implemented")
 
@@ -311,12 +319,12 @@ class VorbisHandler(AudioTagHandler):
         return tag, raw
 
     def _get_audiotag(self, audio_file: mutagen.FileType, file_path: str) -> AudioTag:
-        track_num = audio_file.get(VorbisField.TRACKNUMBER.value, ["0"])[0]
+        track_num = audio_file.get(VorbisField.TRACKNUMBER, ["0"])[0]
         duration = getattr(getattr(audio_file, "info", None), "length", -1)
         return AudioTag(
-            artist=audio_file.get(VorbisField.ARTIST.value, [""])[0],
-            album=audio_file.get(VorbisField.ALBUM.value, [""])[0],
-            title=audio_file.get(VorbisField.TITLE.value, [""])[0],
+            artist=audio_file.get(VorbisField.ARTIST, [""])[0],
+            album=audio_file.get(VorbisField.ALBUM, [""])[0],
+            title=audio_file.get(VorbisField.TITLE, [""])[0],
             file_path=file_path,
             ID=file_path.lower(),
             track=int(track_num.split("/")[0]),
@@ -352,6 +360,7 @@ class VorbisHandler(AudioTagHandler):
         conflicts = [c for c in conflicts if c.get("handler") is self]
         # self._print_summary()
 
+        # NOTE: Vorbis tags have two different rating scales in common use:
         def pick_scale(field: VorbisField) -> Optional[RatingScale]:
             stats = self.stats_mgr.get(f"VorbisHandler::inferred_scale::{field.value}")
             if not stats:
@@ -379,14 +388,17 @@ class VorbisHandler(AudioTagHandler):
     # ------------------------------
     # Phase 4: Writing
     # ------------------------------
-    def apply_tags(self, audio_file: mutagen.FileType, metadata: Optional[Dict[str, Any]] = None, rating: Optional[Rating] = None) -> mutagen.FileType:
-        """
-        Write metadata fields and resolved rating back into the Vorbis tags.
-        """
-        if metadata:
-            for k, v in metadata.items():
-                if v is not None:
-                    audio_file[k] = v
+    def apply_tags(self, audio_file: mutagen.FileType, audio_tag: Optional[AudioTag] = None, rating: Optional[Rating] = None) -> mutagen.FileType:
+        """Write metadata fields and resolved rating back into the Vorbis tags."""
+        if audio_tag:
+            if audio_tag.title:
+                audio_file["TITLE"] = [audio_tag.title]
+            if audio_tag.artist:
+                audio_file["ARTIST"] = [audio_tag.artist]
+            if audio_tag.album:
+                audio_file["ALBUM"] = [audio_tag.album]
+            if audio_tag.track is not None:
+                audio_file["TRACKNUMBER"] = [str(audio_tag.track)]
 
         if rating is not None:
             if self.fmps_rating_scale is not None:
@@ -450,7 +462,7 @@ class ID3Handler(AudioTagHandler):
             file_path=file_path,
             rating=None,
             ID=file_path.lower(),
-            track=int(track.split("/")[0]),
+            track=int(track.split("/")[0]) if "/" in track else int(track),
             duration=duration,
         )
 
@@ -581,23 +593,38 @@ class ID3Handler(AudioTagHandler):
     # ------------------------------
     # Phase 4: Writing
     # ------------------------------
-    def apply_tags(self, audio_file: mutagen.FileType, metadata: Optional[Dict[str, Any]] = None, rating: Optional[Rating] = None) -> mutagen.FileType:
-        if metadata:
-            for k, v in metadata.items():
-                if v is not None:
-                    audio_file[k] = v
+    def _apply_metadata_fields(self, audio_file: mutagen.FileType, audio_tag: AudioTag) -> None:
+        if audio_tag.title:
+            audio_file.tags[ID3Field.TITLE] = TIT2(encoding=3, text=audio_tag.title)
+        if audio_tag.artist:
+            audio_file.tags[ID3Field.ARTIST] = TPE1(encoding=3, text=audio_tag.artist)
+        if audio_tag.album:
+            audio_file.tags[ID3Field.ALBUM] = TALB(encoding=3, text=audio_tag.album)
+        if audio_tag.track:
+            audio_file.tags[ID3Field.TRACKNUMBER] = TRCK(encoding=3, text=str(audio_tag.track))
+
+    def _determine_tags_to_write(self) -> set[str]:
+        if self.tag_write_strategy == TagWriteStrategy.OVERWRITE_DEFAULT:
+            return {self.default_tag}
+        elif self.tag_write_strategy == TagWriteStrategy.WRITE_ALL:
+            return self.discovered_rating_tags
+        elif self.tag_write_strategy == TagWriteStrategy.WRITE_DEFAULT:
+            return {self.default_tag}
+        else:
+            return set()
+
+    def apply_tags(self, audio_file: mutagen.FileType, audio_tag: Optional[AudioTag] = None, rating: Optional[Rating] = None) -> mutagen.FileType:
+        if audio_file.tags is None or not isinstance(audio_file.tags, ID3):
+            audio_file.tags = ID3()
+
+        if audio_tag:
+            self._apply_metadata_fields(audio_file, audio_tag)
 
         if rating is not None:
             if self.tag_write_strategy == TagWriteStrategy.OVERWRITE_DEFAULT:
                 self._remove_existing_id3_tags(audio_file)
-                to_write = {self.default_tag}
-            elif self.tag_write_strategy == TagWriteStrategy.WRITE_ALL:
-                to_write = self.discovered_rating_tags
-            elif self.tag_write_strategy == TagWriteStrategy.WRITE_DEFAULT:
-                to_write = {self.default_tag}
-            else:
-                to_write = set()
 
+            to_write = self._determine_tags_to_write()
             if to_write:
                 audio_file = self._apply_rating(audio_file, rating, to_write)
 
@@ -770,7 +797,7 @@ class FileSystemProvider:
         self.logger.debug(f"Successfully read metadata for {file_path}")
         return tag
 
-    def update_track_metadata(self, file_path: Union[Path, str], metadata: Optional[dict] = None, rating: Optional[Rating] = None) -> Optional[mutagen.File]:
+    def update_track_metadata(self, file_path: Union[Path, str], audio_tag: Optional[AudioTag] = None, rating: Optional[Rating] = None) -> Optional[mutagen.File]:
         """Update metadata and/or rating in the audio file."""
         file_path = Path(file_path)
         if not file_path.exists():
@@ -787,8 +814,8 @@ class FileSystemProvider:
             self.logger.warning(f"Cannot update metadata for unsupported format: {file_path}")
             return None
 
-        updated_file = handler.apply_tags(audio_file, metadata, rating)
-        if metadata or rating is not None:
+        updated_file = handler.apply_tags(audio_file, audio_tag, rating)
+        if audio_tag or rating is not None:
             if self._save_audio_file(updated_file):
                 self.logger.info(f"Successfully updated metadata for file: {file_path}")
                 return updated_file

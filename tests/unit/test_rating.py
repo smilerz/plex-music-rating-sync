@@ -1,9 +1,8 @@
-"""
 # TODO: Add tests for Rating.to_str() and Rating.to_int() roundtrip
 # TODO: Add test for Rating normalization to all supported target scales
 # TODO: Add test for Rating inference with aggressive=True
-# TODO: Add test for comparisons where one rating is unrated or invalidUnit tests for the Rating class: normalization, conversion, scale inference, comparison."""
-
+# TODO: Add test for comparisons where one rating is unrated or invalidUnit tests for the Rating class: normalization, conversion, scale inference, comparison.
+# TODO: Add tests for ratings above and below the valid range
 import pytest
 
 from ratings import Rating, RatingScale

@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "synchronize track ratings and playlists between Media Players"
 requires-python = ">=3.12"
 dependencies = [
-	"PlexAPI>=4.16.1",
+	"PlexAPI==4.17.0",
 	"fuzzywuzzy==0.18.0",
 	"pypiwin32==223",
 	"numpy==2.2.3",
@@ -20,10 +20,8 @@ dev = [
     "ruff==0.8.3",  # linter, formatter, import sort
     "mypy==1.13.0",
     "pytest==8.3.5",
-    "pytest-mock==3.14.0",
     "pytest-cov==6.1.1",
     "pytest-html==4.1.1",
-    "pytest-xdist==3.6.1"
 ]
 fuzzy = [
     "Levenshtein==0.27.1"

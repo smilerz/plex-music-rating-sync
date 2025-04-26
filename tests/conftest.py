@@ -1,20 +1,26 @@
+import shutil
 import sys
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 from mutagen import FileType
-from mutagen.id3 import POPM, TXXX, ID3FileType
+from mutagen.mp3 import MP3
 
+from filesystem_provider import DefaultPlayerTags, VorbisField
 from manager import get_manager
 from MediaPlayer import MediaPlayer
 from ratings import Rating
 from sync_items import AudioTag, Playlist
 from sync_pair import PlaylistPair, TrackPair
+from tests.helpers import add_or_update_id3frame
 
 
 @pytest.fixture
 def track_factory():
-    def _factory(ID="1", title="Title", artist="Artist", album="Album", track=1, rating=Rating(1.0)):
+    def _factory(ID="1", title="Title", artist="Artist", album="Album", track=1, rating=1.0):
+        rating = Rating(rating)
         return AudioTag(ID=ID, title=title, artist=artist, album=album, track=track, rating=rating)
 
     return _factory
@@ -82,19 +88,36 @@ def playlist_pair_factory(filesystem_player, plex_player):
 
 @pytest.fixture
 def mp3_file_factory():
-    def _factory(txxx_rating: float | None = 5.0, popm_rating: int | None = 196, popm_email: str = "no@email"):
-        audio = MagicMock(spec=ID3FileType)
-        audio.filename = "mock.mp3"
-        audio.info = MagicMock(length=245)
-        audio.tags = {}
+    """Returns a function that creates a fresh copy of tests/test.mp3 for each test."""
 
-        if txxx_rating is not None:
-            audio.tags["TXXX:RATING"] = TXXX(encoding=3, desc="RATING", text=[str(txxx_rating)])
+    test_mp3_path = Path("tests/test.mp3")
 
-        if popm_rating is not None:
-            audio.tags[f"POPM:{popm_email}"] = POPM(email=popm_email, rating=popm_rating, count=0)
+    def _factory(rating: float = 1.0, rating_tags: list[str] | str | None = None, **kwargs):
+        # Create a new temporary file
+        fd, temp_path = tempfile.mkstemp(suffix=".mp3")
+        temp_path = Path(temp_path)
 
-        return audio
+        # Copy template silent MP3
+        shutil.copyfile(test_mp3_path, temp_path)
+
+        # Load into Mutagen
+        audio = MP3(temp_path)
+
+        # Override save to prevent real writes during tests
+        audio.save = MagicMock(side_effect=lambda *args, **kw: audio.save())
+
+        if not rating_tags:
+            rating_tags = [DefaultPlayerTags.TEXT, DefaultPlayerTags.MEDIAMONKEY]
+
+        return add_or_update_id3frame(
+            audio,
+            title=kwargs.get("title", "Default Title"),
+            artist=kwargs.get("artist", "Default Artist"),
+            album=kwargs.get("album", "Default Album"),
+            track=kwargs.get("track", "1/10"),
+            rating=rating,
+            rating_tags=rating_tags,
+        )
 
     return _factory
 
@@ -107,7 +130,12 @@ def vorbis_file_factory():
         vorbis = MagicMock(spec=FileType)
         vorbis.filename = "mock.flac"
         vorbis.info = MagicMock(length=222)
-        vorbis.tags = {"ARTIST": ["Artist"], "ALBUM": ["Album"], "TITLE": ["Title"], "TRACKNUMBER": ["1"]}
+        vorbis.tags = {
+            VorbisField.ARTIST: ["Default Artist"],
+            VorbisField.ALBUM: ["Default Album"],
+            VorbisField.TITLE: ["Default Title"],
+            VorbisField.TRACKNUMBER: ["1/10"],
+        }
 
         if fmps_rating is not None:
             vorbis.tags["FMPS_RATING"] = [fmps_rating]

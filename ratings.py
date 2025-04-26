@@ -94,7 +94,11 @@ class Rating:
         target_scale = scale or self.scale
         if target_scale is None:
             raise ValueError("Rating has no scale. Provide one to convert to string.")
-        return str(self.to_float(target_scale))
+
+        value = self.to_float(target_scale)
+        if value.is_integer():
+            return str(int(value))
+        return str(round(value, 1))
 
     def to_int(self, scale: Optional[RatingScale] = None) -> int:
         """Return the rating as a rounded int in the target scale (e.g., for POPM)."""
@@ -134,8 +138,8 @@ class Rating:
         return round(value / scale.value, 3)
 
     def _from_popm(self, byte: float) -> float:
-        if byte <= 0:
-            return 0.0
+        if not (0 <= byte <= 255):
+            raise ValueError(f"Invalid POPM byte value: {byte}. Must be between 0 and 255.")
         best_match = min(POPM_MAP[1:], key=lambda pair: abs(pair[1] - byte))
         return best_match[0]
 
