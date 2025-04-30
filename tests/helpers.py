@@ -10,7 +10,7 @@ def get_popm_email(tag_name: str) -> str:
     return tag_name.split(":", 1)[1] if ":" in tag_name else ""
 
 
-def make_raw_rating(tag_key: str, normalized: float, *, rating_scale: RatingScale | None = None) -> str | int:
+def make_raw_rating(tag_key: str, normalized: float | str, *, rating_scale: RatingScale | None = None) -> str | int:
     """
     Returns a raw rating value for a given tag key.
 
@@ -19,6 +19,10 @@ def make_raw_rating(tag_key: str, normalized: float, *, rating_scale: RatingScal
         - POPM-like tags → int
         - All others → str
     """
+    is_string = False
+    if isinstance(normalized, str):
+        is_string = True
+        normalized = float(normalized)
 
     rating = Rating(normalized, scale=RatingScale.NORMALIZED)
 
@@ -40,8 +44,9 @@ def make_raw_rating(tag_key: str, normalized: float, *, rating_scale: RatingScal
 
     # Determine return format
     if scale == RatingScale.POPM:
-        return rating.to_int(RatingScale.POPM)
-    return rating.to_str(scale)
+        value = rating.to_int(RatingScale.POPM)
+    value = rating.to_str(scale)
+    return str(value) if is_string else value
 
 
 def _update_basic_metadata(audio_file, *, album=None, artist=None, title=None, track=None):

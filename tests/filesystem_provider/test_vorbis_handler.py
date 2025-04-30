@@ -45,6 +45,7 @@ def test_extract_metadata(monkeypatch, vorbis_file_factory, handler):
     assert isinstance(tag, AudioTag)
     assert "FMPS_RATING" in raw
     assert "RATING" in raw
+    assert 1 == 0
 
 
 @pytest.mark.parametrize(

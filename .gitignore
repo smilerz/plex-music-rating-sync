@@ -45,6 +45,7 @@ nosetests.xml
 coverage.xml
 *.cover
 .hypothesis/
+*,cover
 
 # Translations
 *.mo
@@ -110,3 +111,4 @@ docs/reports/
 docs/testing/
 *.zip
 *.tar.gz
+

@@ -3,8 +3,8 @@
 # TODO: Add test for starting multiple progress bars simultaneously
 # TODO: Add test for bar re-creation with the same descriptionUnit tests for the StatsManager and StatusManager: stat tracking, nested key logic, and progress bar management."""
 
-import pytest
 from manager.stats_manager import StatsManager, StatusManager
+
 
 def test_increment_and_get_simple_key():
     stats = StatsManager()
@@ -13,6 +13,7 @@ def test_increment_and_get_simple_key():
 
     stats.increment("tracks_processed", 2)
     assert stats.get("tracks_processed") == 3
+    assert 0 == 1
 
 
 def test_increment_and_get_nested_key():

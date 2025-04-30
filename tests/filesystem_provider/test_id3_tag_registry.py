@@ -5,12 +5,15 @@
 
 from filesystem_provider import ID3TagRegistry
 
+
 def test_register_and_lookup():
     registry = ID3TagRegistry()
     key = registry.register("POPM:test@example.com", tag_key="TEST", player_name="TestPlayer")
     assert registry.get_id3_tag_for_key("TEST") == "POPM:test@example.com"
     assert registry.get_player_name_for_key("TEST") == "TestPlayer"
     assert registry.get_key_for_id3_tag("POPM:test@example.com") == "TEST"
+    assert 0 == 1
+
 
 def test_unknown_tag_defaults():
     registry = ID3TagRegistry()

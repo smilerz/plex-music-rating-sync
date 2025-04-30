@@ -6,7 +6,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import mutagen
 from mutagen import FileType
+from mutagen.flac import FLAC
 from mutagen.id3 import ID3, POPM, TALB, TIT2, TPE1, TRCK, TXXX, ID3FileType
+from mutagen.oggopus import OggOpus
+from mutagen.oggvorbis import OggVorbis
 
 from manager import get_manager
 from manager.config_manager import ConflictResolutionStrategy, TagWriteStrategy
@@ -413,7 +416,7 @@ class VorbisHandler(AudioTagHandler):
     # Utility
     # ------------------------------
     def can_handle(self, file: FileType) -> bool:
-        return hasattr(file, "tags") and (VorbisField.FMPS_RATING.value in file.tags or VorbisField.RATING.value in file.tags)
+        return isinstance(file, (OggVorbis, OggOpus, FLAC))
 
 
 class ID3Handler(AudioTagHandler):
@@ -472,8 +475,10 @@ class ID3Handler(AudioTagHandler):
     # ------------------------------
     def _try_normalize(self, raw_value: str | float, tag_key: str) -> Rating | None:
         id3_tag = self.tag_registry.get_id3_tag_for_key(tag_key) or ""
-        if id3_tag.upper().startswith("POPM:"):
+        if id3_tag.upper().startswith("POPM:") or tag_key.upper().startswith("POPM:"):
             scale = RatingScale.POPM
+        elif not id3_tag:
+            raise ValueError(f"Unknown tag_key '{tag_key}'.")
         else:
             scale = RatingScale.ZERO_TO_FIVE
         return Rating.try_create(raw_value, scale=scale) or Rating.unrated()
@@ -485,15 +490,7 @@ class ID3Handler(AudioTagHandler):
     def finalize_rating_strategy(self, conflicts: list[dict]) -> None:
         conflicts = [c for c in conflicts if c.get("handler") is self]
         tag_counts = self.stats_mgr.get("ID3Handler::tags_used") or {}
-        unique = [
-            {
-                "key": k,
-                "tag": self.tag_registry.get_id3_tag_for_key(k),
-                "player": self.tag_registry.get_player_name_for_key(k),
-            }
-            for k in tag_counts
-        ]
-        has_multiple = len(unique) > 1
+        has_multiple = len(tag_counts) > 1
         has_conflicts = len(conflicts) > 0
         needs_save = False
 
@@ -532,7 +529,9 @@ class ID3Handler(AudioTagHandler):
 
         # Tag priority order prompt
         if self.conflict_resolution_strategy == ConflictResolutionStrategy.PRIORITIZED_ORDER and has_multiple and not self.tag_priority_order:
-            options = [info["player"] for info in unique]
+            player_name_to_key = {self.tag_registry.get_player_name_for_key(k): k for k in tag_counts}
+            options = list(player_name_to_key.keys())
+
             order = self.prompt.choice(
                 "\nMultiple media players have written ratings to this file. Please choose the order of preference (highest first).\n\
                     This determines which player's rating takes priority when they conflict.",
@@ -540,8 +539,8 @@ class ID3Handler(AudioTagHandler):
                 allow_multiple=True,
                 help_text=ShowHelp.TagPriority,
             )
-            # order is a list of player names; map back to keys
-            self.tag_priority_order = [unique[options.index(player)]["key"] for player in order]
+
+            self.tag_priority_order = [player_name_to_key[player] for player in order]
             needs_save = True
 
         # Write strategy prompt
@@ -556,14 +555,16 @@ class ID3Handler(AudioTagHandler):
 
         # Preferred player tag prompt
         if self.tag_write_strategy and self.tag_write_strategy.requires_default_tag() and not self.default_tag:
-            options = [info["player"] for info in unique]
+            player_name_to_key = {self.tag_registry.get_player_name_for_key(k): k for k in tag_counts}
+            options = list(player_name_to_key.keys())
+
             choice = self.prompt.choice(
                 "Which media player do you use most often to view or manage ratings?\nSelect the one whose format should be used to store ratings in your files:",
                 options,
                 help_text=ShowHelp.PreferredPlayerTag,
             )
-            idx = options.index(choice)
-            self.default_tag = unique[idx]["key"]
+
+            self.default_tag = player_name_to_key[choice]
             needs_save = True
 
         # Save config if changed
@@ -664,7 +665,7 @@ class ID3Handler(AudioTagHandler):
     # Utility
     # ------------------------------
     def can_handle(self, file: FileType) -> bool:
-        return isinstance(file, ID3FileType) or (hasattr(file, "tags") and any(key.startswith("POPM:") or key == "TXXX:RATING" for key in getattr(file, "tags", {}).keys()))
+        return isinstance(file, ID3FileType)
 
     def _get_label(self, tag_key: str) -> str:
         return self.tag_registry.display_name(tag_key)
@@ -673,7 +674,7 @@ class ID3Handler(AudioTagHandler):
 class FileSystemProvider:
     """Adapter class for handling filesystem operations for audio files and playlists."""
 
-    AUDIO_EXT = {".mp3", ".flac", ".ogg", ".m4a", ".wav", ".aac"}
+    AUDIO_EXT = {".mp3", ".flac", ".ogg", ".m4a", ".wav", ".aac", ".opus", ".wma", ".aiff", ".aif"}
     PLAYLIST_EXT = {".m3u", ".m3u8", ".pls"}
 
     def __init__(self):

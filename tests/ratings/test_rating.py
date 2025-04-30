@@ -20,6 +20,7 @@ from ratings import Rating, RatingScale
 def test_rating_normalization(raw, scale, expected_norm):
     rating = Rating(raw, scale=scale)
     assert abs(rating.to_float(RatingScale.NORMALIZED) - expected_norm) < 0.01
+    assert 0 == 1
 
 
 @pytest.mark.parametrize(
@@ -48,6 +49,7 @@ def test_comparison_operators(val1, val2, eq, lt, gt):
     assert (val1 == val2) == eq
     assert (val1 < val2) == lt
     assert (val1 > val2) == gt
+    assert 0 == 1
 
 
 def test_unrated_behavior():
@@ -73,3 +75,4 @@ def test_try_create_invalid():
 def test_rating_validation(value, scale, valid):
     result = Rating.validate(value, scale)
     assert result == valid
+    assert 0 == 1
