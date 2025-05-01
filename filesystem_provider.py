@@ -75,12 +75,18 @@ class ID3TagRegistry:
         return tag_key
 
     def get_id3_tag_for_key(self, tag_key: str) -> str | None:
+        if not tag_key:
+            return None
         return self._entries_by_key.get(tag_key.upper(), {}).get("id3_tag")
 
     def get_player_name_for_key(self, tag_key: str) -> str | None:
+        if not tag_key:
+            return None
         return self._entries_by_key.get(tag_key.upper(), {}).get("player_name")
 
     def get_key_for_id3_tag(self, id3_tag: str) -> str | None:
+        if not id3_tag:
+            return None
         id3_tag_upper = id3_tag.upper()
         for key, entry in self._entries_by_key.items():
             if entry["id3_tag"].upper() == id3_tag_upper:
@@ -88,6 +94,8 @@ class ID3TagRegistry:
         return None
 
     def get_key_for_player_name(self, player_name: str) -> str | None:
+        if not player_name:
+            return None
         player_lower = player_name.lower()
         for key, entry in self._entries_by_key.items():
             if entry["player_name"].lower() == player_lower:
