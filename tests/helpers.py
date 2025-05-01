@@ -87,7 +87,7 @@ def add_or_update_id3frame(
     artist: str | None = None,
     title: str | None = None,
     track: str | None = None,
-    rating: float | None = None,
+    rating: Rating | float | None = None,
     rating_tags: List[str] | str | None = None,
 ):
     """
@@ -105,19 +105,19 @@ def add_or_update_id3frame(
 
     # Update ratings if provided
     if rating is not None:
-        if rating < 0.0 or rating > 1.0:
-            raise ValueError(f"Rating must be between 0.0 and 1.0, got {rating}.")
+        if not isinstance(rating, Rating):
+            rating = Rating(rating, scale=RatingScale.NORMALIZED)
+
         if not rating_tags:
             raise ValueError("Rating tags must be provided if rating is specified.")
 
         # Create Rating object with normalized value
-        rating_obj = Rating(rating, scale=RatingScale.NORMALIZED)
         tags_list = [rating_tags] if isinstance(rating_tags, str) else rating_tags
 
         for tag in tags_list:
             if tag == "TXXX:RATING":
-                _update_txxx_rating(audio_file, rating_obj)
+                _update_txxx_rating(audio_file, rating)
             elif tag.upper().startswith("POPM:"):
-                _update_popm_rating(audio_file, rating_obj, tag)
+                _update_popm_rating(audio_file, rating, tag)
 
     return audio_file

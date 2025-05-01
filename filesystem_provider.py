@@ -87,7 +87,7 @@ class ID3TagRegistry:
                 return key
         return None
 
-    def get_key_for_player_name_name(self, player_name: str) -> str | None:
+    def get_key_for_player_name(self, player_name: str) -> str | None:
         player_lower = player_name.lower()
         for key, entry in self._entries_by_key.items():
             if entry["player_name"].lower() == player_lower:
@@ -98,7 +98,7 @@ class ID3TagRegistry:
         upper = input_str.upper()
         if upper in self._entries_by_key:
             return upper
-        return self.get_key_for_id3_tag(input_str) or self.get_key_for_player_name_name(input_str)
+        return self.get_key_for_id3_tag(input_str) or self.get_key_for_player_name(input_str)
 
     def known_keys(self) -> List[str]:
         return list(self._entries_by_key.keys())
@@ -284,7 +284,7 @@ class AudioTagHandler(abc.ABC):
     # ------------------------------
     # Utility
     # ------------------------------
-    def _show_conflicts(self, conflicts: List[dict]) -> None:
+    def _show_conflicts(self, conflicts: List[dict]) -> None:  # pragma: no cover
         print("\nConflicts:")
         for conflict in conflicts:
             if conflict.get("handler") is not self:
@@ -297,7 +297,7 @@ class AudioTagHandler(abc.ABC):
                 label = self._get_label(tag_key)
                 print(f"    {label:<30} : {rating.to_display() if rating else str(raw_val)}")
 
-    def _get_label(self, tag_key: str) -> str:
+    def _get_label(self, tag_key: str) -> str:  # pragma: no cover
         """Override in subclass to map tag keys to user-friendly labels."""
         return tag_key
 
@@ -377,7 +377,7 @@ class VorbisHandler(AudioTagHandler):
         self.rating_scale = pick_scale(VorbisField.RATING)
         self.aggressive_inference = True
 
-    def _print_summary(self) -> None:
+    def _print_summary(self) -> None:  # pragma: no cover
         """Print the stats of inferred scales and current strategy."""
         print("\nFLAC/OGG (Vorbis) Ratings Summary:")
         for field in (VorbisField.RATING, VorbisField.FMPS_RATING):
@@ -406,9 +406,9 @@ class VorbisHandler(AudioTagHandler):
 
         if rating is not None:
             if self.fmps_rating_scale is not None:
-                audio_file[VorbisField.FMPS_RATING.value] = rating.to_str(self.fmps_rating_scale)
+                audio_file[VorbisField.FMPS_RATING] = rating.to_str(self.fmps_rating_scale)
             if self.rating_scale is not None:
-                audio_file[VorbisField.RATING.value] = rating.to_str(self.rating_scale)
+                audio_file[VorbisField.RATING] = rating.to_str(self.rating_scale)
 
         return audio_file
 
@@ -489,6 +489,7 @@ class ID3Handler(AudioTagHandler):
 
     def finalize_rating_strategy(self, conflicts: list[dict]) -> None:
         conflicts = [c for c in conflicts if c.get("handler") is self]
+
         tag_counts = self.stats_mgr.get("ID3Handler::tags_used") or {}
         has_multiple = len(tag_counts) > 1
         has_conflicts = len(conflicts) > 0
@@ -578,7 +579,7 @@ class ID3Handler(AudioTagHandler):
             if self.prompt.yes_no("\nSave settings to config.ini?"):
                 cfg.save_config()
 
-    def _print_summary(self) -> None:
+    def _print_summary(self) -> None:  # pragma: no cover
         print("\nMP3 Ratings Summary:")
         used = self.stats_mgr.get("ID3Handler::tags_used") or {}
         for key, cnt in used.items():
@@ -667,7 +668,7 @@ class ID3Handler(AudioTagHandler):
     def can_handle(self, file: FileType) -> bool:
         return isinstance(file, ID3FileType)
 
-    def _get_label(self, tag_key: str) -> str:
+    def _get_label(self, tag_key: str) -> str:  # pragma: no cover
         return self.tag_registry.display_name(tag_key)
 
 

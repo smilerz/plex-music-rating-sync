@@ -83,6 +83,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 
 [tool.coverage.run]
+parallel = true
 branch = true
 source = ["."]
 omit = ["tests/*", "*/__init__.py"]
@@ -90,3 +91,16 @@ omit = ["tests/*", "*/__init__.py"]
 [tool.coverage.report]
 show_missing = true
 skip_covered = true
+skip_empty = true
+exclude_also = [
+    'def __repr__',
+    'if self.debug:',
+    'if settings.DEBUG',
+    'raise AssertionError',
+    'raise NotImplementedError',
+    'if 0:',
+    'if __name__ == .__main__.:',
+    'if TYPE_CHECKING:',
+    'class .*\bProtocol\):',
+    '@(abc\.)?abstractmethod',
+]

@@ -1,9 +1,13 @@
+import shutil
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from mutagen.id3 import ID3, POPM, ID3FileType
+from mutagen.id3 import POPM, TXXX
+from mutagen.mp3 import MP3
 
-from filesystem_provider import DefaultPlayerTags, ID3Field, ID3Handler
+from filesystem_provider import ID3, DefaultPlayerTags, ID3Field, ID3Handler
 from manager.config_manager import ConflictResolutionStrategy, TagWriteStrategy
 from ratings import Rating, RatingScale
 from sync_items import AudioTag
@@ -11,14 +15,86 @@ from tests.helpers import add_or_update_id3frame, get_popm_email, make_raw_ratin
 
 
 @pytest.fixture
+def mp3_file_factory():
+    """Returns a function that creates a fresh copy of tests/test.mp3 for each test."""
+
+    test_mp3_path = Path("tests/test.mp3")
+
+    def _factory(rating: float = 1.0, rating_tags: list[str] | str | None = None, **kwargs):
+        # Create a new temporary file
+        fd, temp_path = tempfile.mkstemp(suffix=".mp3")
+        temp_path = Path(temp_path)
+
+        # Copy template silent MP3
+        shutil.copyfile(test_mp3_path, temp_path)
+
+        # Load into Mutagen
+        audio = MP3(temp_path)
+
+        # Override save to prevent real writes during tests
+        audio.save = MagicMock(side_effect=lambda *args, **kw: audio.save())
+
+        if not rating_tags:
+            rating_tags = [DefaultPlayerTags.TEXT, DefaultPlayerTags.MEDIAMONKEY]
+
+        return add_or_update_id3frame(
+            audio,
+            title=kwargs.get("title", "Default Title"),
+            artist=kwargs.get("artist", "Default Artist"),
+            album=kwargs.get("album", "Default Album"),
+            track=kwargs.get("track", "1/10"),
+            rating=rating,
+            rating_tags=rating_tags,
+        )
+
+    return _factory
+
+
+@pytest.fixture
 def handler():
-    return ID3Handler(
+    handler = ID3Handler(
         tagging_policy={
             "conflict_resolution_strategy": ConflictResolutionStrategy.HIGHEST,
             "tag_write_strategy": TagWriteStrategy.WRITE_DEFAULT,
             "default_tag": "MEDIAMONKEY",
         }
     )
+    handler.logger = MagicMock()
+    handler.stats_mgr = MagicMock()
+    handler.stats_mgr.get.return_value = {"TEXT": 5, "MEDIAMONKEY": 3}
+    return handler
+
+
+@pytest.fixture
+def id3_file_with_tags(mp3_file_factory):
+    return mp3_file_factory()
+
+
+@pytest.fixture
+def id3_file_without_tags(mp3_file_factory):
+    """Creates a real ID3FileType object with no tags."""
+    audio = mp3_file_factory()
+    audio.tags = None
+    return audio
+
+
+@pytest.fixture
+def fake_file_with_tags():
+    """Creates a non-ID3 file that has tags."""
+    fake = MagicMock()
+    fake.tags = ID3()
+    fake.tags[ID3Field.TITLE] = TXXX(encoding=3, text=["Fake Title"])
+    fake.tags[ID3Field.ARTIST] = TXXX(encoding=3, text=["Fake Artist"])
+    fake.tags[ID3Field.ALBUM] = TXXX(encoding=3, text=["Fake Album"])
+    fake.tags[ID3Field.TRACKNUMBER] = TXXX(encoding=3, text=["1/10"])
+    fake.tags[DefaultPlayerTags.TEXT] = TXXX(encoding=3, text=["5"])
+    return fake
+
+
+@pytest.fixture
+def random_object():
+    """Completely random object."""
+    return object()
 
 
 @pytest.fixture
@@ -34,40 +110,6 @@ def track(track_factory):
     return track_factory(ID="conflict", title="Test Track", artist="Artist", album="Album", track=1)
 
 
-@pytest.fixture
-def id3_file_with_tags(tmp_path):
-    """Creates a real ID3FileType object with an ID3 tag dictionary."""
-    file_path = tmp_path / "test_with_tags.mp3"
-    file_path.write_bytes(b"ID3")  # minimal valid header
-    audio = ID3FileType(file_path)
-    audio.tags = ID3()  # Create an empty ID3 tag structure
-    return audio
-
-
-@pytest.fixture
-def id3_file_without_tags(tmp_path):
-    """Creates a real ID3FileType object with no tags."""
-    file_path = tmp_path / "test_without_tags.mp3"
-    file_path.write_bytes(b"ID3")  # minimal valid header
-    audio = ID3FileType(file_path)
-    audio.tags = None  # Explicitly remove tags
-    return audio
-
-
-@pytest.fixture
-def fake_file_with_tags():
-    """Creates a non-ID3 file that has tags."""
-    fake = MagicMock()
-    fake.tags = {"TIT2": "Title", "TPE1": "Artist"}
-    return fake
-
-
-@pytest.fixture
-def random_object():
-    """Completely random object."""
-    return object()
-
-
 class TestCanHandle:
     @pytest.mark.parametrize(
         "file_fixture_name, expected",
@@ -78,8 +120,7 @@ class TestCanHandle:
             ("random_object", False),
         ],
     )
-    def test_can_handle_success_or_failure_based_on_file_type(self, file_fixture_name, expected, request):
-        handler = ID3Handler()
+    def test_can_handle_success_or_failure_based_on_file_type(self, file_fixture_name, expected, request, handler):
         file_obj = request.getfixturevalue(file_fixture_name)
         assert handler.can_handle(file_obj) == expected
 
@@ -122,21 +163,15 @@ class TestResolveRating:
             (ConflictResolutionStrategy.PRIORITIZED_ORDER, 0.0, ["WINAMP", "WINDOWSMEDIAPLAYER", "UNKNOWN"]),
         ],
     )
-    def test_resolve_rating_conflict_resolution_strategies(self, conflict_strategy, expected, priority_order):
+    def test_resolve_rating_conflict_resolution_strategies(self, conflict_strategy, expected, priority_order, handler):
         raw_input = {
             DefaultPlayerTags.TEXT.name: make_raw_rating(DefaultPlayerTags.TEXT, 0.2),
             DefaultPlayerTags.MEDIAMONKEY.name: make_raw_rating(DefaultPlayerTags.MEDIAMONKEY, 0.6),
             DefaultPlayerTags.MUSICBEE.name: make_raw_rating(DefaultPlayerTags.MUSICBEE, 1),
         }
 
-        handler = ID3Handler(
-            tagging_policy={
-                "conflict_resolution_strategy": conflict_strategy,
-                "tag_write_strategy": TagWriteStrategy.WRITE_DEFAULT,
-                "default_tag": DefaultPlayerTags.MEDIAMONKEY,
-                "tag_priority_order": priority_order,
-            }
-        )
+        handler.conflict_resolution_strategy = conflict_strategy
+        handler.tag_priority_order = priority_order
         tag = AudioTag(ID="conflict_case", title="Conflict", artist="Artist", album="Album", track=1)
         rating = handler.resolve_rating(raw_input, tag)
 
@@ -207,16 +242,41 @@ class TestResolveRating:
 
         assert rating is None, "Expected None when unknown strategy is forced"
 
+    def test_resolve_rating_all_fail_returns_unrated(self, handler):
+        """If all tag normalizations fail, should return Rating.unrated()."""
+        handler._try_normalize = MagicMock(return_value=None)
+        tag = MagicMock(ID="dummy")
+
+        result = handler.resolve_rating({"TEXT": "x", "MM": "y"}, tag)
+        assert result == Rating.unrated()
+
+    def test_resolve_rating_partial_fail_returns_none(self, handler):
+        """If some tags normalize and some fail, should defer (return None)."""
+        handler._try_normalize = lambda val, key: Rating(1.0) if key == "TEXT" else None
+        tag = MagicMock(ID="dummy")
+
+        result = handler.resolve_rating({"TEXT": "5", "MM": "???"}, tag)
+        assert result is None
+
+    def test_resolve_rating_all_match_returns_rating(self, handler):
+        """If all normalized ratings are identical, that rating is returned."""
+        r = Rating(3.5)
+        handler._try_normalize = lambda val, key: r
+        tag = MagicMock(ID="dummy")
+
+        result = handler.resolve_rating({"TEXT": "3.5", "MM": "3.5"}, tag)
+        assert result == r
+
 
 class TestApplyTags:
-    def test_apply_tags_success_metadata_only(self, mp3_file_factory):
-        handler = ID3Handler(
-            tagging_policy={
-                "conflict_resolution_strategy": ConflictResolutionStrategy.HIGHEST,
-                "tag_write_strategy": TagWriteStrategy.WRITE_DEFAULT,
-                "default_tag": "MEDIAMONKEY",
-            }
-        )
+    def test_audio_without_tags_success(self, handler, mp3_file_factory):
+        audio = mp3_file_factory()
+        audio.tags = {}
+        expected_rating = Rating(4.5)
+        handler.apply_tags(audio, None, expected_rating)
+        assert audio.tags[DefaultPlayerTags.MEDIAMONKEY].rating == expected_rating.to_int(RatingScale.POPM)
+
+    def test_apply_tags_success_metadata_only(self, handler, mp3_file_factory):
         audio = mp3_file_factory()
         popm_email = get_popm_email(DefaultPlayerTags.MEDIAMONKEY)
         audio.tags[DefaultPlayerTags.MEDIAMONKEY] = POPM(email=popm_email, rating=196, count=0)
@@ -233,15 +293,8 @@ class TestApplyTags:
         assert audio.tags[ID3Field.TRACKNUMBER].text[0] == "5"
         assert audio.tags[DefaultPlayerTags.MEDIAMONKEY].rating == original_rating
 
-    def test_apply_tags_success_rating_only(self, mp3_file_factory):
-        handler = ID3Handler(
-            tagging_policy={
-                "conflict_resolution_strategy": ConflictResolutionStrategy.HIGHEST,
-                "tag_write_strategy": TagWriteStrategy.WRITE_DEFAULT,
-                "default_tag": "MEDIAMONKEY",
-            }
-        )
-        audio = mp3_file_factory()
+    def test_apply_tags_success_rating_only(self, handler, mp3_file_factory):
+        audio = mp3_file_factory(rating=0.6, rating_tags=[DefaultPlayerTags.TEXT, DefaultPlayerTags.MEDIAMONKEY])
 
         original_title = audio.tags.get(ID3Field.TITLE)
         original_artist = audio.tags.get(ID3Field.ARTIST)
@@ -249,28 +302,70 @@ class TestApplyTags:
         original_tracknumber = audio.tags.get(ID3Field.TRACKNUMBER).text[0]
         tag = AudioTag(ID="error3", title=None, artist=None, album=None, track=None)
 
-        handler.apply_tags(audio, tag, Rating(4.5))
+        expected_rating = Rating(4.5)
+        handler.apply_tags(audio, tag, expected_rating)
 
         assert any(k.startswith("POPM:") for k in audio.tags)
-        assert audio.tags[DefaultPlayerTags.MEDIAMONKEY].rating == 242
+        assert audio.tags[DefaultPlayerTags.MEDIAMONKEY].rating == expected_rating.to_int(RatingScale.POPM)
         assert audio.tags.get(ID3Field.TITLE).text[0] == original_title
         assert audio.tags.get(ID3Field.ARTIST).text[0] == original_artist
         assert audio.tags.get(ID3Field.ALBUM).text[0] == original_album
         assert audio.tags.get(ID3Field.TRACKNUMBER).text[0] == original_tracknumber
 
-    def test_remove_existing_id3_tags_success(self, mp3_file_factory):
-        handler = ID3Handler(
-            tagging_policy={
-                "conflict_resolution_strategy": ConflictResolutionStrategy.HIGHEST,
-                "tag_write_strategy": TagWriteStrategy.OVERWRITE_DEFAULT,
-                "default_tag": DefaultPlayerTags.MEDIAMONKEY,
-            }
-        )
+    def test_apply_tags_write_all_no_tags(self, handler, mp3_file_factory):
+        handler.tag_write_strategy = TagWriteStrategy.WRITE_ALL
+        handler.discovered_rating_tags = {}
 
+        rating = Rating(0.5, RatingScale.NORMALIZED)
+        audio = mp3_file_factory(rating=rating)
+
+        tag = AudioTag(ID="test", title="A")
+
+        handler.apply_tags(audio, tag, Rating(4.5))
+
+        assert audio.tags[DefaultPlayerTags.MEDIAMONKEY].rating == rating.to_int(RatingScale.POPM)
+        assert audio.tags[DefaultPlayerTags.TEXT].text[0] == rating.to_str(RatingScale.ZERO_TO_FIVE)
+        assert audio.tags.get(ID3Field.TITLE).text[0] == "A"
+
+    @pytest.mark.parametrize(
+        "write_strategy, expected_tags",
+        [
+            (TagWriteStrategy.OVERWRITE_DEFAULT, {DefaultPlayerTags.MEDIAMONKEY: 0.8}),
+            (TagWriteStrategy.WRITE_ALL, {DefaultPlayerTags.MEDIAMONKEY: 0.8, DefaultPlayerTags.TEXT: 0.8, DefaultPlayerTags.WINAMP: 0.8}),
+            (TagWriteStrategy.WRITE_DEFAULT, {DefaultPlayerTags.MEDIAMONKEY: 0.8, DefaultPlayerTags.TEXT: 0.6, DefaultPlayerTags.WINAMP: 0.6}),
+            (None, {DefaultPlayerTags.TEXT: 0.6, DefaultPlayerTags.WINAMP: 0.6}),
+        ],
+    )
+    def test_apply_tags_success_expected_tags(self, write_strategy, expected_tags, handler, mp3_file_factory):
+        handler.tag_write_strategy = write_strategy
+
+        all_tags = [DefaultPlayerTags.TEXT, DefaultPlayerTags.MEDIAMONKEY, DefaultPlayerTags.WINAMP]
+        handler.discovered_rating_tags = {tag.name for tag in all_tags}
+        audio = mp3_file_factory(rating=0.6, rating_tags=[DefaultPlayerTags.TEXT, DefaultPlayerTags.WINAMP])
+
+        assert DefaultPlayerTags.MEDIAMONKEY not in audio.tags
+
+        handler.apply_tags(audio, None, Rating(4))
+        for tag in all_tags:
+            frame = audio.tags.get(tag)
+
+            if tag in expected_tags:
+                expected = Rating(expected_tags[tag])
+                assert frame is not None, f"{tag} should exist"
+                if tag == "TXXX:RATING":
+                    assert isinstance(frame, TXXX)
+                    assert frame.text[0] == expected.to_str(RatingScale.ZERO_TO_FIVE)
+                else:
+                    assert isinstance(frame, POPM)
+                    assert frame.rating == expected.to_float(RatingScale.POPM)
+            else:
+                assert frame is None, f"{tag} should NOT exist"
+
+    def test_remove_existing_id3_tags_success(self, handler, mp3_file_factory):
         audio = mp3_file_factory()
         # Prepopulate with old rating frames
         assert DefaultPlayerTags.TEXT in audio.tags
-        assert DefaultPlayerTags.TEXT in audio.tags
+        assert DefaultPlayerTags.MEDIAMONKEY in audio.tags
 
         handler._remove_existing_id3_tags(audio)
 
@@ -279,25 +374,27 @@ class TestApplyTags:
 
 
 class TestReadTags:
-    def test_read_tags_success_returns_raw_ratings(self, mp3_file_factory):
-        handler = ID3Handler(
-            tagging_policy={
-                "conflict_resolution_strategy": None,
-                "tag_write_strategy": TagWriteStrategy.WRITE_DEFAULT,
-                "default_tag": DefaultPlayerTags.MEDIAMONKEY,
-            }
-        )
-
+    def test_read_tags_success_returns_raw_ratings(self, handler, mp3_file_factory):
         # Create mp3 file with conflicting ratings
+        handler.conflict_resolution_strategy = None
         audio = mp3_file_factory(rating_tags=[DefaultPlayerTags.TEXT, DefaultPlayerTags.MEDIAMONKEY])
         audio = add_or_update_id3frame(audio, rating=0.2, rating_tags=DefaultPlayerTags.TEXT)
-        audio = add_or_update_id3frame(audio, rating=0.8, rating_tags=DefaultPlayerTags.TEXT)
+        audio = add_or_update_id3frame(audio, rating=0.8, rating_tags=DefaultPlayerTags.MEDIAMONKEY)
 
         track, raw = handler.read_tags(audio)
 
         assert isinstance(track, AudioTag)
         assert raw is not None, "Expected raw ratings returned when conflict resolution deferred"
         assert DefaultPlayerTags.TEXT.name in raw or DefaultPlayerTags.MEDIAMONKEY.name in raw
+
+    def test_read_tags_success_no_conflicts(self, handler, mp3_file_factory):
+        # Create mp3 file with no conflicting ratings
+        audio = mp3_file_factory(rating=0.3, rating_tags=[DefaultPlayerTags.TEXT, DefaultPlayerTags.MEDIAMONKEY])
+
+        track, raw = handler.read_tags(audio)
+
+        assert isinstance(track, AudioTag)
+        assert raw is None, "Expected None when no conflicts exist"
 
 
 class TestResolveChoice:
@@ -375,10 +472,8 @@ def mock_finalize_strategy_deps(request, handler, track_factory, monkeypatch):
         other = MagicMock()
         handler.conflicts.append({"handler": other, "track": track_factory(ID=f"other{i}")})
 
-    # Simulate stats_mgr tag counts
-    tag_counts = config.get("tag_counts", {"TEXT": 5, "MEDIAMONKEY": 3})
-    handler.stats_mgr = MagicMock()
-    handler.stats_mgr.get.return_value = tag_counts
+    handler.discovered_rating_tags = {"TEXT", "MEDIAMONKEY"}
+    handler.stats_mgr.get.return_value = config.get("tag_counts", {"TEXT": 5, "MEDIAMONKEY": 3})
 
     # Mock UI and summary helpers
     handler._print_summary = MagicMock()
@@ -424,7 +519,7 @@ class TestFinalizeRatingStrategy:
             handler.conflicts = [c for c in handler.conflicts if c["handler"] is not handler or c["track"].ID == "own0"]
 
             # Reduce tag_counts to 1 key to simulate has_multiple=False
-            handler.stats_mgr.get.return_value = {"TEXT": 5}
+            handler.discovered_rating_tags = {"TEXT"}
 
         handler.finalize_rating_strategy(handler.conflicts)
         handler._show_conflicts.assert_not_called()
@@ -450,6 +545,27 @@ class TestFinalizeRatingStrategy:
         assert handler.prompt.choice.call_count == 1
         assert handler.prompt.yes_no.call_count == 1
         assert handler._print_summary.called
+
+    @pytest.mark.parametrize(
+        "mock_finalize_strategy_deps",
+        [{"conflict_resolution_strategy": ConflictResolutionStrategy.PRIORITIZED_ORDER, "tag_priority_order": None}],
+        indirect=True,
+    )
+    def test_tag_priority_prompt_sets_value(self, mock_finalize_strategy_deps):
+        handler = mock_finalize_strategy_deps
+
+        # Return priority choice then write strategy
+        handler.prompt.choice.side_effect = lambda msg, opts, **_: opts[:2]
+        handler.prompt.yes_no.return_value = True
+
+        handler.finalize_rating_strategy(handler.conflicts)
+
+        expected_order = [handler.tag_registry.get_key_for_player_name(name) for name in handler.prompt.choice.call_args_list[0].args[1][:2]]
+
+        assert handler.tag_priority_order == expected_order
+        assert handler.prompt.choice.call_count == 1
+        assert handler.prompt.yes_no.call_count == 1
+        handler.cfg.save_config.assert_called_once()
 
     @pytest.mark.parametrize(
         "mock_finalize_strategy_deps",
@@ -576,3 +692,93 @@ class TestFinalizeRatingStrategy:
         assert handler.prompt.choice.call_count == 2
         assert handler.prompt.yes_no.call_count == 1
         handler.cfg.save_config.assert_called_once()
+
+
+class TestResolveConflictDispatch:
+    def test_conflict_strategy_unsupported_falls_back_to_highest(self, handler):
+        """If strategy is unsupported, fallback to HIGHEST should apply."""
+        handler.conflict_resolution_strategy = MagicMock()
+        handler.is_strategy_supported = lambda strat: False
+        handler._resolve_highest = MagicMock(return_value=Rating(1))
+
+        result = handler._resolve_conflict({"TEXT": Rating(1), "MM": Rating(2)}, MagicMock())
+        assert result == Rating(1)
+        handler._resolve_highest.assert_called_once()
+
+    def test_conflict_strategy_unknown_uses_fallback(self, handler):
+        """Unknown strategy dispatches to _resolve_unknown_strategy."""
+        handler.conflict_resolution_strategy = "BOGUS"
+        handler._resolve_unknown_strategy = MagicMock(return_value=None)
+
+        result = handler._resolve_conflict({"TEXT": Rating(1), "MM": Rating(2)}, MagicMock())
+        handler._resolve_unknown_strategy.assert_called_once()
+        assert result is None
+
+
+class TestApplyRating:
+    def test_apply_rating_adds_txxx_rating(self, handler, mp3_file_factory):
+        """Should add new TXXX:RATING tag when not present."""
+        handler.tag_registry.get_id3_tag_for_key = lambda key: "TXXX:RATING"
+
+        audio = mp3_file_factory()
+        if "TXXX:RATING" in audio.tags:
+            del audio.tags["TXXX:RATING"]
+        assert "TXXX:RATING" not in audio.tags
+
+        result = handler._apply_rating(audio, Rating(4.0), {"TEXT"})
+        frame = audio.tags.get("TXXX:RATING")
+        assert isinstance(frame, TXXX)
+        assert frame.text[0] == "4"
+        assert result is audio
+
+    def test_apply_rating_updates_existing_txxx_rating(self, handler, mp3_file_factory):
+        """Should update TXXX:RATING tag if it already exists."""
+        handler.tag_registry.get_id3_tag_for_key = lambda key: "TXXX:RATING"
+
+        audio = mp3_file_factory()
+        add_or_update_id3frame(audio, rating=0.4, rating_tags=["TEXT"])
+
+        result = handler._apply_rating(audio, Rating(3.0), {"TEXT"})
+        frame = audio.tags.get("TXXX:RATING")
+        assert isinstance(frame, TXXX)
+        assert frame.text[0] == "3"
+        assert result is audio
+
+    def test_apply_rating_adds_popm(self, handler, mp3_file_factory):
+        """Should add POPM tag if not already present."""
+        handler.tag_registry.get_id3_tag_for_key = lambda key: "POPM:test@test"
+        handler.tag_registry.get_popm_email_for_key = lambda key: "test@test"
+
+        audio = mp3_file_factory()
+        assert "POPM:test@test" not in audio.tags
+
+        result = handler._apply_rating(audio, Rating(5.0), {"POPM"})
+        frame = audio.tags.get("POPM:test@test")
+        assert isinstance(frame, POPM)
+        assert frame.rating == 255
+        assert result is audio
+
+    def test_apply_rating_updates_existing_popm(self, handler, mp3_file_factory):
+        """Should update existing POPM tag if present."""
+        handler.tag_registry.get_id3_tag_for_key = lambda key: "POPM:test@test"
+        handler.tag_registry.get_popm_email_for_key = lambda key: "test@test"
+
+        audio = mp3_file_factory()
+        add_or_update_id3frame(audio, rating=0.5, rating_tags=["POPM:test@test"])
+
+        result = handler._apply_rating(audio, Rating(1.0), {"POPM"})
+        frame = audio.tags.get("POPM:test@test")
+        assert isinstance(frame, POPM)
+        assert frame.rating == 255
+        assert result is audio
+
+    def test_apply_rating_unknown_tag_warns_and_skips(self, handler, mp3_file_factory):
+        """Should log warning and skip if tag is unknown."""
+        handler.tag_registry.get_id3_tag_for_key = lambda key: None
+
+        audio = mp3_file_factory()
+
+        result = handler._apply_rating(audio, Rating(3.5), {"UNKNOWN"})
+        assert result is audio
+        assert "UNKNOWN" not in audio.tags
+        handler.logger.warning.assert_called_once()
