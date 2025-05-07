@@ -1,6 +1,7 @@
 import abc
 import logging
 from enum import StrEnum
+from os.path import relpath
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -754,15 +755,19 @@ class FileSystemProvider:
         bar.close()
 
         self.logger.info(f"Found {len(self.get_tracks())} audio files")
-        self.logger.info(f"Found {len(self.get_playlists())} playlist files")
+        self.logger.info(f"Found {len(self._get_playlist_paths())} playlist files")
 
     def get_tracks(self) -> List[Path]:
         """Return all discovered audio files."""
         return [t for t in self._media_files if t.suffix.lower() in self.AUDIO_EXT]
 
+    def _get_playlist_paths(self) -> List[Path]:
+        """Return all discovered playlist files."""
+        return [p for p in self._media_files if p.suffix.lower() in self.PLAYLIST_EXT]
+
     def get_playlists(self, title: str | None = None, path: Path | str | None = None) -> List[Playlist]:
         """Return all discovered Playlist objects, optionally filtered by title or resolved path."""
-        playlist_paths = [p for p in self._media_files if p.suffix.lower() in self.PLAYLIST_EXT]
+        playlist_paths = self._get_playlist_paths()
 
         if title:
             matched_path = self._playlist_title_map.get(title)
@@ -825,8 +830,8 @@ class FileSystemProvider:
             self.logger.warning(f"Cannot update metadata for unsupported format: {file_path}")
             return None
 
-        updated_file = handler.apply_tags(audio_file, audio_tag, rating)
         if audio_tag or rating is not None:
+            updated_file = handler.apply_tags(audio_file, audio_tag, rating)
             if self._save_audio_file(updated_file):
                 self.logger.info(f"Successfully updated metadata for file: {file_path}")
                 return updated_file
@@ -931,7 +936,11 @@ class FileSystemProvider:
                 if not line or line.startswith("#"):
                     continue
 
-                candidate_path = (self.path / line).resolve()
+                candidate = Path(line)
+                if candidate.is_absolute():
+                    candidate_path = candidate.resolve()
+                else:
+                    candidate_path = (playlist_path.parent / candidate).resolve()
 
                 # Must exist and be within root path
                 if candidate_path.exists() and candidate_path.is_relative_to(self.path):
@@ -944,29 +953,42 @@ class FileSystemProvider:
         """Add a track to a playlist."""
         playlist_path = Path(playlist_path)
         try:
+            # Use playlist_path.parent for relativity, not self.path
+            if not Path(track.file_path).is_relative_to(self.path):
+                self.logger.debug(f"Track path {track.file_path} is outside the audio root {self.path}; skipping add")
+                return
+
+            lines = []
+            if is_extm3u:
+                duration = int(track.duration) if track.duration > 0 else -1
+                lines.append(f"#EXTINF:{duration},{track.artist} - {track.title}\n")
+            lines.append(f"{relpath(Path(track.file_path), playlist_path.parent)!s}\n")
             with playlist_path.open("a", encoding="utf-8") as file:
-                if is_extm3u:
-                    duration = int(track.duration) if track.duration > 0 else -1
-                    file.write(f"#EXTINF:{duration},{track.artist} - {track.title}\n")
-                file.write(f"{Path(track.file_path).relative_to(self.path)!s}\n")
+                file.writelines(lines)
             self.logger.info(f"Added track {track} to playlist {playlist_path}")
         except Exception as e:
             self.logger.debug(f"Failed to add track to playlist {playlist_path}: {e}")
 
-    def remove_track_from_playlist(self, playlist_path: str, track: Path) -> None:
+    def remove_track_from_playlist(self, playlist_path: str | Path, track: Path) -> None:
         """Remove a track from a playlist."""
         playlist_path = Path(playlist_path)
         try:
             lines = []
-            track_relative = track.relative_to(self.path) if track.is_absolute() else track
+            # Use playlist_path.parent for relativity, not self.path
+            track_relative = track.relative_to(playlist_path.parent) if track.is_absolute() else track
             track_absolute = track.resolve()
+
+            # Normalize to POSIX for robust comparison
+            track_relative_posix = track_relative.as_posix()
+            track_absolute_posix = track_absolute.as_posix()
 
             with playlist_path.open("r", encoding="utf-8") as file:
                 for line in file:
-                    line = line.strip()
-                    # Skip lines that match either the relative or absolute path of the track
-                    if line != str(track_relative) and line != str(track_absolute):
-                        lines.append(line + "\n")
+                    line_stripped = line.strip()
+                    line_posix = Path(line_stripped).as_posix()
+                    # Skip lines that match either the relative or absolute path of the track (normalized)
+                    if line_posix != track_relative_posix and line_posix != track_absolute_posix:
+                        lines.append(line_stripped + "\n")
 
             with playlist_path.open("w", encoding="utf-8") as file:
                 file.writelines(lines)
