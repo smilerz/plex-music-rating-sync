@@ -1,5 +1,5 @@
 import io
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, mock_open, patch
 
@@ -163,6 +163,33 @@ def playlist_factory():
     return _factory
 
 
+def make_mock_file(suffix, name, parent_dir, is_file=True, is_relative_to_val=None, resolved_to=None):
+    """
+    Helper to create a MagicMock Path object for use in scan_media_files tests.
+    Args:
+        suffix: File extension (e.g., '.mp3')
+        name: File name
+        parent_dir: Parent directory (Path)
+        is_file: Whether this mock is a file (default True)
+        is_relative_to_val: Value to return for is_relative_to (default: parent_dir == playlist_root)
+        resolved_to: Value to return for resolve (default: self)
+    """
+    p = MagicMock(spec=Path)
+    p.suffix = suffix
+    p.is_file.return_value = is_file
+    p.resolve.return_value = resolved_to if resolved_to is not None else p
+    p.name = name
+    p.exists.return_value = True
+    # If not specified, default to False (for most tests)
+    if is_relative_to_val is None:
+        p.is_relative_to.side_effect = lambda other: False
+    else:
+        p.is_relative_to.side_effect = lambda other: is_relative_to_val
+    p.__str__.return_value = str(parent_dir / name)
+    p.parent = parent_dir
+    return p
+
+
 # --- Tests ---
 class TestScanMediaFiles:
     """Test scanning for audio and playlist files with various extensions."""
@@ -188,18 +215,6 @@ class TestScanMediaFiles:
         audio_root = fsp_instance.path
         playlist_root = fsp_instance.playlist_path
 
-        def make_mock_file(suffix, name, parent_dir, is_relative_to_val):
-            p = MagicMock(spec=Path)
-            p.suffix = suffix
-            p.is_file.return_value = True
-            p.resolve.return_value = p
-            p.name = name
-            p.exists.return_value = True
-            p.is_relative_to.side_effect = lambda other: is_relative_to_val
-            p.__str__.return_value = str(parent_dir / name)
-            p.parent = parent_dir
-            return p
-
         dummy_files = []
         resolved_paths = {}
         for i, suf in enumerate(suffixes):
@@ -220,7 +235,7 @@ class TestScanMediaFiles:
             if not is_playlist and key in resolved_paths:
                 p = resolved_paths[key]
             else:
-                p = make_mock_file(suf, name, parent_dir, is_relative_to_val)
+                p = make_mock_file(suf, name, parent_dir, is_file=True, is_relative_to_val=is_relative_to_val)
                 if not is_playlist:
                     resolved_paths[key] = p
             dummy_files.append(p)
@@ -233,6 +248,44 @@ class TestScanMediaFiles:
             fsp_instance.scan_media_files()
         assert len(fsp_instance.get_tracks()) == expected_audio
         assert len(fsp_instance._get_playlist_paths()) == expected_playlists
+
+    def test_scan_media_files_skips_non_file(self, fsp_instance):
+        """Test that scan_media_files skips entries that are not files."""
+        audio_root = fsp_instance.path
+
+        # One real file, one non-file
+        file1 = make_mock_file(".mp3", "track1.mp3", audio_root, is_file=True, is_relative_to_val=False)
+        non_file = make_mock_file(".mp3", "not_a_file.mp3", audio_root, is_file=False, is_relative_to_val=False)
+        dummy_files = [file1, non_file]
+
+        def rglob_side_effect(self, pattern):
+            return [f for f in dummy_files if str(f.parent) == str(self)]
+
+        with patch.object(Path, "rglob", rglob_side_effect):
+            fsp_instance.scan_media_files()
+        # Only the real file should be counted
+        assert len(fsp_instance.get_tracks()) == 1
+        assert all(t.name == "track1.mp3" for t in fsp_instance.get_tracks())
+
+    def test_scan_media_files_skips_duplicates(self, fsp_instance):
+        """Test that scan_media_files skips duplicate files (same resolved path)."""
+        audio_root = fsp_instance.path
+
+        # Two files with the same resolved path
+        file1 = make_mock_file(".mp3", "track1.mp3", audio_root)
+        file2 = make_mock_file(".mp3", "track1_duplicate.mp3", audio_root, resolved_to=file1)
+        file2.resolve.return_value = file1  # Both resolve to the same object
+        file1.resolve.return_value = file1
+        dummy_files = [file1, file2]
+
+        def rglob_side_effect(self, pattern):
+            return [f for f in dummy_files if str(f.parent) == str(self)]
+
+        with patch.object(Path, "rglob", rglob_side_effect):
+            fsp_instance.scan_media_files()
+        # Only one should be counted
+        assert len(fsp_instance.get_tracks()) == 1
+        assert any(t.name == "track1.mp3" or t.name == "track1_duplicate.mp3" for t in fsp_instance.get_tracks())
 
 
 class TestReadTrackMetadata:
@@ -685,3 +738,142 @@ class TestReadPlaylistMetadataOpenError:
         with patch.object(fsp_instance, "_open_playlist", return_value=None):
             result = fsp_instance.read_playlist_metadata(pl_path)
         assert result is None
+
+
+class TestGetPlaylistsFiltering:
+    """
+    Parameterized tests for FileSystemProvider.get_playlists filtering by title and path.
+    All playlist IO is handled in-memory via playlist_factory. No real filesystem IO occurs.
+    Populates _media_files and _playlist_title_map directly to simulate a scan.
+    """
+
+    @pytest.mark.parametrize(
+        "playlist_defs, filter_kwargs, expected_titles",
+        [
+            # No filter: all playlists returned
+            (
+                [
+                    {"filename": "rock.m3u", "title": "Rock"},
+                    {"filename": "pop.m3u", "title": "Pop"},
+                    {"filename": "jazz.m3u", "title": "Jazz"},
+                ],
+                {},
+                ["Rock", "Pop", "Jazz"],
+            ),
+            # Exact title match
+            (
+                [
+                    {"filename": "rock.m3u", "title": "Rock"},
+                    {"filename": "pop.m3u", "title": "Pop"},
+                ],
+                {"title": "Pop"},
+                ["Pop"],
+            ),
+            # Non-existent title
+            (
+                [
+                    {"filename": "rock.m3u", "title": "Rock"},
+                ],
+                {"title": "Classical"},
+                [],
+            ),
+            # Exact path match
+            (
+                [
+                    {"filename": "rock.m3u", "title": "Rock"},
+                    {"filename": "pop.m3u", "title": "Pop"},
+                ],
+                "PATH_ROCK",  # special marker, handled in test
+                ["Rock"],
+            ),
+            # Non-existent path
+            (
+                [
+                    {"filename": "rock.m3u", "title": "Rock"},
+                ],
+                {"path": "/nonexistent/path.m3u"},
+                [],
+            ),
+            # Both filters: title and path (should match only if both match same playlist)
+            (
+                [
+                    {"filename": "rock.m3u", "title": "Rock"},
+                    {"filename": "pop.m3u", "title": "Pop"},
+                ],
+                "BOTH_ROCK",  # special marker, handled in test
+                ["Rock"],
+            ),
+            # Both filters: mismatch
+            (
+                [
+                    {"filename": "rock.m3u", "title": "Rock"},
+                    {"filename": "pop.m3u", "title": "Pop"},
+                ],
+                "BOTH_MISMATCH",  # special marker, handled in test
+                [],
+            ),
+            # Edge: empty string title
+            (
+                [
+                    {"filename": "rock.m3u", "title": "Rock"},
+                ],
+                {"title": ""},
+                [],
+            ),
+            # Edge: None as title
+            (
+                [
+                    {"filename": "rock.m3u", "title": "Rock"},
+                ],
+                {"title": None},
+                ["Rock"],
+            ),
+        ],
+        ids=[
+            "no_filter_returns_all_playlists",
+            "exact_title_match",
+            "nonexistent_title",
+            "exact_path_match",
+            "nonexistent_path",
+            "both_filters_match",
+            "both_filters_mismatch",
+            "empty_string_title",
+            "none_as_title_returns_all",
+        ],
+    )
+    def test_get_playlists_filtering(self, fsp_instance, playlist_factory, playlist_defs, filter_kwargs, expected_titles):
+        """
+        Parameterized test for get_playlists filtering by title and path.
+        Playlists are constructed using playlist_factory. All are registered using read_playlist_metadata.
+        Uses ExitStack to keep all playlist contexts open during the test.
+        """
+        playlist_root = fsp_instance.playlist_path
+        created_paths = []
+        title_map = {}
+        with ExitStack() as stack:
+            for pl in playlist_defs:
+                playlist_content, playlist_path = stack.enter_context(
+                    playlist_factory(
+                        playlist_root=playlist_root,
+                        filename=pl["filename"],
+                        lines=["music/track1.mp3"],
+                        is_extm3u=True,
+                        title=pl["title"],
+                    )
+                )
+                created_paths.append(playlist_path)
+                title_map[pl["title"]] = playlist_path
+                # Register the playlist as the production code does
+                fsp_instance.read_playlist_metadata(playlist_path)
+            # No need to manually set _media_files or _playlist_title_map
+            if filter_kwargs == "PATH_ROCK":
+                filter_args = {"path": str(title_map["Rock"].resolve())}
+            elif filter_kwargs == "BOTH_ROCK":
+                filter_args = {"title": "Rock", "path": str(title_map["Rock"].resolve())}
+            elif filter_kwargs == "BOTH_MISMATCH":
+                filter_args = {"title": "Rock", "path": str(title_map["Pop"].resolve())}
+            else:
+                filter_args = filter_kwargs
+            result = fsp_instance.get_playlists(**filter_args)
+            result_titles = [pl.name for pl in result]
+            assert set(result_titles) == set(expected_titles)
