@@ -691,6 +691,8 @@ class FileSystemProvider:
         self.logger = logging.getLogger("PlexSync.FileSystemProvider")
         mgr = get_manager()
         self.config_mgr = mgr.get_config_manager()
+        self.path = Path(self.config_mgr.path).resolve()
+        self.playlist_path = Path(self.config_mgr.playlist_path).resolve() if self.config_mgr.playlist_path else self.path
         self.status_mgr = mgr.get_status_manager()
         self._media_files = []
         self._playlist_title_map: dict[str, Path] = {}
@@ -714,8 +716,8 @@ class FileSystemProvider:
         """Scan configured paths for audio and playlist files without duplication or scope leakage."""
         self._media_files = []
 
-        self.path = audio_root = Path(self.config_mgr.path).resolve()
-        self.playlist_path = playlist_root = Path(self.config_mgr.playlist_path).resolve() if self.config_mgr.playlist_path else audio_root
+        audio_root = self.path
+        playlist_root = self.playlist_path
 
         scanned_files: set[Path] = set()
         bar = self.status_mgr.start_phase("Scanning media files", total=None)
@@ -766,7 +768,12 @@ class FileSystemProvider:
         return [p for p in self._media_files if p.suffix.lower() in self.PLAYLIST_EXT]
 
     def get_playlists(self, title: str | None = None, path: Path | str | None = None) -> List[Playlist]:
-        """Return all discovered Playlist objects, optionally filtered by title or resolved path."""
+        """
+        Return all discovered Playlist objects, optionally filtered by title or resolved path.
+        Note: Only one of 'title' or 'path' may be provided. If both are provided, a ValueError is raised.
+        """
+        if title and path:
+            raise ValueError("Only one of 'title' or 'path' may be provided to get_playlists.")
         playlist_paths = self._get_playlist_paths()
 
         if title:
@@ -777,7 +784,6 @@ class FileSystemProvider:
             resolved = Path(path).resolve()
             playlist_paths = [p for p in playlist_paths if p.resolve() == resolved]
 
-        # Convert paths to Playlist objects
         playlists = []
         for p in playlist_paths:
             playlist = self.read_playlist_metadata(p)
@@ -870,6 +876,7 @@ class FileSystemProvider:
     # ------------------------------
     # Phase 3: Playlist Operations
     # ------------------------------
+    # TODO: dry mode should enforced in the player - not the handler
     def create_playlist(self, title: str, is_extm3u: bool = False) -> Playlist:
         """Create a new M3U playlist file."""
         if self.config_mgr.dry:

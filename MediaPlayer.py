@@ -13,6 +13,7 @@ from plexapi.myplex import MyPlexAccount
 
 from filesystem_provider import FileSystemProvider
 from manager import get_manager
+from manager.config_manager import SyncItem
 from ratings import Rating, RatingScale
 from sync_items import AudioTag, Playlist
 
@@ -743,23 +744,41 @@ class FileSystem(MediaPlayer):
         return "FileSystem"
 
     def connect(self) -> None:
-        """Connect to filesystem music library with additional options."""
+        """Connect to the local music library, loading only the metadata the user asked to sync."""
+        # ── Phase 0: cheap directory walk ────────────────────────────────────────────
         self.fsp = FileSystemProvider()
         self.fsp.scan_media_files()
 
-        tracks = self.fsp.get_tracks()
-        bar = self.status_mgr.start_phase(f"Reading track metadata from {self.name()}", total=len(tracks))
-        for file_path in tracks:
-            self._read_track_metadata(file_path)
-            bar.update()
-        bar.close()
+        # ── Phase 1: heavy track-tag load (only if TRACKS are being synced) ─────────
+        if SyncItem.TRACKS in self.config_mgr.sync_items:
+            tracks = self.fsp.get_tracks()
+            bar = self.status_mgr.start_phase(
+                f"Reading track metadata from {self.name()}",
+                total=len(tracks),
+            )
+            for file_path in tracks:
+                self._read_track_metadata(file_path)  # disk parse + cache write
+                bar.update()
+            bar.close()
 
+        # ── Phase 2: light playlist-header load (only if PLAYLISTS are being synced) ─
+        # TODO: playlist metadata isn't retained - this should be switched to simple registration of the playlist map
+        if SyncItem.PLAYLISTS in self.config_mgr.sync_items:
+            for pl_path in self.fsp._get_playlist_paths():
+                self.fsp.read_playlist_metadata(pl_path)
+
+        # ── Phase 3: conflict resolution + final cache refresh (runs only if needed) ─
         finalizing_tracks = self.fsp.finalize_scan()
-        bar = self.status_mgr.start_phase(f"Finalizing track indexing from {self.name()}", total=len(finalizing_tracks)) if finalizing_tracks else None
-        for track in finalizing_tracks:
-            self.cache_mgr.set_metadata(self.name(), track.ID, track)
-            bar.update()
-        bar.close() if bar else None
+        if finalizing_tracks:
+            bar = self.status_mgr.start_phase(
+                f"Finalizing track indexing from {self.name()}",
+                total=len(finalizing_tracks),
+            )
+            for track in finalizing_tracks:
+                # overwrite cache entry with conflict-free AudioTag (RAM-only)
+                self.cache_mgr.set_metadata(self.name(), track.ID, track)
+                bar.update()
+            bar.close()
 
     # --- Track Methods ---
     def _read_track_metadata(self, file_path: Path | str) -> AudioTag:
