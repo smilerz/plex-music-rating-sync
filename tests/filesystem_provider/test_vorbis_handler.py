@@ -96,7 +96,7 @@ class TestExtractMetadata:
         assert "RATING" in raw
 
     def test_extract_metadata_empty_when_no_rating_keys(self, handler):
-        """Test that extract_metadata returns empty raw dict when neither FMPS_RATING nor RATING is present in tags."""
+        """Returns empty raw dict when no rating keys are present."""
         audio_file = MagicMock()
         audio_file.tags = {}
         audio_file.filename = "dummy.flac"
@@ -120,10 +120,7 @@ class TestExtractMetadata:
 class TestTryNormalize:
     @pytest.mark.parametrize(
         "value, field",
-        [
-            ("invalid", VorbisField.FMPS_RATING),
-            ("invalid", VorbisField.RATING),
-        ],
+        [("invalid", VorbisField.FMPS_RATING), ("invalid", VorbisField.RATING)],
     )
     def test_try_normalize_returns_unrated_if_aggressive_enabled(self, value, field, handler):
         handler.aggressive_inference = True
@@ -133,10 +130,7 @@ class TestTryNormalize:
 
     @pytest.mark.parametrize(
         "value, field",
-        [
-            ("invalid", VorbisField.FMPS_RATING),
-            ("invalid", VorbisField.RATING),
-        ],
+        [("invalid", VorbisField.FMPS_RATING), ("invalid", VorbisField.RATING)],
     )
     def test_try_normalize_returns_none_if_aggressive_disabled(self, value, field, handler):
         handler.aggressive_inference = False
@@ -180,7 +174,7 @@ class TestFinalizeRatingStrategy:
         other_handler = MagicMock()
         conflicts = [{"handler": other_handler}, {"handler": other_handler}]
 
-        handler.stats_mgr.get.return_value = {}  # ✅ Prevent crash in pick_scale()
+        handler.stats_mgr.get.return_value = {}  # Prevent crash in pick_scale()
 
         handler.finalize_rating_strategy(conflicts)
 
@@ -235,8 +229,7 @@ class TestApplyTags:
         ],
     )
     def test_apply_tags_skips_field_when_falsy(self, handler, vorbis_file_factory, field, falsy_value, expected_fields):
-        """Test that apply_tags does not set a field when its value is falsy, but sets others."""
-        # Set up all fields to valid values, except the one under test
+        """Skips setting a field when its value is falsy."""
         tag_kwargs = {
             "ID": "test",
             "title": "T",
@@ -247,15 +240,12 @@ class TestApplyTags:
         tag_kwargs[field] = falsy_value
         tag = AudioTag(**tag_kwargs)
         audio = vorbis_file_factory(fmps_rating=None, rating=None)
-        # Remove the default value for the field under test to ensure the test is valid
         field_map = {"title": "TITLE", "artist": "ARTIST", "album": "ALBUM", "track": "TRACKNUMBER"}
         field_key = field_map[field]
         if field_key in audio:
             del audio[field_key]
         result = handler.apply_tags(audio, tag, None)
-        # The field under test should not be present
         assert field_key not in result
-        # All other fields should be present
         for ef in expected_fields:
             assert ef in result
 
