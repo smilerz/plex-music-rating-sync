@@ -95,6 +95,16 @@ class TestExtractMetadata:
         assert "FMPS_RATING" in raw
         assert "RATING" in raw
 
+    def test_extract_metadata_empty_when_no_rating_keys(self, handler):
+        """Test that extract_metadata returns empty raw dict when neither FMPS_RATING nor RATING is present in tags."""
+        audio_file = MagicMock()
+        audio_file.tags = {}
+        audio_file.filename = "dummy.flac"
+        audio_file.get = MagicMock()
+
+        tag, raw = handler.extract_metadata(audio_file)
+        assert raw == {}
+
     def test_get_audiotag_handles_missing_fields(self, handler):
         audio = MagicMock()
         audio.get.side_effect = lambda key, default=None: default if key != VorbisField.TRACKNUMBER else ["2/10"]
@@ -214,6 +224,40 @@ class TestApplyTags:
         assert result["ARTIST"] == ["A"]
         assert result["ALBUM"] == ["B"]
         assert result["TRACKNUMBER"] == ["7"]
+
+    @pytest.mark.parametrize(
+        "field, falsy_value, expected_fields",
+        [
+            ("title", "", ["ARTIST", "ALBUM", "TRACKNUMBER"]),
+            ("artist", "", ["TITLE", "ALBUM", "TRACKNUMBER"]),
+            ("album", "", ["TITLE", "ARTIST", "TRACKNUMBER"]),
+            ("track", None, ["TITLE", "ARTIST", "ALBUM"]),
+        ],
+    )
+    def test_apply_tags_skips_field_when_falsy(self, handler, vorbis_file_factory, field, falsy_value, expected_fields):
+        """Test that apply_tags does not set a field when its value is falsy, but sets others."""
+        # Set up all fields to valid values, except the one under test
+        tag_kwargs = {
+            "ID": "test",
+            "title": "T",
+            "artist": "A",
+            "album": "B",
+            "track": 7,
+        }
+        tag_kwargs[field] = falsy_value
+        tag = AudioTag(**tag_kwargs)
+        audio = vorbis_file_factory(fmps_rating=None, rating=None)
+        # Remove the default value for the field under test to ensure the test is valid
+        field_map = {"title": "TITLE", "artist": "ARTIST", "album": "ALBUM", "track": "TRACKNUMBER"}
+        field_key = field_map[field]
+        if field_key in audio:
+            del audio[field_key]
+        result = handler.apply_tags(audio, tag, None)
+        # The field under test should not be present
+        assert field_key not in result
+        # All other fields should be present
+        for ef in expected_fields:
+            assert ef in result
 
 
 class TestIsStrategySupported:

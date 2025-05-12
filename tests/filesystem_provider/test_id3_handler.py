@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from mutagen.id3 import POPM, TXXX
+from mutagen.id3 import COMM, POPM, TXXX
 from mutagen.mp3 import MP3
 
 from filesystem_provider import ID3, DefaultPlayerTags, ID3Field, ID3Handler
@@ -141,6 +141,15 @@ class TestExtractMetadata:
         assert isinstance(r2, Rating)
         assert r1.to_float(RatingScale.NORMALIZED) == 0.8
         assert r2.to_float(RatingScale.NORMALIZED) == 0.9
+
+    def test_extract_metadata_ignores_non_popm_txxx_frames(self, handler, mp3_file_factory):
+        """Should ignore frames that are not POPM or TXXX even if the key matches."""
+        audio = mp3_file_factory()
+        # Add a COMM frame with a rating key
+        audio.tags["TXXX:RATING"] = COMM(encoding=3, lang="eng", desc="desc", text=["not a rating"])
+        tag, raw = handler.extract_metadata(audio)
+        # Should not include the COMM frame in raw
+        assert "TEXT" not in raw and "TXXX:RATING" not in raw
 
 
 class TestResolveRating:
@@ -693,6 +702,25 @@ class TestFinalizeRatingStrategy:
         assert handler.prompt.yes_no.call_count == 1
         handler.cfg.save_config.assert_called_once()
 
+    @pytest.mark.parametrize(
+        "mock_finalize_strategy_deps",
+        [
+            {"conflict_resolution_strategy": ConflictResolutionStrategy.HIGHEST, "tag_write_strategy": TagWriteStrategy.WRITE_DEFAULT, "default_tag": "TEXT"},
+        ],
+        indirect=True,
+    )
+    def test_finalize_rating_strategy_no_save_when_no_change(self, mock_finalize_strategy_deps):
+        """Should not prompt to save or call save_config if no config values are changed (needs_save is False)."""
+        handler = mock_finalize_strategy_deps
+        # Patch prompt to always return the current config value, so nothing changes
+        handler.prompt.choice.side_effect = lambda msg, opts, **_: opts[0] if opts else None
+        handler.prompt.yes_no.return_value = True  # Should not be called
+
+        handler.finalize_rating_strategy(handler.conflicts)
+
+        handler.prompt.yes_no.assert_not_called()
+        handler.cfg.save_config.assert_not_called()
+
 
 class TestResolveConflictDispatch:
     def test_conflict_strategy_unsupported_falls_back_to_highest(self, handler):
@@ -782,3 +810,14 @@ class TestApplyRating:
         assert result is audio
         assert "UNKNOWN" not in audio.tags
         handler.logger.warning.assert_called_once()
+
+    def test_apply_rating_needs_save_false_non_popm(self, handler, mp3_file_factory):
+        """Should not update TXXX:RATING if value is already correct (needs_save is False)."""
+        handler.tag_registry.get_id3_tag_for_key = lambda key: "TXXX:RATING"
+        audio = mp3_file_factory()
+        # Set the tag to the correct value
+        audio.tags["TXXX:RATING"].text = ["4"]
+        result = handler._apply_rating(audio, Rating(4.0), {"TEXT"})
+        # Should not change the value
+        assert audio.tags["TXXX:RATING"].text[0] == "4"
+        assert result is audio

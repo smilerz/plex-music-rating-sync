@@ -418,7 +418,6 @@ class VorbisHandler(AudioTagHandler):
                 audio_file[VorbisField.FMPS_RATING] = rating.to_str(self.fmps_rating_scale)
             if self.rating_scale is not None:
                 audio_file[VorbisField.RATING] = rating.to_str(self.rating_scale)
-
         return audio_file
 
     # ------------------------------
@@ -502,7 +501,6 @@ class ID3Handler(AudioTagHandler):
         tag_counts = self.stats_mgr.get("ID3Handler::tags_used") or {}
         has_multiple = len(tag_counts) > 1
         has_conflicts = len(conflicts) > 0
-        needs_save = False
 
         def _settings_required() -> bool:
             return any(
@@ -535,7 +533,6 @@ class ID3Handler(AudioTagHandler):
             else:
                 idx = options.index(choice)
                 self.conflict_resolution_strategy = list(ConflictResolutionStrategy)[idx]
-                needs_save = True
 
         # Tag priority order prompt
         if self.conflict_resolution_strategy == ConflictResolutionStrategy.PRIORITIZED_ORDER and has_multiple and not self.tag_priority_order:
@@ -551,7 +548,6 @@ class ID3Handler(AudioTagHandler):
             )
 
             self.tag_priority_order = [player_name_to_key[player] for player in order]
-            needs_save = True
 
         # Write strategy prompt
         if has_multiple and not self.tag_write_strategy:
@@ -561,7 +557,6 @@ class ID3Handler(AudioTagHandler):
             )
             idx = options.index(choice)
             self.tag_write_strategy = list(TagWriteStrategy)[idx]
-            needs_save = True
 
         # Preferred player tag prompt
         if self.tag_write_strategy and self.tag_write_strategy.requires_default_tag() and not self.default_tag:
@@ -575,18 +570,16 @@ class ID3Handler(AudioTagHandler):
             )
 
             self.default_tag = player_name_to_key[choice]
-            needs_save = True
 
-        # Save config if changed
-        if needs_save:
-            cfg = get_manager().get_config_manager()
-            cfg.conflict_resolution_strategy = self.conflict_resolution_strategy
-            cfg.tag_write_strategy = self.tag_write_strategy
-            cfg.default_tag = self.default_tag
-            cfg.tag_priority_order = self.tag_priority_order
+        # if this point is reached, need to prompt to save settings
+        cfg = get_manager().get_config_manager()
+        cfg.conflict_resolution_strategy = self.conflict_resolution_strategy
+        cfg.tag_write_strategy = self.tag_write_strategy
+        cfg.default_tag = self.default_tag
+        cfg.tag_priority_order = self.tag_priority_order
 
-            if self.prompt.yes_no("\nSave settings to config.ini?"):
-                cfg.save_config()
+        if self.prompt.yes_no("\nSave settings to config.ini?"):
+            cfg.save_config()
 
     def _print_summary(self) -> None:  # pragma: no cover
         print("\nMP3 Ratings Summary:")
@@ -656,7 +649,7 @@ class ID3Handler(AudioTagHandler):
                 else:
                     audio_file.tags.add(TXXX(encoding=1, desc="RATING", text=[txt]))
 
-            elif id3_tag.upper().startswith("POPM:"):
+            if id3_tag.upper().startswith("POPM:"):
                 pr = rating.to_int(RatingScale.POPM)
                 email = self.tag_registry.get_popm_email_for_key(key) or ""
                 if id3_tag in audio_file.tags:

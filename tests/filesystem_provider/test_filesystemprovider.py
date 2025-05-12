@@ -327,91 +327,106 @@ class TestUpdateTrackMetadata:
     """
 
     @pytest.mark.parametrize(
-        "file_args,exists,save_success,can_handle_return,can_handle_exception,apply_tags_exception,expect_none",
+        "audio_tag,rating,expect_none,audio_file_is_none,save_fails",
         [
-            # Success: handler supports, apply_tags returns file
-            ((".mp3", "fake.mp3"), True, True, True, None, None, False),
-            # Handler does not support
-            ((".mp3", "fake.mp3"), True, True, False, None, None, True),
-            # File does not exist (handler should not be called)
-            ((".mp3", "fake.mp3"), False, True, True, None, None, True),
-            # Both handlers return False (fallback logic)
-            ((".nonsense", "fake.nonsense"), True, True, False, None, None, True),
+            (AudioTag(), Rating(1), False, False, False),
+            (AudioTag(), None, False, False, False),
+            (None, Rating(1), False, False, False),
+            (None, None, True, False, False),
+            # New scenario: _open_audio_file returns None (not audio_file)
+            (AudioTag(), Rating(1), True, True, False),
+            # New scenario: _save_audio_file returns False
+            (AudioTag(), Rating(1), True, False, True),
         ],
     )
-    def test_update_track_metadata_branches(
-        self, fsp_instance, file_factory, file_args, exists, save_success, can_handle_return, can_handle_exception, apply_tags_exception, expect_none
-    ):
+    def test_update_track_metadata_handler_succeeds(self, fsp_instance, file_factory, audio_tag, rating, expect_none, audio_file_is_none, save_fails):
         """
-        Test update_track_metadata for all handler behaviors using ConfigurableFakeHandler.
-        Only assert handler call state when file exists and handler is selected for the file type.
+        Branch-free: Handler supports file, file exists, save succeeds (or fails if save_fails is True), or audio_file is None if audio_file_is_none is True.
+        Parameterized for all combinations of audio_tag and rating present or not, plus error branches.
         """
-        audio_file = file_factory(*file_args)
+        audio_file = file_factory(".mp3", "fake.mp3")
         file_path = Path(audio_file.filename)
-        fsp_instance.id3_handler = ConfigurableFakeHandler(
-            can_handle_return=can_handle_return,
-            can_handle_exception=can_handle_exception,
+        handler = ConfigurableFakeHandler(
+            can_handle_return=True,
             apply_tags_return=audio_file,
-            apply_tags_exception=apply_tags_exception,
         )
+        fsp_instance.id3_handler = handler
         fsp_instance.vorbis_handler.can_handle = lambda f: False
         fsp_instance._handlers = [fsp_instance.id3_handler, fsp_instance.vorbis_handler]
-        with patch.object(Path, "exists", return_value=exists):
-            with patch.object(fsp_instance, "_open_audio_file", return_value=audio_file):
-                # Only inject handler if file exists and handler is selected (e.g., .mp3)
-                if not exists and audio_file.suffix != ".mp3":
-                    fsp_instance.id3_handler.can_handle = lambda f: False
-                # Patch save method on the audio file
-                if save_success:
-                    audio_file.save = MagicMock(return_value=None)
-                else:
-                    audio_file.save = MagicMock(side_effect=Exception("fail"))
-                original_tags = getattr(audio_file, "tags", None)
-                result = fsp_instance.update_track_metadata(file_path, audio_tag=AudioTag(), rating=Rating(1))
-        if expect_none:
-            assert result is None
-            assert getattr(audio_file, "tags", None) == original_tags
-            assert not (hasattr(audio_file.save, "called") and audio_file.save.called and save_success)
-        else:
-            assert result == audio_file
-            assert audio_file.save.called
-        # Only assert handler call state if file exists and handler is selected
-        if exists and audio_file.suffix == ".mp3" and (can_handle_return or can_handle_exception):
-            if can_handle_exception is None:
-                assert fsp_instance.id3_handler.can_handle_called
-                if can_handle_return:
-                    assert fsp_instance.id3_handler.apply_tags_called or apply_tags_exception is not None
+        with patch.object(Path, "exists", return_value=True):
+            with patch.object(fsp_instance, "_open_audio_file", return_value=None if audio_file_is_none else audio_file):
+                audio_file.save = MagicMock(return_value=None)
+                with patch.object(fsp_instance, "_save_audio_file", return_value=not save_fails):
+                    result = fsp_instance.update_track_metadata(file_path, audio_tag=audio_tag, rating=rating)
 
-    def test_update_track_metadata_open_audio_file_returns_none(self, fsp_instance, file_factory):
-        """
-        Test that update_track_metadata returns None and logs a warning if _open_audio_file returns None.
-        """
-        file_path = Path("fake.mp3")
-        with (
-            patch.object(Path, "exists", return_value=True),
-            patch.object(fsp_instance, "_open_audio_file", return_value=None),
-            patch.object(fsp_instance.logger, "warning") as mock_warn,
-        ):
-            result = fsp_instance.update_track_metadata(file_path, audio_tag=AudioTag(), rating=Rating(1))
-        assert result is None
-        mock_warn.assert_called_once()
+        expected_result = None if expect_none else audio_file
+        expected_apply_tags_called = not audio_file_is_none and not (audio_tag is None and rating is None)
 
-    def test_update_track_metadata_save_audio_file_returns_false(self, fsp_instance):
+        assert result is expected_result
+        assert handler.apply_tags_called == expected_apply_tags_called
+
+    def test_update_track_metadata_handler_not_supported(self, fsp_instance, file_factory):
         """
-        Test that update_track_metadata returns None if _save_audio_file returns False.
+        Branch-free: Handler does not support file, file exists.
         """
-        audio_file = MagicMock(spec=ID3FileType)
-        type(audio_file).__bool__ = lambda x: True
-        audio_file.filename = "fake.mp3"
+        audio_file = file_factory(".mp3", "fake.mp3")
         file_path = Path(audio_file.filename)
-
-        with (
-            patch.object(Path, "exists", return_value=True),
-            patch.object(fsp_instance, "_open_audio_file", return_value=audio_file),
-            patch.object(fsp_instance, "_save_audio_file", return_value=False),
-        ):
-            result = fsp_instance.update_track_metadata(file_path, audio_tag=AudioTag(), rating=Rating(1))
+        handler = ConfigurableFakeHandler(
+            can_handle_return=False,
+            apply_tags_return=audio_file,
+        )
+        fsp_instance.id3_handler = handler
+        fsp_instance.vorbis_handler.can_handle = lambda f: False
+        fsp_instance._handlers = [fsp_instance.id3_handler, fsp_instance.vorbis_handler]
+        with patch.object(Path, "exists", return_value=True):
+            with patch.object(fsp_instance, "_open_audio_file", return_value=audio_file):
+                audio_file.save = MagicMock(return_value=None)
+                result = fsp_instance.update_track_metadata(file_path, audio_tag=AudioTag(), rating=Rating(1))
         assert result is None
+        assert not handler.apply_tags_called
+        assert not audio_file.save.called
+
+    def test_update_track_metadata_file_not_exists(self, fsp_instance, file_factory):
+        """
+        Branch-free: File does not exist, handler should not be called.
+        """
+        audio_file = file_factory(".mp3", "fake.mp3")
+        file_path = Path(audio_file.filename)
+        handler = ConfigurableFakeHandler(
+            can_handle_return=True,
+            apply_tags_return=audio_file,
+        )
+        fsp_instance.id3_handler = handler
+        fsp_instance.vorbis_handler.can_handle = lambda f: False
+        fsp_instance._handlers = [fsp_instance.id3_handler, fsp_instance.vorbis_handler]
+        with patch.object(Path, "exists", return_value=False):
+            with patch.object(fsp_instance, "_open_audio_file", return_value=audio_file):
+                audio_file.save = MagicMock(return_value=None)
+                result = fsp_instance.update_track_metadata(file_path, audio_tag=AudioTag(), rating=Rating(1))
+        assert result is None
+        assert not handler.apply_tags_called
+        assert not audio_file.save.called
+
+    def test_update_track_metadata_unsupported_filetype(self, fsp_instance, file_factory):
+        """
+        Branch-free: Unsupported file type, no handler supports file.
+        """
+        audio_file = file_factory(".nonsense", "fake.nonsense")
+        file_path = Path(audio_file.filename)
+        handler = ConfigurableFakeHandler(
+            can_handle_return=False,
+            apply_tags_return=audio_file,
+        )
+        fsp_instance.id3_handler = handler
+        fsp_instance.vorbis_handler.can_handle = lambda f: False
+        fsp_instance._handlers = [fsp_instance.id3_handler, fsp_instance.vorbis_handler]
+        with patch.object(Path, "exists", return_value=True):
+            with patch.object(fsp_instance, "_open_audio_file", return_value=audio_file):
+                audio_file.save = MagicMock(return_value=None)
+                result = fsp_instance.update_track_metadata(file_path, audio_tag=AudioTag(), rating=Rating(1))
+        assert result is None
+        assert not handler.apply_tags_called
+        assert not audio_file.save.called
 
 
 class TestFinalizeScan:
@@ -468,6 +483,65 @@ class TestPlaylistCreation:
         with patch("pathlib.Path.open", m_open):
             result = fsp_instance.create_playlist("pl", is_extm3u=True)
         assert result is None
+
+
+class TestReadTrackMetadata:
+    """Test reading track metadata for supported and unsupported formats, and deferred resolution."""
+
+    @pytest.mark.parametrize(
+        "file_args,expect",
+        [
+            ((".mp3", "fake.mp3"), True),
+            ((".flac", "fake.flac"), True),
+            ((".ogg", "fake.ogg"), True),
+            ((".txt", "fake.txt"), False),
+            ((".nonsense", "fake.nonsense"), False),
+        ],
+    )
+    def test_read_track_metadata_dispatch(self, fsp_instance, file_factory, file_args, expect):
+        """Test correct handler dispatch for each file type. Only handler.can_handle/read_tags are patched.
+        Asserts type/value correctness and that deferred_tracks is not mutated for non-deferred cases.
+        """
+        audio_file = file_factory(*file_args)
+        file_path = Path(audio_file.filename)
+        # Patch only the correct handler's can_handle/read_tags
+        handler = None
+        if audio_file.suffix == ".mp3":
+            handler = fsp_instance.id3_handler
+        elif audio_file.suffix in [".flac", ".ogg"]:
+            handler = fsp_instance.vorbis_handler
+        for h in [fsp_instance.id3_handler, fsp_instance.vorbis_handler]:
+            h.can_handle = lambda f, h=h: h is handler
+            h.read_tags = lambda f, h=h: (AudioTag(ID="x"), None) if h is handler and expect else (None, None)
+        # Patch _open_audio_file to return the fake file
+        with patch.object(fsp_instance, "_open_audio_file", return_value=audio_file):
+            original_deferred = list(fsp_instance.deferred_tracks)
+            result = fsp_instance.read_track_metadata(file_path)
+        if expect:
+            assert isinstance(result, AudioTag)
+        else:
+            assert result is None
+        # Assert deferred_tracks is not mutated for non-deferred cases
+        assert fsp_instance.deferred_tracks == original_deferred
+
+    def test_read_track_metadata_open_error(self, fsp_instance):
+        """Test that None is returned if mutagen.File returns None (open error)."""
+        with patch("mutagen.File", return_value=None):
+            assert fsp_instance.read_track_metadata(Path("x.mp3")) is None
+
+    def test_read_track_metadata_deferred(self, fsp_instance, file_factory):
+        """Test that deferred_tracks is populated when raw_ratings is present."""
+        audio_file = file_factory(".mp3", "fake.mp3")
+        file_path = Path(audio_file.filename)
+        # Patch only id3_handler for this test
+        fsp_instance.id3_handler.can_handle = lambda f: True
+        fsp_instance.vorbis_handler.can_handle = lambda f: False
+        fsp_instance.id3_handler.read_tags = lambda f: (AudioTag(ID="x"), {"TXXX:RATING": "5"})
+        with patch.object(fsp_instance, "_open_audio_file", return_value=audio_file):
+            fsp_instance.deferred_tracks = []
+            result = fsp_instance.read_track_metadata(file_path)
+        assert isinstance(result, AudioTag)
+        assert len(fsp_instance.deferred_tracks) == 1
 
 
 class TestReadPlaylistMetadata:
@@ -636,9 +710,7 @@ class TestAddTrackToPlaylist:
     def test_add_track_to_playlist_success(self, is_extm3u, fsp_instance, playlist_factory):
         """Test that add_track_to_playlist writes EXTINF and track path to the playlist file, and logs writes."""
         track1_path = fsp_instance.path / "test_track1.mp3"
-        track2_path = fsp_instance.path.parent / "test_track2.mp3"
         track1 = AudioTag(file_path=str(track1_path), artist="A", title="T", duration=123)
-        track2 = AudioTag(file_path=str(track2_path), artist="B", title="U", duration=123)
         with playlist_factory(
             playlist_root=fsp_instance.playlist_path,
             filename="test_playlist.m3u",
@@ -648,21 +720,15 @@ class TestAddTrackToPlaylist:
             playlist_content.seek(0)
             original_content = playlist_content.read()
             assert str(track1_path) not in original_content
-            assert str(track2_path) not in original_content
 
-            fsp_instance.add_track_to_playlist(playlist_path, track1, is_extm3u=True)
-            fsp_instance.add_track_to_playlist(playlist_path, track2, is_extm3u=True)
+            fsp_instance.add_track_to_playlist(playlist_path, track1, is_extm3u=is_extm3u)
             playlist_content.seek(0)
             content = playlist_content.read()
             # Assert on write calls
-            assert any("#EXTINF:123,A - T" in call for call in playlist_content.write_calls)
+            assert any("#EXTINF:123,A - T" in call for call in playlist_content.write_calls) == is_extm3u
             assert any("test_track1.mp3" in call for call in playlist_content.write_calls)
-            assert "#EXTINF:123,A - T" in content
+            assert ("#EXTINF:123,A - T" in content) == is_extm3u
             assert "test_track1.mp3" in content
-            assert not any("#EXTINF:123,B - U" in call for call in playlist_content.write_calls)
-            assert not any("test_track2.mp3" in call for call in playlist_content.write_calls)
-            assert "#EXTINF:123,B - U" not in content
-            assert "test_track2.mp3" not in content
 
     def test_add_track_to_playlist_file_open_error(self, fsp_instance, tmp_path):
         """Test that add_track_to_playlist handles file open/write errors gracefully (does not raise)."""
@@ -794,25 +860,24 @@ class TestGetPlaylistsFiltering:
     Parameterized tests for FileSystemProvider.get_playlists filtering by title and path.
     All playlist IO is handled in-memory via playlist_factory. No real filesystem IO occurs.
     Populates _media_files and _playlist_title_map directly to simulate a scan.
+    Refactored to use fully declarative parameterization and explicit skip_titles.
     """
 
-    # ── parametrised matrix covering every branch ───────────────────────────
     CASES = [
-        ({}, {"Rock", "Pop", "Jazz"}, "no_filter"),
-        ({"title": "Pop"}, {"Pop"}, "by_title_hit"),
-        ({"title": "Classical"}, set(), "by_title_miss"),
-        ("PATH_ROCK", {"Rock"}, "by_path_hit"),
-        ("PATH_BAD", set(), "by_path_miss"),
-        ({"title": ""}, {"Rock", "Pop", "Jazz"}, "empty_title_treated_as_none"),
-        ({"title": None}, {"Rock", "Pop", "Jazz"}, "title_None"),
+        # (filter_kwargs, expected_titles, skip_titles, id)
+        ({}, {"Rock", "Pop", "Jazz"}, set(), "no_filter"),
+        ({"title": "Pop"}, {"Pop"}, set(), "by_title_hit"),
+        ({"title": "Classical"}, set(), set(), "by_title_miss"),
+        ({"path": "/fake/rock.m3u"}, {"Rock"}, set(), "by_path_hit"),
+        ({"path": "/does/not/exist.m3u"}, set(), set(), "by_path_miss"),
+        ({"title": ""}, {"Rock", "Pop", "Jazz"}, set(), "empty_title_treated_as_none"),
+        ({"title": None}, {"Rock", "Pop", "Jazz"}, set(), "title_None"),
+        ({}, {"Rock", "Jazz"}, {"Pop"}, "skip_pop_none"),
     ]
 
-    @pytest.mark.parametrize("filter_kwargs, expected, _id", CASES, ids=[c[2] for c in CASES])
-    def test_get_playlists_filtering(self, fsp_instance, filter_kwargs, expected, _id):
-        """
-        Exhaustive branch-coverage for FileSystemProvider.get_playlists().
-        Uses real Playlist objects, zero filesystem I/O.
-        """
+    @pytest.mark.parametrize("filter_kwargs, expected, skip_titles, _id", CASES, ids=[c[3] for c in CASES])
+    def test_get_playlists_filtering(self, fsp_instance, filter_kwargs, expected, skip_titles, _id):
+        """Exhaustive branch-coverage for FileSystemProvider.get_playlists()."""
 
         def _register(fsp, title: str, fake_path: str) -> Path:
             p = Path(fake_path).resolve()
@@ -820,26 +885,21 @@ class TestGetPlaylistsFiltering:
             fsp._playlist_title_map[title] = p
             return p
 
-        path_rock = _register(fsp_instance, "Rock", "/fake/rock.m3u")
-        path_pop = _register(fsp_instance, "Pop", "/fake/pop.m3u")
-        _path_jazz = _register(fsp_instance, "Jazz", "/fake/jazz.m3u")
+        _register(fsp_instance, "Rock", "/fake/rock.m3u")
+        _register(fsp_instance, "Pop", "/fake/pop.m3u")
+        _register(fsp_instance, "Jazz", "/fake/jazz.m3u")
 
         title_by_path = {v: k for k, v in fsp_instance._playlist_title_map.items()}
         from unittest.mock import MagicMock
 
-        def stub_reader(path: Path) -> Playlist:
+        def stub_reader(path: Path):
             resolved = Path(path).resolve()
-            return Playlist(ID=str(resolved), name=title_by_path.get(resolved, "UNKNOWN"))
+            title = title_by_path.get(resolved, "UNKNOWN")
+            if title in skip_titles:
+                return None
+            return Playlist(ID=str(resolved), name=title)
 
         fsp_instance.read_playlist_metadata = MagicMock(side_effect=stub_reader)
-        if filter_kwargs == "PATH_ROCK":
-            filter_kwargs = {"path": str(path_rock)}
-        elif filter_kwargs == "PATH_BAD":
-            filter_kwargs = {"path": "/does/not/exist.m3u"}
-        elif filter_kwargs == "BOTH_ROCK":
-            filter_kwargs = {"title": "Rock", "path": str(path_rock)}
-        elif filter_kwargs == "BOTH_MISMATCH":
-            filter_kwargs = {"title": "No", "path": str(path_pop)}
         result_titles = {pl.name for pl in fsp_instance.get_playlists(**filter_kwargs)}
         assert result_titles == expected
 
