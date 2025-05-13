@@ -149,6 +149,36 @@ class TestResolveRating:
         assert isinstance(resolved, Rating)
         assert round(resolved.to_float(RatingScale.ZERO_TO_FIVE), 1) == 4.5
 
+    @pytest.mark.parametrize(
+        "aggressive,raw,expected,desc",
+        [
+            (False, {VorbisField.FMPS_RATING.value: "invalid", VorbisField.RATING.value: "invalid"}, Rating.unrated(), "all fail normalization"),
+            (False, {VorbisField.FMPS_RATING.value: "0.8", VorbisField.RATING.value: "invalid"}, None, "some succeed, some fail (ambiguous)"),
+            (False, {VorbisField.FMPS_RATING.value: "0.8", VorbisField.RATING.value: "4.0"}, Rating(0.8), "all succeed, all equal"),
+            (False, {VorbisField.FMPS_RATING.value: "0.7", VorbisField.RATING.value: "4.5"}, None, "all succeed, conflict (strategy applies)"),
+        ],
+    )
+    def test_resolve_rating_ambiguous(self, handler, aggressive, raw, expected, desc):
+        """Covers all resolve_rating branches for VorbisHandler."""
+        handler.aggressive_inference = aggressive
+        tag = AudioTag(ID="z", title="T", artist="A", album="B", track=1)
+        if desc == "all succeed, conflict (strategy applies)":
+            # Should resolve by strategy (default HIGHEST)
+            result = handler.resolve_rating(raw, tag)
+            assert isinstance(result, Rating)
+            # Should be the highest normalized value
+            vals = [Rating.try_create(v) for v in raw.values()]
+            max_val = max(r.to_float(RatingScale.NORMALIZED) for r in vals if r)
+            assert abs(result.to_float(RatingScale.NORMALIZED) - max_val) < 1e-6
+        elif expected is None:
+            # Ambiguous branch
+            result = handler.resolve_rating(raw, tag)
+            assert result is None
+        else:
+            result = handler.resolve_rating(raw, tag)
+            assert isinstance(result, Rating)
+            assert result == expected
+
 
 class TestFinalizeRatingStrategy:
     def test_finalize_sets_inferred_scales(self, handler):

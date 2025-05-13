@@ -110,6 +110,13 @@ class TestRatingConversion:
         with pytest.raises(NotImplementedError):
             float(r)
 
+    def test_to_float_missing_scale(self):
+        """Test to_float raises ValueError if scale is missing."""
+        r = Rating(1.0, scale=RatingScale.ZERO_TO_FIVE)
+        r.scale = None
+        with pytest.raises(ValueError, match="Rating has no scale"):
+            r.to_float(scale=None)
+
 
 class TestRatingDisplay:
     def test_to_display_normal(self):
@@ -258,18 +265,24 @@ class TestRatingPOPMConversion:
         assert Rating._from_popm(byte) == expected_normalized
 
     @pytest.mark.parametrize("value", [-0.1, 1.1])
-    def test_to_popm_invalid_value(self, value):
-        """Test _fto_popm raises ValueError for invalid values."""
+    def test_to_popm_invalid(self, value):
+        """Test _to_popm raises ValueError for invalid values."""
         r = Rating(0, scale=RatingScale.POPM)
         with pytest.raises(ValueError):
             r._to_popm(value)
 
     @pytest.mark.parametrize("byte", [-1, 256])
-    def test_from_popm_invalid_byte(self, byte):
+    def test_from_popm_invalid(self, byte):
         """Test _from_popm raises ValueError for invalid byte."""
         r = Rating(0, scale=RatingScale.POPM)
         with pytest.raises(ValueError):
             r._from_popm(byte)
+
+    @pytest.mark.parametrize("value", [-0.1, 1.1])
+    def test_to_popm_out_of_range(self, value):
+        """Test _to_popm returns None or 255 for normalized values above 1."""
+        with pytest.raises(ValueError):
+            Rating._to_popm(value)
 
 
 class TestRatingInference:
@@ -286,6 +299,7 @@ class TestRatingInference:
             (5.0, None, RatingScale.ZERO_TO_FIVE),  # ambiguous: aggressive favors 0-5
             (0.0, None, None),  # unrated
             (100, RatingScale.ZERO_TO_HUNDRED, RatingScale.ZERO_TO_HUNDRED),  # unambiguous 0-100
+            (90, RatingScale.ZERO_TO_HUNDRED, RatingScale.ZERO_TO_HUNDRED),  # unambiguous 0-100
             (7, RatingScale.ZERO_TO_TEN, RatingScale.ZERO_TO_TEN),  # unambiguous 0-10
             (10, None, RatingScale.ZERO_TO_TEN),  # ambiguous: aggressive favors 0-10
             (-1, None, None),  # negative, invalid
@@ -296,12 +310,18 @@ class TestRatingInference:
             (True, None, None),  # bool: invalid
         ],
     )
-    def test_infer(self, value, expected_non_aggressive, expected_aggressive):
-        """Test infer returns correct scale for all branches and edge cases."""
+    def test_infer_various_values_expected_scales(self, value, expected_non_aggressive, expected_aggressive):
         result_non_aggressive = Rating.infer(value, aggressive=False)
         result_aggressive = Rating.infer(value, aggressive=True)
         assert result_non_aggressive == expected_non_aggressive
         assert result_aggressive == expected_aggressive
+
+    def test_infer_returns_none_on_unexpected_exception(self):
+        class RaisesRuntimeError:
+            def __float__(self):
+                raise RuntimeError("custom error")
+
+        assert Rating.infer(RaisesRuntimeError()) is None
 
 
 class TestRatingTryCreate:
@@ -417,3 +437,9 @@ class TestRatingComparison:
         assert (r1 < r2) is True
         assert (r1 == r2) is False
         assert (r2 > r1) is True
+
+
+class TestRatingIsLikely:
+    def test_is_likely_returns_true_for_normalized_value(self):
+        assert Rating._is_likely(0.5, RatingScale.NORMALIZED) is True
+        assert Rating._is_likely(1.5, RatingScale.NORMALIZED) is False

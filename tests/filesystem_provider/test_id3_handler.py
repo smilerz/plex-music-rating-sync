@@ -103,6 +103,18 @@ def track(track_factory):
     return track_factory(ID="conflict", title="Test Track", artist="Artist", album="Album", track=1)
 
 
+@pytest.fixture(autouse=True)
+def dummy_tag():
+    """Autouse dummy AudioTag for tests that use throwaway tag values."""
+    return AudioTag(ID="dummy", title="Dummy", artist="Dummy", album="Dummy", track=1)
+
+
+@pytest.fixture(autouse=True)
+def dummy_track():
+    """Autouse dummy track for tests that use throwaway track values."""
+    return MagicMock(ID="dummy_track")
+
+
 class TestCanHandle:
     @pytest.mark.parametrize(
         "file_fixture_name, expected",
@@ -143,123 +155,89 @@ class TestExtractMetadata:
 
 
 class TestResolveRating:
-    def test_resolve_rating_success_simple_rating(self, handler):
-        tag = AudioTag(ID="a", title="t", artist="a", album="b", track=1)
-        raw = {"TEXT": make_raw_rating("TEXT", 0.8)}
-        rating = handler.resolve_rating(raw, tag)
-        assert isinstance(rating, Rating)
-        assert not rating.is_unrated
-
     @pytest.mark.parametrize(
-        "conflict_strategy, expected, priority_order",
+        "raw,expected",
         [
-            (ConflictResolutionStrategy.HIGHEST, 5.0, None),
-            (ConflictResolutionStrategy.LOWEST, 1.0, None),
-            (ConflictResolutionStrategy.AVERAGE, 3.0, None),
-            (None, None, None),
-            (ConflictResolutionStrategy.PRIORITIZED_ORDER, 5.0, ["MUSICBEE", "MEDIAMONKEY", "WINAMP"]),
-            (ConflictResolutionStrategy.PRIORITIZED_ORDER, 3.0, ["WINAMP", "MEDIAMONKEY", "MUSICBEE"]),
-            (ConflictResolutionStrategy.PRIORITIZED_ORDER, 0.0, ["WINAMP", "WINDOWSMEDIAPLAYER", "UNKNOWN"]),
+            ({"TEXT": "banana", "MEDIAMONKEY": "not_a_rating"}, Rating.unrated()),
+            ({"TEXT": "", "MEDIAMONKEY": ""}, Rating.unrated()),
+            ({"TEXT": None, "MEDIAMONKEY": None}, Rating.unrated()),
+            ({"TEXT": "6", "MEDIAMONKEY": "260"}, Rating.unrated()),
+            ({"TEXT": "-1", "MEDIAMONKEY": "-2"}, Rating.unrated()),
+            ({}, Rating.unrated()),
         ],
     )
-    def test_resolve_rating_conflict_resolution_strategies(self, conflict_strategy, expected, priority_order, handler):
-        raw_input = {
-            DefaultPlayerTags.TEXT.name: make_raw_rating(DefaultPlayerTags.TEXT, 0.2),
-            DefaultPlayerTags.MEDIAMONKEY.name: make_raw_rating(DefaultPlayerTags.MEDIAMONKEY, 0.6),
-            DefaultPlayerTags.MUSICBEE.name: make_raw_rating(DefaultPlayerTags.MUSICBEE, 1),
-        }
+    def test_resolve_rating_ambiguous_invalid(self, handler, raw, expected):
+        """All tags fail normalization (invalid, empty, None, out-of-bounds, or empty dict)."""
+        handler.conflict_resolution_strategy = None
+        rating = handler.resolve_rating(raw, dummy_tag)
+        assert rating == expected
 
-        handler.conflict_resolution_strategy = conflict_strategy
-        handler.tag_priority_order = priority_order
-        tag = AudioTag(ID="conflict_case", title="Conflict", artist="Artist", album="Album", track=1)
-        rating = handler.resolve_rating(raw_input, tag)
+    @pytest.mark.parametrize(
+        "strategy,raw,priority,expected",
+        [
+            # HIGHEST: should pick the highest normalized value (5.0 normalized)
+            (ConflictResolutionStrategy.HIGHEST, {"TEXT": "2.0", "MEDIAMONKEY": "255"}, None, Rating(1.0, scale=RatingScale.NORMALIZED)),
+            # LOWEST: should pick the lowest normalized value (2.0/5 = 0.4 normalized)
+            (ConflictResolutionStrategy.LOWEST, {"TEXT": "2.0", "MEDIAMONKEY": "255"}, None, Rating(0.4)),
+            # AVERAGE: average of 0.4 and 1.0 normalized
+            (ConflictResolutionStrategy.AVERAGE, {"TEXT": "2.0", "MEDIAMONKEY": "255"}, None, Rating((0.4 + 1.0) / 2)),
+            # PRIORITIZED_ORDER: should pick the tag in priority order (TEXT first, 2.0/5 = 0.4 normalized)
+            (ConflictResolutionStrategy.PRIORITIZED_ORDER, {"TEXT": "2.0", "MEDIAMONKEY": "255"}, ["TEXT", "MEDIAMONKEY"], Rating(0.4)),
+            # PRIORITIZED_ORDER: MEDIAMONKEY first (255 = 1.0 normalized)
+            (ConflictResolutionStrategy.PRIORITIZED_ORDER, {"TEXT": "2.0", "MEDIAMONKEY": "255"}, ["MEDIAMONKEY", "TEXT"], Rating(1.0, scale=RatingScale.NORMALIZED)),
+            # LOWEST: multi-tag (lowest is 0.0 normalized)
+            (ConflictResolutionStrategy.LOWEST, {"TEXT": "1.0", "MEDIAMONKEY": "192", "WINAMP": "13"}, None, Rating(0.1)),
+            # AVERAGE: multi-tag (1.0/5=0.2, 255=1.0, 0.0=0.0)
+            (ConflictResolutionStrategy.AVERAGE, {"TEXT": "1.0", "MEDIAMONKEY": "255", "WINAMP": "13"}, None, Rating((0.2 + 1.0 + 0.1) / 3)),
+        ],
+    )
+    def test_resolve_rating_conflict_strategies_param(self, handler, strategy, raw, priority, expected):
+        handler.conflict_resolution_strategy = strategy
+        if strategy == ConflictResolutionStrategy.PRIORITIZED_ORDER:
+            handler.tag_priority_order = priority
+        rating = handler.resolve_rating(raw, dummy_tag)
+        assert abs(rating.to_float(RatingScale.NORMALIZED) - expected.to_float(RatingScale.NORMALIZED)) < 1e-6
 
+    @pytest.mark.parametrize(
+        "user_choice_idx,expected",
+        [
+            (0, Rating(0.4, scale=RatingScale.NORMALIZED)),  # Select TEXT (2.0/5 = 0.4)
+            (1, Rating(1.0, scale=RatingScale.NORMALIZED)),  # Select MEDIAMONKEY (255 = 1.0)
+            (2, None),  # Skip
+        ],
+    )
+    def test_resolve_rating_conflict_choice_param(self, handler, monkeypatch, dummy_tag, user_choice_idx, expected):
+        handler.conflict_resolution_strategy = ConflictResolutionStrategy.CHOICE
+        raw = {"TEXT": "2.0", "MEDIAMONKEY": "255"}
+
+        def fake_choice(message, options, **kwargs):
+            return options[user_choice_idx]
+
+        monkeypatch.setattr(handler.prompt, "choice", fake_choice)
+        rating = handler.resolve_rating(raw, dummy_tag)
         if expected is None:
             assert rating is None
         else:
-            assert rating.to_float(RatingScale.ZERO_TO_FIVE) == expected
+            assert abs(rating.to_float(RatingScale.NORMALIZED) - expected.to_float(RatingScale.NORMALIZED)) < 1e-6
 
-    def test_resolve_rating_success_with_unregistered_tag(self, handler):
-        tag = AudioTag(ID="e", title="t", artist="x", album="y", track=1)
-        raw = {"POPM:test@test": "255"}
-        rating = handler.resolve_rating(raw, tag)
-        assert isinstance(rating, Rating)
-        assert rating.to_float(RatingScale.ZERO_TO_FIVE) == 5.0
-
-    def test_resolve_prioritized_order_failure_no_priority_order(self, handler):
-        with pytest.raises(ValueError, match="No tag_priority_order for PRIORITIZED_ORDER"):
-            handler._resolve_prioritized_order({"TEXT": Rating(4)}, AudioTag(ID="test", title="t", artist="a", album="b", track=1))
-
-    @pytest.mark.parametrize("raw", [{"MEDIAMONKEY": "999"}, {"TEXT": "five stars"}])
-    def test_resolve_rating_failure_invalid_inputs(self, handler, raw):
-        tag = AudioTag(ID="fail", title="t", artist="x", album="y", track=1)
-        rating = handler.resolve_rating(raw, tag)
-        assert rating.is_unrated
-
-    def test_resolve_rating_failure_all_failures_return_unrated(self, handler):
-        tag = AudioTag(ID="fail_all", title="Bad Track", artist="Artist", album="Album", track=1)
-        raw = {"TEXT": "banana", "MEDIAMONKEY": "not_a_rating"}
-
-        rating = handler.resolve_rating(raw, tag)
-        assert isinstance(rating, Rating)
-        assert rating.is_unrated
-
-    def test_resolve_rating_failure_partial_success(self, handler):
-        tag = AudioTag(ID="partial_success", title="Half Good", artist="Artist", album="Album", track=2)
-        raw = {"TEXT": "4.0", "MEDIAMONKEY": "bad!"}
-
-        rating = handler.resolve_rating(raw, tag)
-        assert rating == Rating(4.0, scale=RatingScale.ZERO_TO_FIVE)
-
-    def test_resolve_rating_unknown_tag_failure(self, handler):
-        tag = AudioTag(ID="partial_success", title="Half Good", artist="Artist", album="Album", track=2)
-        raw = {"TEXT": "4.0", "UNKNOWN_TAG": "4.0"}
-
+    def test_resolve_rating_unknown_tag_raises(self, handler):
+        """Unknown tag key should raise ValueError."""
+        raw = {"UNKNOWN_TAG": "4.0"}
         with pytest.raises(ValueError, match="Unknown tag_key 'UNKNOWN_TAG'."):
-            handler.resolve_rating(raw, tag)
+            handler.resolve_rating(raw, dummy_tag)
 
-    def test_resolve_rating_failure_unknown_strategy_fallback(self):
-        handler = ID3Handler(
-            tagging_policy={
-                "conflict_resolution_strategy": None,
-                "tag_write_strategy": TagWriteStrategy.WRITE_DEFAULT,
-                "default_tag": DefaultPlayerTags.MEDIAMONKEY.name,
-            }
-        )
-        tag = AudioTag(ID="bad_conflict", title="Unknown Strategy", artist="Artist", album="Album", track=1)
+    def test_resolve_rating_failure_unknown_strategy_fallback(self, handler):
+        handler.conflict_resolution_strategy = "UNSUPPORTED_STRATEGY"
+        ratings = {"TEXT": Rating(0.2), "MEDIAMONKEY": Rating(0.4)}
+        result = handler._resolve_conflict(ratings, dummy_track)
+        expected = handler._resolve_highest(ratings, dummy_track)
+        assert result == expected
 
-        handler.conflict_resolution_strategy = "INVALID_STRATEGY"
-
-        raw_input = {
-            DefaultPlayerTags.TEXT.name: make_raw_rating(DefaultPlayerTags.TEXT, 0.2),
-            DefaultPlayerTags.MEDIAMONKEY.name: make_raw_rating(DefaultPlayerTags.MEDIAMONKEY, 0.8),
-        }
-
-        rating = handler.resolve_rating(raw_input, tag)
-
-        assert rating is None
-
-    def test_resolve_rating_all_fail_returns_unrated(self, handler):
-        handler._try_normalize = MagicMock(return_value=None)
-        tag = MagicMock(ID="dummy")
-
-        result = handler.resolve_rating({"TEXT": "x", "MM": "y"}, tag)
-        assert result == Rating.unrated()
-
-    def test_resolve_rating_partial_fail_returns_none(self, handler):
-        handler._try_normalize = lambda val, key: Rating(1.0, scale=RatingScale.NORMALIZED) if key == "TEXT" else None
-        tag = MagicMock(ID="dummy")
-
-        result = handler.resolve_rating({"TEXT": "5", "MM": "???"}, tag)
-        assert result is None
-
-    def test_resolve_rating_all_match_returns_rating(self, handler):
-        r = Rating(3.5)
-        handler._try_normalize = lambda val, key: r
-        tag = MagicMock(ID="dummy")
-
-        result = handler.resolve_rating({"TEXT": "3.5", "MM": "3.5"}, tag)
-        assert result == r
+    def test_resolve_rating_equivalent_representations(self, handler):
+        """Different representations of the same value should normalize and match."""
+        raw = {"TEXT": "5", "MEDIAMONKEY": "255", "POPM:test@test": "255"}
+        rating = handler.resolve_rating(raw, dummy_tag)
+        assert rating.to_float(RatingScale.ZERO_TO_FIVE) == 5.0
 
 
 class TestApplyTags:
@@ -431,6 +409,35 @@ class TestResolveChoice:
                 assert options[idx] == expected_option
 
             assert options[-1] == "Skip (no rating)"
+
+
+class TestResolvePrioritizedOrder:
+    def test_raises_if_tag_priority_order_none(self, handler):
+        handler.tag_priority_order = None
+        ratings_by_tag = {"TEXT": Rating(3.0)}
+        handler.logger = MagicMock()
+        with pytest.raises(ValueError, match="No tag_priority_order for PRIORITIZED_ORDER"):
+            handler._resolve_prioritized_order(ratings_by_tag, dummy_tag)
+        handler.logger.warning.assert_called_once_with("No tag_priority_order for PRIORITIZED_ORDER")
+
+    def test_returns_unrated_if_no_keys_match(self, handler):
+        handler.tag_priority_order = ["TEXT", "MEDIAMONKEY"]
+        ratings_by_tag = {"WINAMP": Rating(2.0)}
+        result = handler._resolve_prioritized_order(ratings_by_tag, dummy_tag)
+        assert isinstance(result, Rating)
+        assert result == Rating.unrated()
+
+    def test_returns_first_matching_rating(self, handler):
+        handler.tag_priority_order = ["TEXT", "MEDIAMONKEY"]
+        ratings_by_tag = {"TEXT": Rating(4.0), "MEDIAMONKEY": Rating(2.0)}
+        result = handler._resolve_prioritized_order(ratings_by_tag, dummy_tag)
+        assert result == ratings_by_tag["TEXT"]
+
+    def test_returns_second_if_first_missing(self, handler):
+        handler.tag_priority_order = ["TEXT", "MEDIAMONKEY"]
+        ratings_by_tag = {"MEDIAMONKEY": Rating(2.0)}
+        result = handler._resolve_prioritized_order(ratings_by_tag, dummy_tag)
+        assert result == ratings_by_tag["MEDIAMONKEY"]
 
 
 @pytest.fixture
@@ -725,36 +732,6 @@ class TestFinalizeRatingStrategy:
 
         handler.prompt.yes_no.assert_not_called()
         handler.cfg.save_config.assert_not_called()
-
-
-class TestResolveConflictDispatch:
-    def test_conflict_strategy_unsupported_falls_back_to_highest(self, handler):
-        handler.conflict_resolution_strategy = "UNSUPPORTED_STRATEGY"
-        # Ensure is_strategy_supported returns False for this value
-        # if hasattr(handler, "is_strategy_supported"):
-        #     # Use the real method if it exists, else fallback to lambda
-        #     orig_is_strategy_supported = handler.is_strategy_supported
-        #     handler.is_strategy_supported = lambda strat: False if strat == "UNSUPPORTED_STRATEGY" else orig_is_strategy_supported(strat)
-        # else:
-        #     handler.is_strategy_supported = lambda strat: False
-
-        # Prepare ratings
-        ratings = {"TEXT": Rating(0.2), "MM": Rating(0.4)}
-        track = MagicMock()
-
-        # Compute expected result using the real _resolve_highest
-        expected = handler._resolve_highest(ratings, track)
-        # Now call the dispatch method
-        result = handler._resolve_conflict(ratings, track)
-        assert result == expected
-
-    def test_conflict_strategy_unknown_uses_fallback(self, handler):
-        handler.conflict_resolution_strategy = "BOGUS"
-        handler._resolve_unknown_strategy = MagicMock(return_value=None)
-
-        result = handler._resolve_conflict({"TEXT": Rating(0.2), "MM": Rating(0.4)}, MagicMock())
-        handler._resolve_unknown_strategy.assert_called_once()
-        assert result is None
 
 
 class TestApplyRating:

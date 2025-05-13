@@ -210,7 +210,7 @@ class AudioTagHandler(abc.ABC):
             ConflictResolutionStrategy.HIGHEST: self._resolve_highest,
             ConflictResolutionStrategy.LOWEST: self._resolve_lowest,
             ConflictResolutionStrategy.AVERAGE: self._resolve_average,
-        }.get(strat, self._resolve_unknown_strategy)
+        }.get(strat)
 
         return strategy_handler(ratings_by_tag, track)
 
@@ -232,10 +232,6 @@ class AudioTagHandler(abc.ABC):
     def _resolve_average(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Rating | None:
         vals = [r.to_float(RatingScale.NORMALIZED) for r in ratings_by_tag.values()]
         return Rating(sum(vals) / len(vals)) if vals else None
-
-    def _resolve_unknown_strategy(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Rating | None:
-        self.logger.warning(f"Unknown conflict strategy {self.conflict_resolution_strategy}")
-        return None
 
     def _resolve_choice(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Rating | None:
         """Default interactive chooser: list each tag and rating, let user pick or skip."""
