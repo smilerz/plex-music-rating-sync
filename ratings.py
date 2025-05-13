@@ -111,9 +111,6 @@ class Rating:
 
     @staticmethod
     def _infer_0_100_non_aggressive(v: float) -> RatingScale | None:
-        # 0.0 is unrated (NORMALIZED)
-        if v == 0.0:
-            return RatingScale.NORMALIZED
         # 0 < v < 1: only normalized
         if 0 < v < 1:
             return RatingScale.NORMALIZED
@@ -233,15 +230,20 @@ class Rating:
     def _from_popm(byte: float) -> float:
         if not (0 <= byte <= 255):
             raise ValueError(f"Invalid POPM byte value: {byte}. Must be between 0 and 255.")
-        best_match = min(POPM_MAP[1:], key=lambda pair: abs(pair[1] - byte))
+        best_match = min(POPM_MAP, key=lambda pair: abs(pair[1] - byte))
+        if best_match[0] == 0.0:
+            return Rating.unrated()
         return best_match[0]
 
     @staticmethod
     def _to_popm(normalized: float) -> int:
+        if not (0.0 <= normalized <= 1.0):
+            raise ValueError(f"Invalid POPM byte value: {normalized}. Must be between 0 and 255.")
+        if normalized < 0.05:
+            return Rating.unrated()
         for rating, byte in POPM_MAP[1:]:
             if normalized <= rating:
                 return byte
-        return 255
 
     def __float__(self):
         raise NotImplementedError("Use `to_float()` with an optional scale parameter.")

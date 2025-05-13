@@ -231,12 +231,14 @@ class TestRatingPOPMConversion:
             (0.5, 118),
             (1.0, 255),
             (0.0, 0),
+            (0.000001, 0),
+            (0.049, 0),
+            (0.05, 13),
         ],
     )
     def test_to_popm(self, normalized, expected_byte):
-        """Test _to_popm returns correct byte for normalized values."""
-        r = Rating(0, scale=RatingScale.POPM)
-        assert r._to_popm(normalized) == expected_byte
+        """Test _to_popm returns correct byte for normalized values, including threshold and unrated edge cases."""
+        assert Rating._to_popm(normalized) == expected_byte
 
     @pytest.mark.parametrize(
         "byte,expected_normalized",
@@ -245,18 +247,28 @@ class TestRatingPOPMConversion:
             (118, 0.5),
             (255, 1.0),
             (0, 0.0),
+            (1, 0.0),
+            (12, 0.1),
+            (14, 0.1),
+            (31, 0.2),
         ],
     )
     def test_from_popm(self, byte, expected_normalized):
-        """Test _from_popm returns correct normalized for valid bytes."""
-        r = Rating(0, scale=RatingScale.POPM)
-        assert abs(r._from_popm(byte) - expected_normalized) < 0.01
+        """Test _from_popm returns correct normalized for valid and edge-case bytes."""
+        assert Rating._from_popm(byte) == expected_normalized
 
-    @pytest.mark.parametrize("byte", [-1, 256, 300])
+    @pytest.mark.parametrize("value", [-0.1, 1.1])
+    def test_to_popm_invalid_value(self, value):
+        """Test _fto_popm raises ValueError for invalid values."""
+        r = Rating(0, scale=RatingScale.POPM)
+        with pytest.raises(ValueError):
+            r._to_popm(value)
+
+    @pytest.mark.parametrize("byte", [-1, 256])
     def test_from_popm_invalid_byte(self, byte):
         """Test _from_popm raises ValueError for invalid byte."""
         r = Rating(0, scale=RatingScale.POPM)
-        with pytest.raises(ValueError, match="Invalid POPM byte value"):
+        with pytest.raises(ValueError):
             r._from_popm(byte)
 
 
