@@ -5,7 +5,7 @@ import pytest
 
 from manager import get_manager
 from MediaPlayer import MediaPlayer
-from ratings import Rating
+from ratings import Rating, RatingScale
 from sync_items import AudioTag, Playlist
 from sync_pair import PlaylistPair, TrackPair
 
@@ -13,7 +13,7 @@ from sync_pair import PlaylistPair, TrackPair
 @pytest.fixture
 def track_factory():
     def _factory(ID="1", title="Title", artist="Artist", album="Album", track=1, rating=1.0):
-        rating = Rating(rating)
+        rating = Rating(rating, scale=RatingScale.NORMALIZED)
         return AudioTag(ID=ID, title=title, artist=artist, album=album, track=track, rating=rating)
 
     return _factory

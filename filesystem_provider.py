@@ -252,7 +252,7 @@ class AudioTagHandler(abc.ABC):
 
     def is_strategy_supported(self, strategy: ConflictResolutionStrategy) -> bool:
         """Override if a strategy isn't valid for this format."""
-        return True
+        return strategy in list(ConflictResolutionStrategy)
 
     # ------------------------------
     # Phase 3: Finalization / Scale Inference

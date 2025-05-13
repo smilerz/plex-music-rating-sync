@@ -271,12 +271,12 @@ class TestUpdateTrackMetadata:
     @pytest.mark.parametrize(
         "audio_tag,rating,expect_none,audio_file_is_none,save_fails",
         [
-            (AudioTag(), Rating(1), False, False, False),
+            (AudioTag(), Rating(0.8), False, False, False),
             (AudioTag(), None, False, False, False),
-            (None, Rating(1), False, False, False),
+            (None, Rating(0.8), False, False, False),
             (None, None, True, False, False),
-            (AudioTag(), Rating(1), True, True, False),
-            (AudioTag(), Rating(1), True, False, True),
+            (AudioTag(), Rating(0.8), True, True, False),
+            (AudioTag(), Rating(0.8), True, False, True),
         ],
     )
     def test_update_track_metadata_handler_succeeds(self, fsp_instance, file_factory, audio_tag, rating, expect_none, audio_file_is_none, save_fails):
@@ -316,7 +316,7 @@ class TestUpdateTrackMetadata:
         with patch.object(Path, "exists", return_value=True):
             with patch.object(fsp_instance, "_open_audio_file", return_value=audio_file):
                 audio_file.save = MagicMock(return_value=None)
-                result = fsp_instance.update_track_metadata(file_path, audio_tag=AudioTag(), rating=Rating(1))
+                result = fsp_instance.update_track_metadata(file_path, audio_tag=AudioTag(), rating=Rating(0.8))
         assert result is None
         assert not handler.apply_tags_called
         assert not audio_file.save.called
@@ -335,7 +335,7 @@ class TestUpdateTrackMetadata:
         with patch.object(Path, "exists", return_value=False):
             with patch.object(fsp_instance, "_open_audio_file", return_value=audio_file):
                 audio_file.save = MagicMock(return_value=None)
-                result = fsp_instance.update_track_metadata(file_path, audio_tag=AudioTag(), rating=Rating(1))
+                result = fsp_instance.update_track_metadata(file_path, audio_tag=AudioTag(), rating=Rating(0.8))
         assert result is None
         assert not handler.apply_tags_called
         assert not audio_file.save.called
@@ -354,7 +354,7 @@ class TestUpdateTrackMetadata:
         with patch.object(Path, "exists", return_value=True):
             with patch.object(fsp_instance, "_open_audio_file", return_value=audio_file):
                 audio_file.save = MagicMock(return_value=None)
-                result = fsp_instance.update_track_metadata(file_path, audio_tag=AudioTag(), rating=Rating(1))
+                result = fsp_instance.update_track_metadata(file_path, audio_tag=AudioTag(), rating=Rating(0.8))
         assert result is None
         assert not handler.apply_tags_called
         assert not audio_file.save.called

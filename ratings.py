@@ -51,20 +51,111 @@ class Rating:
 
     @staticmethod
     def infer(value: float, aggressive: bool = False) -> RatingScale | None:
-        popm_values = {byte for _, byte in POPM_MAP[1:]}  # exclude zero
-        if value in popm_values:
+        try:
+            if value is None or isinstance(value, bool):
+                return None
+            v = float(value)
+            if v != v or v in (float("inf"), float("-inf")):
+                return None
+            if v <= 0 or v > 255:
+                return None
+            if Rating._is_popm_byte(v):
+                return Rating._infer_popm(v, aggressive)
+            if 101 <= v <= 255:
+                return RatingScale.POPM
+            if 0 <= v <= 100:
+                return Rating._infer_0_100(v, aggressive)
+            return None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _is_popm_byte(v: float) -> bool:
+        popm_bytes = {byte for _, byte in POPM_MAP[1:]}
+        return v in popm_bytes
+
+    @staticmethod
+    def _infer_popm(v: float, aggressive: bool) -> RatingScale | None:
+        # If aggressive, always favor POPM for these bytes
+        if aggressive:
             return RatingScale.POPM
-        elif 0 < value <= 1:
+        # If not aggressive, ambiguous if value is also a valid 0-100 or 0-5 or normalized
+        if v in (1.0, 5.0):
+            return None
+        return RatingScale.POPM
+
+    @staticmethod
+    def _is_likely(value: float, scale: RatingScale) -> bool:
+        # Ambiguous values: 1.0, 5.0, 10.0, 0.0 (except unrated)
+        if value in (0.0, 1.0, 5.0, 10.0, 0.0):
+            return False
+        # For 0-5: 1 <= v <= 5, step 0.5
+        if scale == RatingScale.ZERO_TO_FIVE:
+            return 1 <= value <= 5 and (value * 2).is_integer()
+        # For 0-10: 1 <= v <= 10, integer
+        if scale == RatingScale.ZERO_TO_TEN:
+            return 1 <= value <= 10 and float(value).is_integer()
+        # For 0-100: 12 <= value <= 100, integer (treat 11 as ambiguous)
+        if scale == RatingScale.ZERO_TO_HUNDRED:
+            return 12 <= value <= 100 and float(value).is_integer()
+        # For NORMALIZED: 0 < v < 1
+        if scale == RatingScale.NORMALIZED:
+            return 0 < value < 1
+        return False
+
+    @staticmethod
+    def _infer_0_100(v: float, aggressive: bool) -> RatingScale | None:
+        if not aggressive:
+            return Rating._infer_0_100_non_aggressive(v)
+        return Rating._infer_0_100_aggressive(v)
+
+    @staticmethod
+    def _infer_0_100_non_aggressive(v: float) -> RatingScale | None:
+        # 0.0 is unrated (NORMALIZED)
+        if v == 0.0:
             return RatingScale.NORMALIZED
-        elif 1 < value <= 5:
-            return RatingScale.ZERO_TO_FIVE
-        elif value > 10:
-            return RatingScale.ZERO_TO_HUNDRED
-        elif aggressive:
-            if value in {0.5, 1.0}:
-                return RatingScale.NORMALIZED
-            if value == 5.0:
+        # 0 < v < 1: only normalized
+        if 0 < v < 1:
+            return RatingScale.NORMALIZED
+        # 1 <= v <= 5, step 0.5: only 0-5, but ambiguous if v in (1.0, 5.0)
+        if 1 <= v <= 5 and (v * 2).is_integer():
+            if Rating._is_likely(v, RatingScale.ZERO_TO_FIVE):
                 return RatingScale.ZERO_TO_FIVE
+            return None
+        # 1 <= v <= 10, integer: only 0-10, but ambiguous if v in (1.0, 10.0)
+        if 1 <= v <= 10 and float(v).is_integer():
+            if Rating._is_likely(v, RatingScale.ZERO_TO_TEN):
+                return RatingScale.ZERO_TO_TEN
+            return None
+        # 12 <= v <= 100, integer: only 0-100 (treat 11 as ambiguous)
+        if 12 <= v <= 100 and float(v).is_integer():
+            if Rating._is_likely(v, RatingScale.ZERO_TO_HUNDRED):
+                return RatingScale.ZERO_TO_HUNDRED
+            return None
+        return None
+
+    @staticmethod
+    def _infer_0_100_aggressive(v: float) -> RatingScale | None:
+        # Special case: for 1.0, always favor NORMALIZED
+        if v == 1.0:
+            return RatingScale.NORMALIZED
+        candidates = [
+            (RatingScale.NORMALIZED, 1.0, lambda x: 0 < x < 1),
+            (RatingScale.ZERO_TO_FIVE, 5.0, lambda x: 1 <= x <= 5 and (x * 2).is_integer()),
+            (RatingScale.ZERO_TO_TEN, 10.0, lambda x: 1 <= x <= 10 and float(x).is_integer()),
+            (RatingScale.ZERO_TO_HUNDRED, 100.0, lambda x: 12 <= x <= 100 and float(x).is_integer()),
+        ]
+        for scale, _, pred in candidates:
+            if pred(v):
+                return scale
+        # If no match, pick the scale with the max value closest to v, but not over
+        best = None
+        for scale, maxval, _ in candidates:
+            if v <= maxval:
+                if best is None or maxval < best[1]:
+                    best = (scale, maxval)
+        if best:
+            return best[0]
         return None
 
     @classmethod
@@ -132,18 +223,21 @@ class Rating:
             pass
         return None
 
-    def _normalize(self, value: float, scale: RatingScale) -> float:
+    @classmethod
+    def _normalize(cls, value: float, scale: RatingScale) -> float:
         if scale == RatingScale.POPM:
-            return self._from_popm(value)
+            return cls._from_popm(value)
         return round(value / scale.value, 3)
 
-    def _from_popm(self, byte: float) -> float:
+    @staticmethod
+    def _from_popm(byte: float) -> float:
         if not (0 <= byte <= 255):
             raise ValueError(f"Invalid POPM byte value: {byte}. Must be between 0 and 255.")
         best_match = min(POPM_MAP[1:], key=lambda pair: abs(pair[1] - byte))
         return best_match[0]
 
-    def _to_popm(self, normalized: float) -> int:
+    @staticmethod
+    def _to_popm(normalized: float) -> int:
         for rating, byte in POPM_MAP[1:]:
             if normalized <= rating:
                 return byte
