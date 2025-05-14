@@ -1,9 +1,7 @@
-import sys
 from unittest.mock import MagicMock
 
 import pytest
 
-from manager import get_manager
 from MediaPlayer import MediaPlayer
 from ratings import Rating, RatingScale
 from sync_items import AudioTag, Playlist
@@ -93,13 +91,18 @@ def config_args():
 
 @pytest.fixture(scope="function", autouse=True)
 def initialize_manager(monkeypatch, patch_paths, config_args):
+    import sys
+
     sys.argv = config_args
 
     logs_path, cache_path = patch_paths
 
+    monkeypatch.setattr("manager.manager.get_stats_manager", lambda: MagicMock())
+    monkeypatch.setattr("manager.manager.get_status_manager", lambda: MagicMock())
     monkeypatch.setattr("manager.log_manager.LogManager.LOG_DIR", str(logs_path))
     monkeypatch.setattr("manager.cache_manager.CacheManager.MATCH_CACHE_FILE", str(cache_path / "matches.pkl"))
     monkeypatch.setattr("manager.cache_manager.CacheManager.METADATA_CACHE_FILE", str(cache_path / "metadata.pkl"))
+    from manager import get_manager
 
     # Avoid re-initialization
     mgr = get_manager()
