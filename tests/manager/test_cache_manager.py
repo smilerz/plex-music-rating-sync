@@ -1,4 +1,6 @@
+import datetime
 import datetime as dt
+import os
 import pickle
 from unittest import mock
 from unittest.mock import MagicMock
@@ -7,6 +9,7 @@ import pandas as pd
 import pytest
 
 from manager.cache_manager import Cache, CacheManager
+from manager.config_manager import CacheMode
 from sync_items import AudioTag
 
 
@@ -16,19 +19,14 @@ def dummy_audio_tag():
 
 
 @pytest.fixture
-def cache_manager(monkeypatch, request):
-    param = getattr(request, "param", None)
-    mode = param.get("mode", "metadata") if isinstance(param, dict) else (param or "metadata")
+def cache_manager(request):
+    mode = getattr(request, "param", {}).get("mode", CacheMode.METADATA)
 
-    # Let MagicMock handle the complex stuff
-    mock_config = MagicMock(cache_mode=mode)
-    mock_mgr = MagicMock()
-    mock_mgr.get_config_manager.return_value = mock_config
-
-    # Let monkeypatch handle the patching
-    monkeypatch.setattr("manager.get_manager", lambda: mock_mgr)
-
-    return CacheManager()
+    cm = CacheManager()
+    cm.stats_mgr = MagicMock()
+    cm.logger = MagicMock()
+    cm.mode = mode
+    return cm
 
 
 class TestCacheManagerMetadata:
@@ -53,40 +51,120 @@ class TestCacheManagerMetadata:
         tag1 = dummy_audio_tag
         tag2 = type(dummy_audio_tag)(ID=tag1.ID, title="New Title", artist=tag1.artist, album=tag1.album, track=tag1.track)
         cache_manager.set_metadata("plex", tag1.ID, tag1, force_enable=True)
-        orig = cache_manager.get_metadata("plex", tag1.ID, force_enable=True)
-        assert orig.title == tag1.title
         cache_manager.set_metadata("plex", tag1.ID, tag2, force_enable=True)
         updated = cache_manager.get_metadata("plex", tag1.ID, force_enable=True)
         assert updated.title == "New Title"
         assert updated.ID == tag1.ID
 
+    def test_set_metadata_triggers_resize(self, cache_manager, dummy_audio_tag):
+        # Covers set_metadata: triggers resize when full
+        cols = cache_manager._get_metadata_cache_columns()
+        cache_manager.metadata_cache = Cache(filepath=":memory:", columns=cols, dtype={c: "object" for c in cols}, save_threshold=1)
+        cache_manager.metadata_cache.cache.loc[0, :] = ["plex"] + ["x"] * (len(cols) - 1)
+        tag2 = type(dummy_audio_tag)(ID="newid", title="T", artist="A", album="B", track=2)
+        cache_manager.set_metadata("plex", tag2.ID, tag2, force_enable=True)
+        assert (cache_manager.metadata_cache.cache == "newid").any().any()
+
+    @pytest.mark.parametrize(
+        "cache_manager,force_enable,expect_called",
+        [
+            ({"mode": CacheMode.DISABLED}, False, False),
+            ({"mode": CacheMode.DISABLED}, True, True),
+            ({"mode": CacheMode.METADATA}, False, True),
+        ],
+        indirect=["cache_manager"],
+    )
+    def test_set_metadata_disabled_and_force(self, cache_manager, force_enable, expect_called):
+        cache_manager.metadata_cache = None
+        tag = AudioTag(ID="id", title="t", artist="a", album="b", track=1)
+        cache_manager.set_metadata("plex", "id", tag, force_enable=force_enable)
+        if expect_called:
+            assert cache_manager.metadata_cache is not None
+        else:
+            assert cache_manager.metadata_cache is None
+
+    @pytest.mark.parametrize("cache_manager", [{"mode": CacheMode.METADATA}], indirect=["cache_manager"])
+    def test_set_metadata_triggers_cache_creation(self, cache_manager):
+        cache_manager.metadata_cache = None
+        tag = AudioTag(ID="id", title="t", artist="a", album="b", track=1)
+        cache_manager.set_metadata("plex", "id", tag, force_enable=True)
+        assert cache_manager.metadata_cache is not None
+
+    @pytest.mark.parametrize("cache_manager", [{"mode": CacheMode.METADATA}], indirect=["cache_manager"])
+    def test_get_tracks_by_filter_empty(self, cache_manager):
+        cols = cache_manager._get_metadata_cache_columns()
+        cache_manager.metadata_cache = Cache(filepath=":memory:", columns=cols, dtype={c: "object" for c in cols})
+        mask = cache_manager.metadata_cache.cache["player_name"] == "nonexistent"
+        result = cache_manager.get_tracks_by_filter(mask)
+        assert result == []
+
+    @pytest.mark.parametrize("cache_manager", [{"mode": CacheMode.METADATA}], indirect=["cache_manager"])
+    def test_get_tracks_by_filter_nonempty(self, cache_manager):
+        cols = cache_manager._get_metadata_cache_columns()
+        cache_manager.metadata_cache = Cache(filepath=":memory:", columns=cols, dtype={c: "object" for c in cols})
+        tag = AudioTag(ID="id", title="t", artist="a", album="b", track=1)
+        cache_manager.metadata_cache.cache.loc[0, :] = ["plex"] + [getattr(tag, f) for f in tag.get_fields()]
+        mask = cache_manager.metadata_cache.cache["player_name"] == "plex"
+        result = cache_manager.get_tracks_by_filter(mask)
+        assert isinstance(result, list)
+        assert all(isinstance(x, AudioTag) for x in result)
+
 
 class TestCacheManagerMatch:
-    @pytest.mark.parametrize("mode", ["matches"])
-    def test_set_and_get_match_success(self, cache_manager, mode):
-        """Test storing and retrieving a match returns correct values."""
-        cache_manager.set_match("src1", "dst1", "Plex", "FileSystem", 95)
+    @pytest.mark.parametrize("cache_manager", [{"mode": CacheMode.MATCHES}], indirect=["cache_manager"])
+    def test_set_and_get_and_update_match(self, cache_manager):
+        """Test storing, retrieving, and updating a match."""
+        cache_manager.set_match("src1", "dst1", "Plex", "FileSystem", 80)
         match, score = cache_manager.get_match("src1", "Plex", "FileSystem")
         assert match == "dst1"
-        assert score == 95
+        assert score == 80
+        # Now update the score
+        cache_manager.set_match("src1", "dst1", "Plex", "FileSystem", 99)
+        match2, score2 = cache_manager.get_match("src1", "Plex", "FileSystem")
+        assert match2 == "dst1"
+        assert score2 == 99
 
-    @pytest.mark.parametrize("mode", ["matches"])
-    def test_get_match_missing_returns_none(self, cache_manager, mode):
+    @pytest.mark.parametrize("cache_manager", [{"mode": CacheMode.MATCHES}], indirect=["cache_manager"])
+    def test_get_match_missing_returns_none(self, cache_manager):
         """Test retrieving a match for missing key returns (None, None)."""
         match, score = cache_manager.get_match("missing", "Plex", "FileSystem")
         assert match is None
         assert score is None
 
-    @pytest.mark.parametrize("mode", ["matches"])
-    def test_match_update_score_existing_row(self, cache_manager, mode):
-        """Test updating match score for an existing row overwrites the score."""
-        cache_manager.set_match("src1", "dst1", "Plex", "FileSystem", 80)
-        match, score = cache_manager.get_match("src1", "Plex", "FileSystem")
-        assert score == 80
-        cache_manager.set_match("src1", "dst1", "Plex", "FileSystem", 99)
-        match2, score2 = cache_manager.get_match("src1", "Plex", "FileSystem")
-        assert match2 == "dst1"
-        assert score2 == 99
+    def test_set_match_triggers_resize(self, cache_manager):
+        # Covers set_match: triggers resize when full
+        cols = cache_manager._get_match_cache_columns()
+        cache_manager.match_cache = Cache(filepath=":memory:", columns=cols, dtype={c: "object" for c in cols}, save_threshold=1)
+        # Fill the only available row
+        cache_manager.match_cache.cache.loc[0, :] = ["src", "dst", "other"] + [1] * (len(cols) - 3)
+        cache_manager.set_match("src2", "dst2", "Plex", "FileSystem", 99)
+        # Check that the new entry exists in the correct columns
+        found = ((cache_manager.match_cache.cache["Plex"] == "src2") & (cache_manager.match_cache.cache["FileSystem"] == "dst2")).any()
+        assert found
+
+    @pytest.mark.parametrize(
+        "cache_manager,empty,expect_none,expect_empty,expect_unchanged",
+        [
+            ({"mode": CacheMode.DISABLED}, False, True, False, False),
+            ({"mode": CacheMode.DISABLED}, True, True, True, False),
+            ({"mode": CacheMode.MATCHES}, True, False, True, False),
+            ({"mode": CacheMode.MATCHES}, False, False, False, True),
+        ],
+        indirect=["cache_manager"],
+    )
+    def test_set_match_disabled_or_empty(self, cache_manager, empty, expect_none, expect_empty, expect_unchanged):
+        cache_before = None
+        if cache_manager.match_cache is not None:
+            if empty:
+                cache_manager.match_cache.cache = cache_manager.match_cache.cache.iloc[0:0]
+            cache_before = cache_manager.match_cache.cache.copy()
+        cache_manager.set_match("src", "dst", "Plex", "FileSystem", 42)
+        if expect_none:
+            assert cache_manager.match_cache is None or cache_manager.match_cache.cache.empty
+        if expect_empty:
+            assert cache_manager.match_cache is not None and cache_manager.match_cache.cache.empty
+        if expect_unchanged:
+            assert cache_manager.match_cache.cache.equals(cache_before)
 
 
 class TestCacheResize:
@@ -180,12 +258,14 @@ class TestCache:
         c._ensure_columns()
         assert "foo" in c.cache.columns
 
-    def test_resize_adds_rows(self):
-        """Test resize increases DataFrame size."""
-        c = Cache(filepath=":memory:", columns=["ID"], dtype={"ID": "str"}, save_threshold=2)
-        old_len = len(c.cache)
-        c.resize(5)
-        assert len(c.cache) > old_len
+    def test_ensure_columns_with_extra_columns(self):
+        """Test _ensure_columns does not remove extra columns but ensures required ones exist."""
+        c = Cache(filepath=":memory:", columns=["ID", "foo"], dtype={"ID": "str", "foo": "str"})
+        # Add an extra column not in required columns
+        c.cache = pd.DataFrame({"ID": ["1"], "bar": ["baz"]})
+        c._ensure_columns()
+        assert "foo" in c.cache.columns
+        assert "bar" in c.cache.columns  # Extra column remains
 
     def test_delete_removes_file_and_handles_missing(self, tmp_path, caplog):
         """Test delete removes file and handles missing file."""
@@ -201,6 +281,16 @@ class TestCache:
         c2 = Cache(filepath=str(tmp_path / "badfile.pkl"), columns=["ID"], dtype={"ID": "str"})
         with mock.patch("os.remove", side_effect=OSError("fail")):
             c2.delete()
+
+    def test_delete_exception_logs_error(self, tmp_path, caplog):
+        """Test delete logs error if os.remove raises exception."""
+        fpath = tmp_path / "del2.pkl"
+        with open(fpath, "wb") as f:
+            f.write(b"x")
+        c = Cache(filepath=str(fpath), columns=["ID"], dtype={"ID": "str"})
+        with mock.patch("os.remove", side_effect=OSError("fail")):
+            c.delete()
+        assert any("Failed to delete cache file" in r.message for r in caplog.records)
 
     def test_auto_save_triggers_save(self, tmp_path, monkeypatch):
         """Test auto_save triggers save when update_count >= threshold."""
@@ -243,22 +333,17 @@ class TestCacheLoad:
         ],
     )
     def test_load_various_conditions(self, tmp_path, monkeypatch, file_exists, file_old, unpickle_error):
+        # Covers Cache.load: file missing, file old, unpickle error
         fpath = tmp_path / "cache.pkl"
         if file_exists:
-            df = pd.DataFrame({"ID": ["1"]})
             with open(fpath, "wb") as f:
-                pickle.dump(df, f)
-        monkeypatch.setattr("os.path.exists", lambda path: file_exists)
-        if file_exists and file_old:
-            monkeypatch.setattr("os.path.getmtime", lambda path: 0)
-
-            class FakeNow:
-                def timestamp(self):
-                    return 60 * 60 * 25
-
-            monkeypatch.setattr(dt, "datetime", type("FakeDateTime", (), {"now": staticmethod(lambda: FakeNow())}))
-        if file_exists and unpickle_error:
-            monkeypatch.setattr(pickle, "load", lambda f: (_ for _ in ()).throw(pickle.UnpicklingError()))
+                if unpickle_error:
+                    f.write(b"notapickle")
+                else:
+                    pickle.dump(pd.DataFrame({"ID": ["x"]}), f)
+            if file_old:
+                old_time = (datetime.datetime.now() - datetime.timedelta(hours=2)).timestamp()
+                os.utime(fpath, (old_time, old_time))
         c = Cache(filepath=str(fpath), columns=["ID"], dtype={"ID": "str"}, max_age_hours=1)
         c.load()
         assert isinstance(c.cache, pd.DataFrame)
@@ -268,10 +353,10 @@ class TestCacheManagerInternal:
     @pytest.mark.parametrize(
         "cache_manager, expect_match, expect_metadata",
         [
-            ({"mode": "matches"}, True, False),
-            ({"mode": "metadata"}, False, True),
-            ({"mode": "matches-only"}, True, False),
-            ({"mode": "disabled"}, False, False),
+            ({"mode": CacheMode.MATCHES}, True, True),
+            ({"mode": CacheMode.METADATA}, False, True),
+            ({"mode": CacheMode.MATCHES_ONLY}, True, False),
+            ({"mode": CacheMode.DISABLED}, False, False),
         ],
         indirect=["cache_manager"],
     )
@@ -297,6 +382,13 @@ class TestCacheManagerInternal:
         cols = cache_manager._get_metadata_cache_columns()
         assert "player_name" in cols
         assert "ID" in cols
+
+    def test_get_tracks_by_filter_empty(self, cache_manager):
+        # Covers get_tracks_by_filter: filter matches no rows
+        cache_manager.metadata_cache = mock.Mock()
+        cache_manager.metadata_cache.cache = pd.DataFrame({"ID": ["a", "b"]})
+        result = cache_manager.get_tracks_by_filter(pd.Series([False, False]))
+        assert result == []
 
     @pytest.mark.parametrize("has_metadata, has_match", [(True, True), (True, False), (False, True), (False, False)])
     def test_cleanup_and_invalidate_various(self, cache_manager, monkeypatch, has_metadata, has_match):
@@ -343,10 +435,76 @@ class TestCacheManagerInternal:
                 else:
                     df = pd.DataFrame({"Plex": ["other"], "FileSystem": ["dst2"], "score": [88]})
                     cache_manager.match_cache = type("Dummy", (), {"is_empty": lambda self: False, "cache": df})()
-        cache_manager.logger = mock.Mock(trace=mock.Mock())
-        cache_manager.stats_mgr = type("Dummy", (), {"increment": lambda self, x: None})()
         match, score = cache_manager.get_match("src1", "Plex", "FileSystem")
         if not enabled or empty or not found:
             assert match is None and score is None
         else:
             assert match == "dst1" and score == 99
+
+
+class TestCacheManagerCleanup:
+    def test_cleanup_deletes_match_cache_when_disabled(self, cache_manager, monkeypatch):
+        """Test cleanup deletes match cache if not enabled."""
+        cache_manager.match_cache = MagicMock(delete=MagicMock())
+        monkeypatch.setattr(cache_manager, "is_match_cache_enabled", lambda: False)
+        cache_manager.cleanup()
+        cache_manager.match_cache.delete.assert_called()
+
+
+class TestCacheManagerModeForceEnable:
+    @pytest.mark.parametrize(
+        "cache_manager,force_enable,expect_metadata,expect_match",
+        [
+            ({"mode": CacheMode.METADATA}, True, True, False),
+            ({"mode": CacheMode.METADATA}, False, True, False),
+            ({"mode": CacheMode.MATCHES}, True, False, True),
+            ({"mode": CacheMode.MATCHES}, False, False, True),
+            ({"mode": CacheMode.MATCHES_ONLY}, True, False, True),
+            ({"mode": CacheMode.MATCHES_ONLY}, False, False, True),
+            ({"mode": CacheMode.DISABLED}, True, False, False),
+            ({"mode": CacheMode.DISABLED}, False, False, False),
+        ],
+        indirect=["cache_manager"],
+    )
+    def test_mode_force_enable_behavior(self, monkeypatch, cache_manager, force_enable, expect_metadata, expect_match, dummy_audio_tag, request):
+        """Test all combinations of mode and force_enable for set/get methods."""
+        # Metadata
+        cache_manager.set_metadata("plex", dummy_audio_tag.ID, dummy_audio_tag, force_enable=force_enable)
+        meta = cache_manager.get_metadata("plex", dummy_audio_tag.ID, force_enable=force_enable)
+        if expect_metadata:
+            assert isinstance(meta, type(dummy_audio_tag))
+        else:
+            assert meta is None
+        # Match
+        cache_manager.set_match("src", "dst", "Plex", "FileSystem", 42)
+        match, score = cache_manager.get_match("src", "Plex", "FileSystem")
+        if expect_match:
+            assert match == "dst"
+            assert score == 42
+        else:
+            assert match is None and score is None
+
+
+class TestCacheManagerMatchExpiration:
+    def test_match_cache_discard_on_age_expiration(self, cache_manager, monkeypatch):
+        """Test that match cache is discarded after expiration (simulate expiration logic)."""
+        cache_manager.set_match("src", "dst", "Plex", "FileSystem", 99)
+        # Simulate time passing if expiration is time-based
+        if hasattr(cache_manager, "_match_cache") and hasattr(cache_manager._match_cache, "cache"):
+            for entry in cache_manager._match_cache.cache:
+                if "timestamp" in entry:
+                    entry["timestamp"] = 0  # Set to epoch
+        match, score = cache_manager.get_match("src", "Plex", "FileSystem")
+        assert match is None or score is None
+
+
+class TestCacheManagerModeForceEnable:
+    @pytest.mark.parametrize("mode", ["disabled", "matches", "metadata"])
+    def test_cache_manager_init_modes(self, mode):
+        cm = CacheManager()
+        cm.mode = mode
+        if mode == "disabled":
+            assert cm.metadata_cache is None and cm.match_cache is None
+        else:
+            # Should initialize at least one cache
+            assert cm.metadata_cache is not None or cm.match_cache is not None

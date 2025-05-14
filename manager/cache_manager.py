@@ -126,7 +126,7 @@ class CacheManager:
         self.logger = logging.getLogger("PlexSync.CacheManager")
         self.mode = self.config_mgr.cache_mode
         self.metadata_cache = None
-        self.match_cach = None
+        self.match_cache = None
 
         if self.mode == "disabled":
             self.logger.info("Cache disabled.")
