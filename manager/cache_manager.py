@@ -72,16 +72,20 @@ class Cache:
         except Exception as e:
             self.logger.error(f"Failed to save cache to {self.filepath}: {e}")
 
+    @staticmethod
+    def delete_file(filepath: str) -> None:
+        """Delete the cache file at the given path, logging the result."""
+        if os.path.exists(filepath):
+            logger = logging.getLogger("PlexSync.Cache")
+            try:
+                os.remove(filepath)
+                logger.info(f"Cache file {filepath} deleted successfully")
+            except Exception as e:
+                logger.error(f"Failed to delete cache file {filepath}: {e}")
+
     def delete(self) -> None:
         """Delete the cache file."""
-        try:
-            if os.path.exists(self.filepath):
-                os.remove(self.filepath)
-                self.logger.info(f"Cache file {self.filepath} deleted successfully")
-            else:
-                self.logger.debug(f"No cache file found at {self.filepath} to delete")
-        except Exception as e:
-            self.logger.error(f"Failed to delete cache file {self.filepath}: {e}")
+        self.delete_file(self.filepath)
 
     def _ensure_columns(self) -> None:
         """Ensure all required columns are present in the cache."""
@@ -229,14 +233,19 @@ class CacheManager:
             self.match_cache.delete()
 
     def invalidate(self) -> None:
-        """Invalidate both match and metadata caches."""
-        if self.is_match_cache_enabled() and self.match_cache:
-            self.match_cache.delete()
-            self.match_cache = None
+        """Invalidate both match and metadata caches, deleting files even if cache objects are None."""
 
-        if self.is_metadata_cache_enabled() and self.metadata_cache:
+        if self.match_cache:
+            self.match_cache.delete()
+        else:
+            Cache.delete_file(self.MATCH_CACHE_FILE)
+        self.match_cache = None
+
+        if self.metadata_cache:
             self.metadata_cache.delete()
-            self.metadata_cache = None
+        else:
+            Cache.delete_file(self.METADATA_CACHE_FILE)
+        self.metadata_cache = None
 
     ### MATCH CACHING (PERSISTENT) ###
     def get_match(self, source_id: str, source_name: str, dest_name: str) -> str | None:
