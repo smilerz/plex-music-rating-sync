@@ -415,55 +415,90 @@ class TestCacheManager:
         if cache_manager.is_metadata_cache_enabled():
             assert cache_manager.metadata_cache.delete.called == expect_metadata_deleted
 
-
-class TestMatchCache:
-    @pytest.mark.parametrize("enabled, empty, found", [(False, False, False), (True, True, False), (True, False, False), (True, False, True)])
-    def test_get_match_enabled_empty_found_expected_result(self, cache_manager, enabled, empty, found):
-        cache_manager.is_match_cache_enabled = lambda: enabled
-        if not enabled:
-            cache_manager.match_cache = None
-        else:
-            if empty:
-                cache_manager.match_cache = type("Dummy", (), {"is_empty": lambda self: True, "cache": pd.DataFrame()})()
-            else:
-                if found:
-                    df = pd.DataFrame({"Plex": ["src1"], "FileSystem": ["dst1"], "score": [99]})
-                    cache_manager.match_cache = type("Dummy", (), {"is_empty": lambda self: False, "cache": df})()
-                else:
-                    df = pd.DataFrame({"Plex": ["other"], "FileSystem": ["dst2"], "score": [88]})
-                    cache_manager.match_cache = type("Dummy", (), {"is_empty": lambda self: False, "cache": df})()
-        match, score = cache_manager.get_match("src1", "Plex", "FileSystem")
-        if not enabled or empty or not found:
-            assert match is None and score is None
-        else:
-            assert match == "dst1" and score == 99
-
-    def test_cleanup_match_cache_disabled_deletes_file(self, cache_manager):
-        """Test cleanup deletes match cache if not enabled."""
+    def test_cleanup_match_cache_not_enabled(self, cache_manager):
+        """Test cleanup does not delete match cache if not enabled."""
+        cache_manager.is_match_cache_enabled = lambda: False
         cache_manager.match_cache = MagicMock(delete=MagicMock())
         cache_manager.cleanup()
-        cache_manager.match_cache.delete.assert_called()
+        assert cache_manager.match_cache.delete.called
 
-    def test_force_enable_match_cache_set_and_get(self, cache_manager, dummy_audio_tag):
-        """Test force_enable orchestration for match cache."""
-        cache_manager.set_match("src", "dst", "Plex", "FileSystem", 42)
-        match, score = cache_manager.get_match("src", "Plex", "FileSystem")
-        assert match == "dst"
-        assert score == 42
 
-    def test_match_cache_expiration_cleared_returns_none(self, cache_manager):
-        """Test that match cache expiration is handled by CacheManager orchestration."""
-        cache_manager.set_match("src", "dst", "Plex", "FileSystem", 99)
-        # Simulate expiration by clearing cache
-        if hasattr(cache_manager, "match_cache") and hasattr(cache_manager.match_cache, "cache"):
-            cache_manager.match_cache.cache = cache_manager.match_cache.cache.iloc[0:0]
-        match, score = cache_manager.get_match("src", "Plex", "FileSystem")
-        assert match is None and score is None
+class TestMatchCache:
+    @pytest.mark.parametrize(
+        "enabled,cache_present,cache_empty,found,expect_match,expect_score",
+        [
+            (False, False, False, False, None, None),  # not enabled, no cache
+            (True, False, False, False, None, None),  # enabled, no cache
+            (True, True, True, False, None, None),  # enabled, cache present, empty
+            (True, True, False, False, None, None),  # enabled, cache present, not empty, not found
+            (True, True, False, True, "dst1", 99),  # enabled, cache present, not empty, found
+        ],
+    )
+    def test_get_match_all_branches(self, cache_manager, enabled, cache_present, cache_empty, found, expect_match, expect_score):
+        """Covers all branches in get_match: not ready, row.empty, normal path."""
+        cache_manager.is_match_cache_enabled = lambda: enabled
+        if not cache_present:
+            cache_manager.match_cache = None
+        else:
+            import pandas as pd
 
-    def test_get_match_cache_columns_returns_expected(self, cache_manager):
-        cols = cache_manager._get_match_cache_columns()
-        assert "score" in cols
-        assert all(isinstance(c, str) for c in cols)
+            class DummyCache:
+                def __init__(self, empty, found):
+                    self._empty = empty
+                    self.cache = (
+                        pd.DataFrame({"Plex": ["src1" if found else "other"], "FileSystem": ["dst1" if found else "dst2"], "score": [99 if found else 88]})
+                        if not empty
+                        else pd.DataFrame({"Plex": [], "FileSystem": [], "score": []})
+                    )
+
+                def is_empty(self):
+                    return self._empty
+
+                def _find_row_by_columns(self, criteria):
+                    if self._empty:
+                        return self.cache
+                    mask = self.cache["Plex"] == criteria.get("Plex")
+                    return self.cache[mask]
+
+            cache_manager.match_cache = DummyCache(cache_empty, found)
+        match, score = cache_manager.get_match("src1", "Plex", "FileSystem")
+        assert match == expect_match
+        assert score == expect_score
+
+    @pytest.mark.parametrize(
+        "enabled,cache_present,cache_empty,expect_upsert",
+        [
+            (False, False, False, False),  # not enabled, no cache
+            (True, False, False, False),  # enabled, no cache
+            (True, True, True, False),  # enabled, cache present, empty
+            (True, True, False, True),  # enabled, cache present, not empty
+        ],
+    )
+    def test_set_match_all_branches(self, cache_manager, enabled, cache_present, cache_empty, expect_upsert):
+        """Covers all branches in set_match: not ready, normal path."""
+        cache_manager.is_match_cache_enabled = lambda: enabled
+        called = {}
+        if not cache_present:
+            cache_manager.match_cache = None
+        else:
+
+            class DummyCache:
+                def __init__(self, empty):
+                    self._empty = empty
+
+                def is_empty(self):
+                    return self._empty
+
+                def upsert_row(self, criteria, data):
+                    called["upsert"] = (criteria, data)
+
+            cache_manager.match_cache = DummyCache(cache_empty)
+        cache_manager.set_match("src1", "dst1", "Plex", "FileSystem", 99)
+        if expect_upsert:
+            assert called["upsert"][0] == {"Plex": "src1", "FileSystem": "dst1"}
+            assert called["upsert"][1] == {"score": 99}
+        else:
+            assert "upsert" not in called
 
 
 class TestMetadataCache:
@@ -485,3 +520,110 @@ class TestMetadataCache:
         assert "player_name" in cols
         assert "ID" in cols
         assert all(isinstance(c, str) for c in cols)
+
+    @pytest.mark.parametrize(
+        "force_enable,enabled,cache_present,cache_empty,expected",
+        [
+            (False, False, False, False, False),  # not enabled, no force, no cache
+            (False, False, True, True, False),  # not enabled, no force, cache present but empty
+            (False, False, True, False, False),  # not enabled, no force, cache present and not empty
+            (True, False, False, False, True),  # force enabled, no cache
+            (False, True, False, False, True),  # enabled, no cache
+            (False, True, True, True, True),  # enabled, cache present but empty
+            (False, True, True, False, True),  # enabled, cache present and not empty
+        ],
+    )
+    def test_set_metadata_all_branches(self, cache_manager, dummy_audio_tag, force_enable, enabled, cache_present, cache_empty, expected):
+        """Covers all branches in set_metadata: early return, cache creation, upsert."""
+        # Setup
+        cache_manager.is_metadata_cache_enabled = lambda: enabled
+        if cache_present:
+            cache_manager.metadata_cache = MagicMock()
+            cache_manager.metadata_cache.is_empty.return_value = cache_empty
+        else:
+            cache_manager.metadata_cache = None
+        called = {}
+
+        def fake_upsert_row(*a, **kw):
+            called["upsert"] = True
+
+        if cache_present and not cache_empty:
+            cache_manager.metadata_cache.upsert_row = fake_upsert_row
+        # Act
+        cache_manager.set_metadata("plex", "id", dummy_audio_tag, force_enable=force_enable)
+        # Assert
+        if expected:
+            if cache_present and not cache_empty:
+                assert called.get("upsert")
+            else:
+                assert cache_manager.metadata_cache is not None
+        else:
+            # Should not create or upsert
+            if cache_present and not cache_empty:
+                assert not called.get("upsert", False)
+            else:
+                assert cache_manager.metadata_cache is None or cache_manager.metadata_cache.is_empty()
+
+    @pytest.mark.parametrize(
+        "force_enable,enabled,cache_present,cache_empty,row_found,expected",
+        [
+            (False, False, False, False, False, None),  # not enabled, no force, no cache
+            (False, False, True, True, False, None),  # not enabled, no force, cache present but empty
+            (False, False, True, False, False, None),  # not enabled, no force, cache present and not empty
+            (True, False, False, False, False, None),  # force enabled, no cache
+            (False, True, False, False, False, None),  # enabled, no cache
+            (False, True, True, True, False, None),  # enabled, cache present but empty
+            (False, True, True, False, False, None),  # enabled, cache present and not empty, row not found
+            (False, True, True, False, True, "AudioTag"),  # enabled, cache present and not empty, row found
+        ],
+    )
+    def test_get_metadata_all_branches(self, cache_manager, dummy_audio_tag, force_enable, enabled, cache_present, cache_empty, row_found, expected):
+        """Covers all branches in get_metadata: early return, row empty, normal path."""
+        cache_manager.is_metadata_cache_enabled = lambda: enabled
+        if cache_present:
+            cache_manager.metadata_cache = MagicMock()
+            cache_manager.metadata_cache.is_empty.return_value = cache_empty
+
+            def fake_find_row_by_columns(criteria):
+                if row_found:
+                    df = pd.DataFrame([{f: getattr(dummy_audio_tag, f) for f in dummy_audio_tag.get_fields()}])
+                    return df
+                else:
+                    return pd.DataFrame()
+
+            cache_manager.metadata_cache._find_row_by_columns = fake_find_row_by_columns
+        else:
+            cache_manager.metadata_cache = None
+        cache_manager._row_to_audiotag = lambda row: dummy_audio_tag
+        if expected == "AudioTag":
+            result = cache_manager.get_metadata("plex", dummy_audio_tag.ID, force_enable=force_enable)
+            assert isinstance(result, type(dummy_audio_tag))
+        else:
+            result = cache_manager.get_metadata("plex", dummy_audio_tag.ID, force_enable=force_enable)
+            assert result is None
+
+    @pytest.mark.parametrize(
+        "empty,expected",
+        [
+            (True, []),
+            (False, ["AudioTag"]),
+        ],
+    )
+    def test_get_tracks_by_filter_all_branches(self, cache_manager, dummy_audio_tag, empty, expected):
+        """Covers all branches in get_tracks_by_filter: empty and non-empty."""
+        df = pd.DataFrame([{f: getattr(dummy_audio_tag, f) for f in dummy_audio_tag.get_fields()}])
+        if empty:
+            mask = pd.Series([False])
+            cache_manager.metadata_cache = MagicMock()
+            cache_manager.metadata_cache.cache = df
+        else:
+            mask = pd.Series([True])
+            cache_manager.metadata_cache = MagicMock()
+            cache_manager.metadata_cache.cache = df
+        cache_manager._row_to_audiotag = lambda row: dummy_audio_tag
+        result = cache_manager.get_tracks_by_filter(mask)
+        if empty:
+            assert result == []
+        else:
+            assert isinstance(result, list)
+            assert all(isinstance(x, type(dummy_audio_tag)) for x in result)

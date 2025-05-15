@@ -365,7 +365,9 @@ class TestFinalizeScan:
 
     @pytest.mark.parametrize("count,use_bar", [(3, False), (150, True)])
     def test_finalize_scan_small_vs_large(self, fsp_instance, count, use_bar):
-        fsp_instance.deferred_tracks = [{"track": AudioTag(ID=str(i), title="t", artist="a", album="b", track=1), "handler": MagicMock(), "raw": {}} for i in range(count)]
+        dummy_handler = MagicMock(can_handle=lambda f: True)
+        fsp_instance._handlers = [dummy_handler]
+        fsp_instance.deferred_tracks = [{"track": AudioTag(ID=str(i), title="t", artist="a", album="b", track=1), "handler": dummy_handler, "raw": {}} for i in range(count)]
         fsp_instance.update_track_metadata = MagicMock()
 
         result = fsp_instance.finalize_scan()
