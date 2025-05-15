@@ -86,7 +86,7 @@ python_files = ["test_*.py"]
 parallel = true
 branch = true
 source = ["."]
-omit = ["tests/*", "*/__init__.py"]
+omit = ["tests/*", "./__init__.py"]
 
 [tool.coverage.report]
 show_missing = true
