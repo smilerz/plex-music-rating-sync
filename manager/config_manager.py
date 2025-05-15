@@ -5,8 +5,6 @@ from typing import List
 import configargparse
 from configupdater import ConfigUpdater
 
-logger = logging.getLogger(__name__)
-
 
 class ConfigEnum(StrEnum):
     """Base class for case-insensitive string enums."""
@@ -116,6 +114,7 @@ class ConfigManager:
 
     def __init__(self) -> None:
         """Initialize the configuration manager with default settings."""
+        self.logger = logging.getLogger("PlexSync.ConfigManager")
         self.parser = configargparse.ArgumentParser(default_config_files=[self.CONFIG_FILE], description="Synchronizes ID3 and Vorbis music ratings between media players")
         self.config = self.parse_args()
         self._initialize_attributes()
@@ -163,7 +162,7 @@ class ConfigManager:
                 setattr(self, key, value)
 
         self._validate_config_requirements()
-        logger.debug(f"Current runtime configuration: {self.to_dict()}")
+        self.logger.debug(f"Current runtime configuration: {self.to_dict()}")
 
     def _parse_enum_field(self, key: str, value: ConfigEnum) -> ConfigEnum | list[ConfigEnum] | None:
         """Convert CLI string(s) to corresponding ConfigEnum value(s), with error checking."""
@@ -209,12 +208,12 @@ class ConfigManager:
         current_config = self.to_dict()
         changes = self._get_runtime_config_changes(current_config)
 
-        if not changes:
-            logger.debug("No config changes detected.")
+        if not changes or self.dry:
+            self.logger.debug("No config changes detected.")
             return
 
         if self.dry:
-            logger.debug("Dry-run: config changes detected but not saved.")
+            self.logger.debug("Dry-run: config changes detected but not saved.")
             return
 
         self._update_config_file(changes)

@@ -17,20 +17,22 @@ class Manager:
 
     def initialize(self) -> None:
         from .cache_manager import CacheManager
-        from .config_manager import ConfigManager
+        from .config_manager import ConfigManager, LogLevel
         from .log_manager import LogManager
         from .stats_manager import StatsManager, StatusManager
 
         if self._initialized:
             return
 
-        self._config = ConfigManager()
         self._log = LogManager()
+        self._logger = self._log.setup_logging(LogLevel.WARNING)
+
+        self._config = ConfigManager()
+        self._log.update_log_level(self._config.log)
+
         self._stats = StatsManager()
         self._status = StatusManager()
         self._cache = CacheManager()
-
-        self._logger = self._log.setup_logging(self._config.log)
         self._initialized = True
 
     def get_stats_manager(self) -> "StatsManager":

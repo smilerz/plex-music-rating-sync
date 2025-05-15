@@ -102,6 +102,7 @@ def initialize_manager(monkeypatch, patch_paths, config_args):
     monkeypatch.setattr("manager.log_manager.LogManager.LOG_DIR", str(logs_path))
     monkeypatch.setattr("manager.cache_manager.CacheManager.MATCH_CACHE_FILE", str(cache_path / "matches.pkl"))
     monkeypatch.setattr("manager.cache_manager.CacheManager.METADATA_CACHE_FILE", str(cache_path / "metadata.pkl"))
+    monkeypatch.setattr("manager.config_manager.ConfigManager.CONFIG_FILE", "./does_not_exist.ini")
     from manager import get_manager
 
     # Avoid re-initialization

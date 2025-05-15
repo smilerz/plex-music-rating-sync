@@ -144,3 +144,10 @@ class LogManager:
         ch_std.setLevel(TRACE_LEVEL)
         self.logger.info("Logging initialized with custom settings.")
         return self.logger
+
+    def update_log_level(self, log_level: LogLevel) -> None:
+        """Update logger level after initial setup."""
+        if isinstance(log_level, str) and log_level in LogLevel:
+            self.logger.setLevel(self.LOG_LEVEL_MAP[log_level])
+        elif hasattr(log_level, "value") and log_level.value in LogLevel:
+            self.logger.setLevel(self.LOG_LEVEL_MAP[log_level])
