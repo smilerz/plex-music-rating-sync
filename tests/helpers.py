@@ -1,3 +1,4 @@
+import io
 from typing import List
 
 from mutagen.id3 import ID3, POPM, TALB, TIT2, TPE1, TRCK, TXXX
@@ -121,3 +122,52 @@ def add_or_update_id3frame(
                 _update_popm_rating(audio_file, rating, tag)
 
     return audio_file
+
+
+class WriteSpy(io.StringIO):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.write_calls = []
+        self.writelines_calls = []
+
+    def write(self, s):
+        self.write_calls.append(s)
+        return super().write(s)
+
+    def writelines(self, lines):
+        self.writelines_calls.append(list(lines))
+        return super().writelines(lines)
+
+    def open_for_mode(self, mode):
+        if "w" in mode:
+            self.seek(0)
+            self.truncate(0)
+        elif "a" in mode:
+            self.seek(0, io.SEEK_END)
+        else:
+            self.seek(0)
+        return self
+
+
+def generate_playlist_content(lines, is_extm3u=False, title=None):
+    """Generate playlist file content as a string."""
+    header = []
+    if is_extm3u:
+        header.append("#EXTM3U")
+        if title:
+            header.append(f"#PLAYLIST:{title}")
+    content_lines = header
+    for entry in lines:
+        if isinstance(entry, dict):
+            extinf = entry.get("extinf")
+            path = entry.get("path")
+            if is_extm3u and extinf:
+                content_lines.append(f"#EXTINF:{extinf}")
+            if path:
+                content_lines.append(path)
+        else:
+            content_lines.append(entry)
+    content = "\n".join(content_lines)
+    if content and not content.endswith("\n"):
+        content += "\n"
+    return content

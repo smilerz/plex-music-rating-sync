@@ -1,4 +1,3 @@
-import io
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -9,6 +8,7 @@ from mutagen.id3 import ID3FileType
 from filesystem_provider import FileSystemProvider
 from ratings import Rating
 from sync_items import AudioTag, Playlist
+from tests.helpers import WriteSpy, generate_playlist_content
 
 
 # --- Fixtures & Factories ---
@@ -50,32 +50,8 @@ def file_factory():
 def playlist_factory():
     """Create in-memory playlist files for tests."""
 
-    class WriteSpy(io.StringIO):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self.write_calls = []
-            self.writelines_calls = []
-
-        def write(self, s):
-            self.write_calls.append(s)
-            return super().write(s)
-
-        def writelines(self, lines):
-            self.writelines_calls.append(list(lines))
-            return super().writelines(lines)
-
-        def open_for_mode(self, mode):
-            if "w" in mode:
-                self.seek(0)
-                self.truncate(0)
-            elif "a" in mode:
-                self.seek(0, io.SEEK_END)
-            else:
-                self.seek(0)
-            return self
-
     @contextmanager
-    def _factory(playlist_root, filename, lines, is_extm3u=False, title=None, exists=True, open_raises=False, track_exists_map=None):
+    def _factory(playlist_root, monkeypatch, filename, lines, is_extm3u=False, title=None, exists=True, open_raises=False, track_exists_map=None):
         if playlist_root is None or filename is None:
             raise ValueError("playlist_root and filename are required for playlist_factory")
         if lines is None:
@@ -99,47 +75,16 @@ def playlist_factory():
         def exists_patch(path_self):
             if path_self == playlist_path:
                 return exists
-            if str(path_self) in track_exists_map:
-                return track_exists_map[str(path_self)]
-            return Path.exists(path_self)
+            return track_exists_map.get(str(path_self), Path.exists(path_self))
 
-        open_patcher = patch.object(Path, "open", open_patch)
-        exists_patcher = patch.object(Path, "exists", exists_patch)
-        open_patcher.start()
-        exists_patcher.start()
-        try:
-            if lines is not None or is_extm3u or title:
-                header = []
-                if is_extm3u:
-                    header.append("#EXTM3U")
-                    if title:
-                        header.append(f"#PLAYLIST:{title}")
-                default_lines = [
-                    "music/track1.mp3",
-                    "music/track2.mp3",
-                    "other/track3.mp3",
-                    "other/track4.mp3",
-                    "# This is a comment",
-                    "",
-                ]
-                content_lines = header
-                for entry in lines if lines is not None else default_lines:
-                    if isinstance(entry, dict):
-                        extinf = entry.get("extinf")
-                        path = entry.get("path")
-                        if is_extm3u and extinf:
-                            content_lines.append(f"#EXTINF:{extinf}")
-                        if path:
-                            content_lines.append(path)
-                    else:
-                        content_lines.append(entry)
-                content = "\n".join(content_lines)
-                playlist_content.write(content + "\n" if content and not content.endswith("\n") else content)
-                playlist_content.seek(0)
-            yield playlist_content, playlist_path
-        finally:
-            open_patcher.stop()
-            exists_patcher.stop()
+        monkeypatch.setattr(Path, "open", open_patch)
+        monkeypatch.setattr(Path, "exists", exists_patch)
+
+        # Use the helper for content generation
+        content = generate_playlist_content(lines, is_extm3u=is_extm3u, title=title)
+        playlist_content.write(content)
+        playlist_content.seek(0)
+        yield playlist_content, playlist_path
 
     return _factory
 
@@ -469,13 +414,14 @@ class TestReadPlaylistMetadata:
             (["#EXTM3U", "# This is a comment", ""], True, None, False, "x"),
         ],
     )
-    def test_read_playlist_metadata_variations(self, fsp_instance, playlist_factory, lines, is_extm3u, title, expect_none, expected_name):
+    def test_read_playlist_metadata_variations(self, fsp_instance, playlist_factory, lines, is_extm3u, title, expect_none, expected_name, monkeypatch):
         with playlist_factory(
             playlist_root=fsp_instance.playlist_path,
             filename="x.m3u",
             lines=lines,
             is_extm3u=is_extm3u,
             title=title,
+            monkeypatch=monkeypatch,
         ) as (playlist_content, playlist_path):
             result = fsp_instance.read_playlist_metadata(playlist_path)
             if expect_none:
@@ -485,31 +431,57 @@ class TestReadPlaylistMetadata:
                 assert result.is_extm3u == is_extm3u
                 assert result.name == expected_name
 
-    def test_open_playlist_file_not_exists_in_read_mode(self, fsp_instance, playlist_factory):
+    def test_open_playlist_file_not_exists_in_read_mode(self, fsp_instance, playlist_factory, monkeypatch):
         with playlist_factory(
             playlist_root=fsp_instance.playlist_path,
             filename="notfound.m3u",
             lines=["music/track1.mp3"],
             exists=False,
+            monkeypatch=monkeypatch,
         ) as (playlist_content, playlist_path):
             result = fsp_instance._open_playlist(playlist_path, mode="r")
             assert result is None
 
-    def test_open_playlist_open_raises_exception(self, fsp_instance, playlist_factory):
+    def test_open_playlist_open_raises_exception(self, fsp_instance, playlist_factory, monkeypatch):
         with playlist_factory(
             playlist_root=fsp_instance.playlist_path,
             filename="failopen.m3u",
             lines=["music/track1.mp3"],
             open_raises=True,
+            monkeypatch=monkeypatch,
         ) as (playlist_content, playlist_path):
             result = fsp_instance._open_playlist(playlist_path, mode="r")
             assert result is None
 
 
+def _build_path_maps(playlist_case, playlist_path):
+    exists_map = {}
+    scope_map = {}
+    for entry in playlist_case:
+        line = entry["line"]
+        if "exists" in entry and line and not line.strip().startswith("#"):
+            candidate_path = (playlist_path.parent / line) if not Path(line).is_absolute() else Path(line)
+            exists_map[str(candidate_path)] = entry["exists"]
+        if "in_scope" in entry and line and not line.strip().startswith("#"):
+            candidate_path = (playlist_path.parent / line) if not Path(line).is_absolute() else Path(line)
+            scope_map[str(candidate_path)] = entry["in_scope"]
+    return exists_map, scope_map
+
+
+def _expected_tracks(playlist_case, playlist_path):
+    expected = set()
+    for entry in playlist_case:
+        line = entry["line"]
+        if "exists" in entry and "in_scope" in entry and entry["exists"] and entry["in_scope"]:
+            candidate_path = (playlist_path.parent / line) if not Path(line).is_absolute() else Path(line)
+            expected.add(str(candidate_path.resolve()))
+    return expected
+
+
 class TestGetTracksFromPlaylist:
     """Test get_tracks_from_playlist for filtering of comments, blank, in-scope, and out-of-scope lines."""
 
-    def test_get_tracks_from_playlist(self, fsp_instance, playlist_factory):
+    def test_get_tracks_from_playlist(self, fsp_instance, playlist_factory, monkeypatch):
         audio_root = fsp_instance.path
         playlist_case = [
             {"line": "music/track1.mp3", "exists": True, "in_scope": True},
@@ -528,17 +500,9 @@ class TestGetTracksFromPlaylist:
             playlist_root=fsp_instance.playlist_path,
             filename="test_playlist.m3u",
             lines=lines,
+            monkeypatch=monkeypatch,
         ) as (playlist_content, playlist_path):
-            exists_map = {}
-            scope_map = {}
-            for entry in playlist_case:
-                line = entry["line"]
-                if "exists" in entry and line and not line.strip().startswith("#"):
-                    candidate_path = (playlist_path.parent / line) if not Path(line).is_absolute() else Path(line)
-                    exists_map[str(candidate_path)] = entry["exists"]
-                if "in_scope" in entry and line and not line.strip().startswith("#"):
-                    candidate_path = (playlist_path.parent / line) if not Path(line).is_absolute() else Path(line)
-                    scope_map[str(candidate_path)] = entry["in_scope"]
+            exists_map, scope_map = _build_path_maps(playlist_case, playlist_path)
             real_exists = Path.exists
             real_is_relative_to = Path.is_relative_to
 
@@ -555,22 +519,10 @@ class TestGetTracksFromPlaylist:
             with patch.object(Path, "exists", exists_side_effect), patch.object(Path, "is_relative_to", is_relative_to_side_effect):
                 result = fsp_instance.get_tracks_from_playlist(playlist_path)
             result_paths = {str(Path(p).resolve()) for p in result}
-            for entry in playlist_case:
-                line = entry["line"]
-                if "exists" not in entry:
-                    assert all(line not in p for p in result_paths)
-                    continue
-                candidate_path = (playlist_path.parent / line) if not Path(line).is_absolute() else Path(line)
-                candidate_abs = str(candidate_path.resolve())
-                if "exists" in entry and "in_scope" in entry:
-                    if entry["exists"] and entry["in_scope"]:
-                        assert candidate_abs in result_paths
-                    else:
-                        assert candidate_abs not in result_paths
-                else:
-                    assert candidate_abs not in result_paths
+            expected = _expected_tracks(playlist_case, playlist_path)
+            assert result_paths == expected
 
-    def test_get_tracks_from_playlist_only_comments_and_blanks(self, fsp_instance, playlist_factory):
+    def test_get_tracks_from_playlist_only_comments_and_blanks(self, fsp_instance, playlist_factory, monkeypatch):
         playlist_case = [
             {"line": "#c"},
             {"line": ""},
@@ -582,6 +534,7 @@ class TestGetTracksFromPlaylist:
             playlist_root=fsp_instance.playlist_path,
             filename="test_playlist.m3u",
             lines=lines,
+            monkeypatch=monkeypatch,
         ) as (playlist_content, playlist_path):
             with patch.object(Path, "exists", return_value=True), patch.object(Path, "is_relative_to", return_value=True):
                 result = fsp_instance.get_tracks_from_playlist(playlist_path)
@@ -592,7 +545,7 @@ class TestAddTrackToPlaylist:
     """Test add_track_to_playlist for success and file open error."""
 
     @pytest.mark.parametrize("is_extm3u", [True, False])
-    def test_add_track_to_playlist_success(self, is_extm3u, fsp_instance, playlist_factory):
+    def test_add_track_to_playlist_success(self, is_extm3u, fsp_instance, playlist_factory, monkeypatch):
         track1_path = fsp_instance.path / "test_track1.mp3"
         track1 = AudioTag(file_path=str(track1_path), artist="A", title="T", duration=123)
         with playlist_factory(
@@ -600,6 +553,7 @@ class TestAddTrackToPlaylist:
             filename="test_playlist.m3u",
             lines=["#EXTM3U", "# This is a comment", "music/track1.mp3"],
             is_extm3u=is_extm3u,
+            monkeypatch=monkeypatch,
         ) as (playlist_content, playlist_path):
             playlist_content.seek(0)
             original_content = playlist_content.read()
@@ -644,11 +598,12 @@ class TestRemoveTrackFromPlaylist:
             (["music/track1.mp3", "music/track2.mp3"], "music/track3.mp3", ["music/track1.mp3", "music/track2.mp3"]),
         ],
     )
-    def test_remove_track_from_playlist_success(self, fsp_instance, playlist_factory, initial_lines, remove_track, expected_lines):
+    def test_remove_track_from_playlist_success(self, fsp_instance, playlist_factory, initial_lines, remove_track, expected_lines, monkeypatch):
         with playlist_factory(
             playlist_root=fsp_instance.playlist_path,
             filename="test_playlist.m3u",
             lines=initial_lines,
+            monkeypatch=monkeypatch,
         ) as (playlist_content, playlist_path):
             playlist_content.seek(0)
             original_content = playlist_content.read()
