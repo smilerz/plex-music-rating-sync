@@ -97,8 +97,6 @@ def initialize_manager(monkeypatch, patch_paths, config_args):
 
     logs_path, cache_path = patch_paths
 
-    monkeypatch.setattr("manager.manager.get_stats_manager", lambda: MagicMock())
-    monkeypatch.setattr("manager.manager.get_status_manager", lambda: MagicMock())
     monkeypatch.setattr("manager.log_manager.LogManager.LOG_DIR", str(logs_path))
     monkeypatch.setattr("manager.cache_manager.CacheManager.MATCH_CACHE_FILE", str(cache_path / "matches.pkl"))
     monkeypatch.setattr("manager.cache_manager.CacheManager.METADATA_CACHE_FILE", str(cache_path / "metadata.pkl"))
@@ -107,5 +105,7 @@ def initialize_manager(monkeypatch, patch_paths, config_args):
 
     # Avoid re-initialization
     mgr = get_manager()
+    monkeypatch.setattr(mgr, "get_stats_manager", lambda: MagicMock())
+    monkeypatch.setattr(mgr, "get_status_manager", lambda: MagicMock())
     if not getattr(mgr, "_initialized", False):
         mgr.initialize()

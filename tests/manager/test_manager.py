@@ -61,17 +61,6 @@ class TestManager:
         m2.initialize()
         assert m1 is m2
 
-    def test_manager_module_variable_is_singleton(self, monkeypatch, get_manager):
-        """Test that the module-level 'manager' is the same as get_manager()."""
-
-        m = get_manager()
-        assert m._initialized is None
-        m.initialize()
-        assert m._initialized is True
-        from manager import manager
-
-        assert manager is m
-
     @pytest.mark.parametrize(
         "accessor,expected_type_name",
         [

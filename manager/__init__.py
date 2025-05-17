@@ -50,6 +50,3 @@ class Manager:
 
 def get_manager() -> Manager:
     return Manager()
-
-
-manager = get_manager()

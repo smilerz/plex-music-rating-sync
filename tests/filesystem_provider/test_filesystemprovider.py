@@ -6,31 +6,32 @@ import pytest
 from mutagen.id3 import ID3FileType
 
 from filesystem_provider import FileSystemProvider
+from manager import get_manager
 from ratings import Rating
 from sync_items import AudioTag, Playlist
 from tests.helpers import WriteSpy, generate_playlist_content
 
 
-# --- Fixtures & Factories ---
 @pytest.fixture
-def fsp_instance(request, tmp_path):
-    """FileSystemProvider with mocked config and status."""
+def fsp_instance(request, tmp_path, monkeypatch):
+    """FileSystemProvider with real ConfigManager, patched for test isolation."""
     cfg = getattr(request, "param", {})
     audio_root = tmp_path / "music"
     playlist_root = tmp_path / "playlists"
 
-    fsp = FileSystemProvider()
-    config = MagicMock()
+    config = get_manager().get_config_manager()
     config.path = audio_root
     config.playlist_path = playlist_root
     config.dry = cfg.get("dry", False)
-    fsp.config_mgr = config
-    status = MagicMock()
-    status.start_phase.return_value = MagicMock()
-    fsp.status_mgr = status
-    fsp.path = audio_root
-    fsp.playlist_path = playlist_root
-    return fsp
+
+    # from
+    # config_mgr = ConfigManager()
+
+    # get_manager = MagicMock(return_value=config_mgr)
+
+    # monkeypatch.setattr("manager.get_manager", lambda: get_manager)
+
+    return FileSystemProvider()
 
 
 @pytest.fixture
