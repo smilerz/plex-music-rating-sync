@@ -9,6 +9,10 @@ from manager.config_manager import LogLevel
 from manager.log_manager import TRACE_LEVEL, InfoFilter, LevelBasedFormatter, LogManager, TqdmLoggingHandler
 
 
+def make_handler(level):
+    return MagicMock(level=level)
+
+
 @pytest.fixture(autouse=True)
 def clear_logger_handlers():
     logger = logging.getLogger("PlexSync")
@@ -17,7 +21,7 @@ def clear_logger_handlers():
     logger.handlers.clear()
 
 
-class TestLogManagerInitialization:
+class TestInitialization:
     def test_init_default_values_sets_expected_attributes(self):
         mgr = LogManager()
         assert mgr.log_dir == LogManager.LOG_DIR
@@ -32,7 +36,7 @@ class TestLogManagerInitialization:
         assert mgr.max_backups == 42
 
 
-class TestLogManagerRotateLogs:
+class TestRotateLogs:
     @patch("os.path.exists")
     @patch("os.rename")
     @patch("os.remove")
@@ -65,23 +69,25 @@ class TestLogManagerRotateLogs:
         mock_remove.assert_not_called()
 
 
-class TestLogManagerSetupLogging:
+class TestSetupLogging:
     @patch("os.makedirs")
     @patch.object(LogManager, "_rotate_logs")
     @patch("logging.FileHandler")
     @patch("manager.log_manager.TqdmLoggingHandler")
-    def test_setup_logging_creates_log_dir_and_handlers(self, mock_tqdm, mock_filehandler, mock_rotate, mock_makedirs):
+    @pytest.mark.parametrize("log_level", ["debug", "info", "warning", "error", "critical", "trace", 10])
+    def test_setup_logging_creates_log_dir_and_handlers(self, mock_tqdm, mock_filehandler, mock_rotate, mock_makedirs, log_level):
         mgr = LogManager(log_dir="logs", log_file="foo.log")
         logger = mgr.logger
         # Remove all handlers before test
         logger.handlers.clear()
         # Simulate FileHandler and TqdmLoggingHandler
-        mock_fh = MagicMock()
+
+        mock_fh = make_handler(logging.INFO)
         mock_filehandler.return_value = mock_fh
-        mock_ch_err = MagicMock()
-        mock_ch_std = MagicMock()
+        mock_ch_err = make_handler(logging.WARNING)
+        mock_ch_std = make_handler(TRACE_LEVEL)
         mock_tqdm.side_effect = [mock_ch_err, mock_ch_std]
-        result_logger = mgr.setup_logging("debug")
+        result_logger = mgr.setup_logging(log_level)
         mock_makedirs.assert_called_once_with("logs", exist_ok=True)
         mock_rotate.assert_called_once()
         # FileHandler and both console handlers added
@@ -96,48 +102,77 @@ class TestLogManagerSetupLogging:
         with pytest.raises(RuntimeError):
             mgr.setup_logging(level)
 
-    @patch("os.makedirs")
-    @patch.object(LogManager, "_rotate_logs")
-    @patch("logging.FileHandler")
-    @patch("manager.log_manager.TqdmLoggingHandler")
-    def test_setup_logging_sets_logger_level_and_handlers(self, mock_tqdm, mock_filehandler, mock_rotate, mock_makedirs):
+
+class TestUpdateLogLevel:
+    @pytest.mark.parametrize(
+        "input_level,log_func,expected_level,expected_msg",
+        [
+            (LogLevel.INFO, "info", logging.INFO, "hello info"),
+            (LogLevel.WARNING, "warning", logging.WARNING, "hello warning"),
+            (LogLevel.ERROR, "error", logging.ERROR, "hello error"),
+            (LogLevel.CRITICAL, "critical", logging.CRITICAL, "hello critical"),
+            (LogLevel.TRACE, "trace", TRACE_LEVEL, "hello trace"),
+            (LogLevel.DEBUG, "debug", logging.DEBUG, "hello debug"),
+        ],
+    )
+    def test_update_log_level_and_emit_success(self, input_level, log_func, expected_level, expected_msg):
         mgr = LogManager()
         logger = mgr.logger
         logger.handlers.clear()
-        mock_fh = MagicMock()
-        mock_filehandler.return_value = mock_fh
-        mock_ch_err = MagicMock()
-        mock_ch_std = MagicMock()
-        mock_tqdm.side_effect = [mock_ch_err, mock_ch_std]
-        mgr.setup_logging("info")
-        # Logger level set to INFO
-        assert logger.level == logging.INFO
-        # ch_err set to WARNING, ch_std set to TRACE_LEVEL
-        mock_ch_err.setLevel.assert_called_with(logging.WARNING)
-        mock_ch_std.setLevel.assert_called_with(TRACE_LEVEL)
+        out = {}
 
+        class DummyHandler(logging.Handler):
+            def emit(self, record):
+                out["level"] = record.levelno
+                out["msg"] = record.getMessage()
 
-class TestLogManagerUpdateLogLevel:
+        handler = DummyHandler()
+        logger.addHandler(handler)
+        mgr.update_log_level(input_level)
+        # Log at the configured level
+        getattr(logger, log_func)(expected_msg)
+        assert out["level"] == expected_level
+        assert out["msg"] == expected_msg
+
+    @pytest.mark.parametrize("input_level", ["debug", 999, None])
+    def test_update_log_level_raises(self, input_level):
+        mgr = LogManager()
+        with pytest.raises(TypeError):
+            mgr.update_log_level(input_level)
+
     @pytest.mark.parametrize(
-        "input_level,expected",
+        "input_level,msg_expected",
         [
-            ("debug", logging.DEBUG),
-            (LogLevel.INFO, logging.INFO),
-            ("trace", TRACE_LEVEL),
+            (LogLevel.INFO, False),
+            (LogLevel.WARNING, False),
+            (LogLevel.ERROR, False),
+            (LogLevel.CRITICAL, False),
+            (LogLevel.TRACE, True),
+            (LogLevel.DEBUG, False),
         ],
     )
-    def test_update_log_level_accepts_string_and_enum(self, input_level, expected):
+    def test_trace_level(self, input_level, msg_expected):
         mgr = LogManager()
-        mgr.logger.setLevel(logging.WARNING)
-        mgr.update_log_level(input_level)
-        assert mgr.logger.level == expected
+        logger = mgr.logger
+        logger.handlers.clear()
+        out = {}
 
-    def test_update_log_level_invalid_value_noop(self):
-        mgr = LogManager()
-        mgr.logger.setLevel(logging.ERROR)
-        # Should not change level for invalid input
-        mgr.update_log_level("notalevel")
-        assert mgr.logger.level == logging.ERROR
+        class DummyHandler(logging.Handler):
+            def emit(self, record):
+                out["level"] = record.levelno
+                out["msg"] = record.getMessage()
+
+        handler = DummyHandler()
+        logger.addHandler(handler)
+        mgr.update_log_level(input_level)
+        # Log at the configured level
+        logger.trace("hello trace")
+        if msg_expected:
+            assert out["level"] == TRACE_LEVEL
+            assert out["msg"] == "hello trace"
+        else:
+            assert out.get("level") is None
+            assert out.get("msg") is None
 
 
 class TestLevelBasedFormatter:
@@ -194,22 +229,3 @@ class TestInfoFilter:
         f = InfoFilter()
         rec = logging.LogRecord("foo", level, "", 0, "msg", (), None)
         assert f.filter(rec) is expected
-
-
-class TestTraceLoggerExtension:
-    def test_trace_method_logs_at_trace_level(self):
-        logger = logging.getLogger("PlexSync")
-        logger.handlers.clear()
-        out = {}
-
-        class DummyHandler(logging.Handler):
-            def emit(self, record):
-                out["level"] = record.levelno
-                out["msg"] = record.getMessage()
-
-        handler = DummyHandler()
-        logger.addHandler(handler)
-        logger.setLevel(TRACE_LEVEL)
-        logger.trace("hello trace")
-        assert out["level"] == TRACE_LEVEL
-        assert out["msg"] == "hello trace"

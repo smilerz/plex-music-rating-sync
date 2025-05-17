@@ -99,10 +99,10 @@ class LogManager:
         level = -1
         if isinstance(log_level, str):
             try:
-                normalized_level = log_level.lower()
-                if normalized_level in LogLevel:
-                    level = self.LOG_LEVEL_MAP[normalized_level]
-            except (KeyError, ValueError):
+                enum_level = LogLevel[log_level.upper()]
+                level = self.LOG_LEVEL_MAP[enum_level]
+            except (KeyError, AttributeError):
+                # If the string is not a valid enum member, leave level as -1
                 pass
         elif isinstance(log_level, int):
             if 0 <= log_level <= 50:
@@ -147,7 +147,6 @@ class LogManager:
 
     def update_log_level(self, log_level: LogLevel) -> None:
         """Update logger level after initial setup."""
-        if isinstance(log_level, str) and log_level in LogLevel:
-            self.logger.setLevel(self.LOG_LEVEL_MAP[log_level])
-        elif hasattr(log_level, "value") and log_level.value in LogLevel:
-            self.logger.setLevel(self.LOG_LEVEL_MAP[log_level])
+        if not isinstance(log_level, LogLevel):
+            raise TypeError(f"log_level must be a LogLevel, got {type(log_level).__name__}")
+        self.logger.setLevel(self.LOG_LEVEL_MAP[log_level])
