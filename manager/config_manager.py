@@ -208,7 +208,7 @@ class ConfigManager:
         current_config = self.to_dict()
         changes = self._get_runtime_config_changes(current_config)
 
-        if not changes or self.dry:
+        if not changes:
             self.logger.debug("No config changes detected.")
             return
 
@@ -255,38 +255,51 @@ class ConfigManager:
     def _update_config_file(self, changes: dict) -> None:
         updater = ConfigUpdater()
         updater.read(self.CONFIG_FILE)
+        changed = False
 
         for key, value in changes.items():
-            section_name = self._find_section_for_key(key)
-            if not section_name:
+            expected_section = self._find_section_for_key(key)
+            cfg_key = self._get_config_key_name(key)
+
+            current_section = next(
+                (s.name for s in updater.iter_sections() if s.has_option(cfg_key)),
+                None,
+            )
+            target = current_section or expected_section
+            if not target:
                 continue
 
-            if not updater.has_section(section_name):
-                updater.add_section(section_name)
+            if not updater.has_section(target):
+                updater.add_section(target)
 
-            config_key = self._get_config_key_name(key)
-            existing = updater[section_name].get(config_key)
-            existing_line = existing.value if existing else ""
+            opt = updater[target].get(cfg_key)
+            old_line = opt.value if opt else ""
+            new_val = stringify_value(value, old_line)
 
-            updater[section_name][config_key] = None
-            option_obj = updater[section_name][config_key]
-            option_obj.value = stringify_value(value, existing_line)
+            # Only set if value is different
+            if opt is None or old_line != new_val:
+                updater[target][cfg_key] = new_val
+                changed = True
 
-        updater.update_file(self.CONFIG_FILE)
+        if changed:
+            updater.update_file(self.CONFIG_FILE)
 
 
-def stringify_value(new_value: str | bool | List[str], existing_line: str = "") -> str:
+def stringify_value(new_value: str | bool | None | List[str], existing_line: str | None = "") -> str:
     """
     Converts the new value into a config file string while preserving inline comments and padding.
     - `existing_line` should be the original raw value string (e.g., 'true     # keep this')
     """
+    existing_line = existing_line or ""
     # Extract comment
     lhs, sep, comment = existing_line.partition("#")
     lhs_stripped = lhs.rstrip()
     padding = lhs[len(lhs_stripped) :] if lhs else ""
 
     # Build new value string
-    if isinstance(new_value, list):
+    if new_value is None:
+        value_str = ""
+    elif isinstance(new_value, list):
         value_str = "[" + ", ".join(new_value) + "]"
     elif isinstance(new_value, bool):
         value_str = "true" if new_value else "false"
@@ -298,4 +311,4 @@ def stringify_value(new_value: str | bool | List[str], existing_line: str = "") 
         value_str = value_str + " " * (len(lhs_stripped) - len(value_str))
 
     # Include original spacing + inline comment
-    return f"{value_str}{padding}#{comment}" if sep else value_str
+    return f"{value_str}{padding}#{comment}" if sep else value_str.rstrip()
