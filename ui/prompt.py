@@ -2,27 +2,39 @@ from typing import Callable, List
 
 
 class UserPrompt:
+    HELP_INPUTS = {"?", "h", "help"}
+    YES_INPUTS = {"y", "yes"}
+    NO_INPUTS = {"n", "no"}
+
+    def _build_prompt(self, message: str, help_text: str | None = None, suffix: str = "") -> str:
+        prompt = message
+        if help_text:
+            prompt += " (type '?' for help)"
+        if suffix:
+            prompt += f" {suffix}"
+        prompt += ": "
+        return prompt
+
+    def _get_input(self, prompt: str, lower: bool = True) -> str:
+        user_input = input(prompt).strip()
+        return user_input.lower() if lower else user_input
+
+    def _print_help(self, help_text: str | None, default: str) -> None:
+        print("\n" + (help_text if help_text else default))
+
+    def _print_invalid_input(self, message: str) -> None:
+        print(message)
+
     def choice(self, message: str, options: List[str], *, default: int | List[int] | None = None, allow_multiple: bool = False, help_text: str | None = None) -> str | List[str]:
-        """Prompt the user to select from a list of options."""
         while True:
             print("\n" + message)
             for idx, opt in enumerate(options, 1):
                 print(f"  {idx}) {opt}")
-
-            prompt = f"Select {'one or more' if allow_multiple else 'one'} [1-{len(options)}]"
-            if help_text:
-                prompt += " (type '?' for help)"
-            prompt += ": "
-
-            user_input = input(prompt).strip().lower()
-
-            if user_input in {"?", "h", "help"}:
-                if help_text:
-                    print("\n" + help_text)
-                else:
-                    print("\n(No help available.)")
+            prompt = self._build_prompt(f"Select {'one or more' if allow_multiple else 'one'} [1-{len(options)}]", help_text=help_text)
+            user_input = self._get_input(prompt)
+            if user_input in self.HELP_INPUTS:
+                self._print_help(help_text, "(No help available.)")
                 continue
-
             try:
                 if allow_multiple:
                     idxs = [int(i.strip()) for i in user_input.split(",")]
@@ -34,67 +46,36 @@ class UserPrompt:
                         return options[idx - 1]
             except ValueError:
                 pass
-
-            print("Invalid input. Enter a number" + (" or comma-separated list" if allow_multiple else "") + ", or '?' for help.")
+            self._print_invalid_input("Invalid input. Enter a number" + (" or comma-separated list" if allow_multiple else "") + ", or '?' for help.")
 
     def yes_no(self, message: str, *, default: bool = False) -> bool:
-        """
-        Prompt the user with a yes/no question.
-
-        Args:
-            message (str): The message to display.
-            default (bool): What to return if the user just presses enter.
-
-        Returns:
-            bool: True for yes, False for no.
-        """
-        yes = {"y", "yes"}
-        no = {"n", "no"}
         default_str = "[Y/n]" if default else "[y/N]"
-
         while True:
-            choice = input(f"{message} {default_str} (type '?' for help): ").strip().lower()
-            if choice in {"?", "h", "help"}:
-                print("\nPlease enter 'y' for yes or 'n' for no.")
+            prompt = self._build_prompt(message, help_text=None, suffix=default_str + " (type '?' for help)")
+            choice = self._get_input(prompt)
+            if choice in self.HELP_INPUTS:
+                self._print_help(None, "Please enter 'y' for yes or 'n' for no.")
                 continue
             if choice == "" and default is not None:
                 return default
-            elif choice in yes:
+            elif choice in self.YES_INPUTS:
                 return True
-            elif choice in no:
+            elif choice in self.NO_INPUTS:
                 return False
             else:
-                print("Please respond with 'y' or 'n'.")
+                self._print_invalid_input("Please respond with 'y' or 'n'.")
 
     def text(self, message: str, *, validator: Callable | None = None, help_text: str | None = None) -> str:
-        """
-        Prompt the user for freeform input with optional validation.
-
-        Args:
-            message (str): The prompt to show.
-            validator (Callable[[str], bool], optional): Input validation function.
-            help_text (str, optional): Help message to show on '?' input.
-
-        Returns:
-            str: The validated user input.
-        """
-        full_prompt = f"{message}"
-        if help_text:
-            full_prompt += " (type '?' for help)"
-        full_prompt += ": "
-
+        prompt = self._build_prompt(message, help_text=help_text)
         while True:
-            user_input = input(full_prompt).strip()
-
-            if user_input in {"?", "h", "help"}:
-                print("\n" + (help_text or "No help available."))
+            user_input = self._get_input(prompt, lower=False)
+            if user_input in self.HELP_INPUTS:
+                self._print_help(help_text, "No help available.")
                 continue
-
             if validator is None or validator(user_input):
                 return user_input
-
-            print("Invalid input. Try again or type '?' for help.")
+            self._print_invalid_input("Invalid input. Try again or type '?' for help.")
 
     def confirm_continue(self, message: str = "Press Enter to continue or 'q' to quit: ") -> bool:
-        response = input(message).strip().lower()
+        response = self._get_input(message)
         return response != "q"
