@@ -50,18 +50,18 @@ Different media players store ratings using different tags. For example:
 This setting controls **which** tags get updated with the resolved rating:
 
   - WRITE_ALL: Write to every known tag.
-    ⚠️ WARNING: This can overwrite ratings from other users or players.
+    WARNING: This can overwrite ratings from other users or players.
     Example: You overwrite both MediaMonkey and Windows ratings with your new value.
 
   - WRITE_EXISTING: Only update tags that are already present.
-    ⚠️ WARNING: Still overwrites values in those tags.
+    WARNING: Still overwrites values in those tags.
     Example: If a MediaMonkey tag exists, its value will be replaced.
 
   - WRITE_DEFAULT: Only write to your chosen preferred player tag.
     Example: You choose MediaMonkey → only the POPM:no@email tag is updated.
 
   - OVERWRITE_DEFAULT: First remove all rating tags, then write only to the preferred tag.
-    ⚠️ WARNING: Destroys all other rating data.
+    WARNING: Destroys all other rating data.
 
 Use 'WRITE_DEFAULT' if you are unsure — it's the safest choice.
 """
@@ -135,12 +135,13 @@ Options:
         - Artist name
         - Album name
         - Track title
+        - Track number
         - File path
 
       Match quality is grouped into:
         - Perfect: nearly identical across all fields
         - Good: high similarity in core fields
-        - Poor: significant metadata differences, but identical file paths
+        - Poor: significant metadata differences, but identical track numbers or paths
 
       By default, tracks with Poor or better quality are eligible for syncing.
       This threshold represents the minimum confidence level that the two tracks refer to the same file — even when metadata differs.
@@ -157,6 +158,7 @@ Each discovered track pair is assigned a score based on the similarity of the fo
   • Artist name
   • Album name
   • Track title
+  • Track number
   • File path
 
 The better the alignment, the higher the score.
@@ -176,12 +178,13 @@ Match Categories:
       but still represent a strong match based on artist, album, and file path.
 
   • Poor:
-      Major differences in metadata, but identical file paths (usually file name and folder structure match).
+      Major differences in metadata, but identical track numbers or file paths (usually file name and folder structure match).
       This is still considered safe for syncing because the path provides strong identity.
 
       → Example:
-         Source: "Unknown Artist - Track 01"
-         Destination: "Radiohead - OK Computer - No Surprises"
+         Source: "<blank> - <black> - radio_head_01_no_surprises (track: 1)"
+         Destination: "Radiohead - OK Computer - No Surprises (track: 1)"
+         Weak title match, but identical track number and strong file path match.
          File path: `/Music/Radiohead/OK Computer/No Surprises.mp3` in both
 
       Even though artist, title, and album are mismatched, the identical path implies they are the same file.

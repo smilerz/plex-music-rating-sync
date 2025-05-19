@@ -114,7 +114,7 @@ class TrackPair(SyncPair):
         return reversed_pair
 
     @staticmethod
-    def display_pair_details(category: str, sync_pairs: List["TrackPair"]) -> None:
+    def display_pair_details(category: str, sync_pairs: List["TrackPair"]) -> None:  # pragma: no cover
         """Display track details in a tabular format."""
         if not sync_pairs:
             print(f"\nNo tracks found for {category}.")
@@ -141,9 +141,6 @@ class TrackPair(SyncPair):
             return fuzz.ratio(self.source.album, destination.album)
 
     def both_albums_empty(self, destination: AudioTag | None = None) -> bool:
-        if destination is None:
-            destination = self.destination
-
         return self.source_player.album_empty(self.source.album) and self.destination_player.album_empty(destination.album)
 
     def _get_cache_match(self) -> AudioTag | None:
@@ -151,19 +148,21 @@ class TrackPair(SyncPair):
         if not self.cache_mgr.match_cache:
             return None
 
-        cached_id, cached_score = self.cache_mgr.get_match(self.source.ID, source_name=self.source_player.name(), dest_name=self.destination_player.name())
+        cached_id, cached_score = self.cache_mgr.get_match(
+            self.source.ID,
+            source_name=self.source_player.name(),
+            dest_name=self.destination_player.name(),
+        )
 
-        if not cached_id or cached_score < MatchThreshold.GOOD_MATCH:
+        if not cached_id or cached_score is None:
+            return None
+        if cached_score < MatchThreshold.GOOD_MATCH:
             return None
 
         candidates = self.destination_player.search_tracks(key="id", value=cached_id)
         if candidates:
             self.stats_mgr.increment("cache_hits")
             destination_track = candidates[0]
-
-            if cached_score is None:
-                cached_score = self.similarity(destination_track)
-                self.cache_mgr.set_match(self.source.ID, destination_track.ID, self.source_player.name(), self.destination_player.name(), cached_score)
 
             self.score = cached_score
             return destination_track
@@ -251,7 +250,7 @@ class TrackPair(SyncPair):
             self.sync_state = SyncState.UP_TO_DATE
         elif src and dst.is_unrated:
             self.sync_state = SyncState.NEEDS_UPDATE
-        elif src != dst:
+        else:
             self.sync_state = SyncState.CONFLICTING
             self.logger.warning(f"Found match with conflicting ratings: {self.source} " f"(Source: {src.to_display()} | " f"Destination: {dst.to_display()})")
 
@@ -262,6 +261,7 @@ class TrackPair(SyncPair):
 
     def similarity(self, candidate: AudioTag) -> float:
         """Determines the matching similarity of @candidate with the source query track"""
+        # TODO: add path similarity
         scores = np.array(
             [
                 fuzz.ratio(self.source.title, candidate.title),
@@ -272,16 +272,10 @@ class TrackPair(SyncPair):
         )
         return np.average(scores)
 
-    def sync(self) -> bool:
-        """Synchronizes the source and destination replicas. Always assumes this instance is oriented correctly."""
-        if self.rating_destination is None or self.rating_destination.is_unrated:
-            target_rating = self.rating_source
-        else:
-            target_rating = self.rating_source  # Overwrite case already resolved externally
-
-        self.destination_player.update_rating(self.destination, target_rating)
+    def sync(self) -> None:
+        """Synchronizes the source and destination tracks."""
+        self.destination_player.update_rating(self.destination, self.rating_source)
         self.stats_mgr.increment("tracks_updated")
-        return True
 
 
 class PlaylistPair(SyncPair):
