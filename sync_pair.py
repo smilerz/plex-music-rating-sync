@@ -334,7 +334,8 @@ class PlaylistPair(SyncPair):
         if len(track_pairs) > 0:
             for pair in track_pairs:
                 if not self.destination.has_track(pair.destination):
-                    self.logger.warning(f"Track not found in playlist {self.destination}: {pair.destination}")
+                    self.logger.debug(f"Track not found in playlist {self.destination}: {pair.destination}")
+                    updates.append(pair.destination)
 
         if updates:
             self.logger.debug(f"Adding {len(updates)} missing tracks to playlist {self.destination}")

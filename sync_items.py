@@ -69,7 +69,7 @@ class AudioTag(object):
 
 
 class Playlist(object):
-    def __init__(self, ID: [str, int], name: str):
+    def __init__(self, ID: str | int, name: str):
         self.ID = ID
         self.name = name
         self.tracks = []

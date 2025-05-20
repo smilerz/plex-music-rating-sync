@@ -17,7 +17,6 @@ def source_player():
     player.album_empty = MagicMock(side_effect=album_empty)
     player.search_tracks.return_value = []
     player.update_rating = MagicMock()
-    player.dry_run = False
     return player
 
 
@@ -27,7 +26,6 @@ def destination_player():
     player.album_empty = MagicMock(side_effect=album_empty)
     player.search_tracks.return_value = []
     player.update_rating = MagicMock()
-    player.dry_run = False
     return player
 
 
