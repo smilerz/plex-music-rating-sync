@@ -93,13 +93,12 @@ class MediaPlayer(abc.ABC):
             self.logger.info(f"DRY RUN: Would sync {len(updates)} changes to playlist '{playlist.name}'")
             return
 
-        if len(updates) > 0:
-            self.logger.info(f"Syncing {len(updates)} changes to playlist '{playlist.name}'")
-            bar = self.status_mgr.start_phase("Syncing playlist updates", total=len(updates))
-            for track, present in updates:
-                self.update_playlist(playlist, track, present)
-                bar.update()
-            bar.close()
+        self.logger.info(f"Syncing {len(updates)} changes to playlist '{playlist.name}'")
+        bar = self.status_mgr.start_phase("Syncing playlist updates", total=len(updates))
+        for track, present in updates:
+            self.update_playlist(playlist, track, present)
+            bar.update()
+        bar.close()
         self.logger.debug("Playlist sync completed")
 
     def create_playlist(self, title: str, tracks: List[AudioTag]) -> Playlist | None:
@@ -158,11 +157,11 @@ class MediaPlayer(abc.ABC):
 
     def load_playlist_tracks(self, playlist: Playlist) -> None:
         """Load tracks from a playlist into the Playlist object."""
-        native_playlist = self._search_playlists("id", playlist.ID, return_native=True)[0]
-        if not native_playlist:
+        native_playlists = self._search_playlists("id", playlist.ID, return_native=True)
+        if not native_playlists:
             self.logger.warning(f"Native playlist not found for {playlist.name}")
             return
-
+        native_playlist = native_playlists[0]
         tracks = self._read_native_playlist_tracks(native_playlist)
         bar = None
         if not playlist.is_auto_playlist:
