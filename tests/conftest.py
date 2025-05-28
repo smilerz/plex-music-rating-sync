@@ -1,13 +1,13 @@
+import sys
 from unittest.mock import MagicMock
 
 import pytest
 
-from MediaPlayer import MediaPlayer
 from ratings import Rating, RatingScale
 from sync_items import AudioTag, Playlist
-from sync_pair import PlaylistPair, TrackPair
 
 
+# TODO: remove extraneous track and playlist factories in teh rest of hte source code
 @pytest.fixture
 def track_factory():
     def _factory(ID="1", title="Title", artist="Artist", album="Album", track=1, rating=1.0):
@@ -19,60 +19,11 @@ def track_factory():
 
 @pytest.fixture
 def playlist_factory(track_factory):
-    def _factory(ID="pl1", name="My Playlist", tracks=None):
+    def _factory(ID="pl1", name="My Playlist", tracks=None, is_auto_playlist=False):
         playlist = Playlist(ID=ID, name=name)
         playlist.tracks = tracks or [track_factory(ID="t1"), track_factory(ID="t2")]
+        playlist.is_auto_playlist = is_auto_playlist
         return playlist
-
-    return _factory
-
-
-@pytest.fixture
-def plex_player(track_factory):
-    player = MagicMock(spec=MediaPlayer)
-    player.name.return_value = "Plex"
-    player.album_empty.side_effect = lambda a: a == "[Unknown Album]"
-    player.search_tracks.side_effect = lambda key, value, return_native=False: [track_factory(ID="plex1")] if key == "id" else []
-    player.update_rating.side_effect = lambda track, rating: setattr(track, "rating", rating)
-    player.search_playlists.side_effect = lambda key, value, return_native=False: []
-    player.create_playlist.side_effect = lambda title: Playlist(ID="pl_new", name=title)
-    player.update_playlist.side_effect = lambda pl, track, present=True: None
-    return player
-
-
-@pytest.fixture
-def mediamonkey_player(track_factory):
-    player = MagicMock(spec=MediaPlayer)
-    player.name.return_value = "MediaMonkey"
-    player.album_empty.side_effect = lambda a: a in ("", None)
-    player.search_tracks.side_effect = lambda key, value, return_native=False: [track_factory(ID="mm1")] if key == "id" else []
-    player.update_rating.side_effect = lambda track, rating: setattr(track, "rating", rating)
-    return player
-
-
-@pytest.fixture
-def filesystem_player(track_factory):
-    player = MagicMock(spec=MediaPlayer)
-    player.name.return_value = "FileSystem"
-    player.album_empty.side_effect = lambda a: a.strip() == ""
-    player.search_tracks.side_effect = lambda key, value, return_native=False: [track_factory(ID="fs1")] if key == "id" else []
-    player.update_rating.side_effect = lambda track, rating: setattr(track, "rating", rating)
-    return player
-
-
-@pytest.fixture
-def track_pair_factory(filesystem_player, plex_player):
-    def _factory(source_track):
-        pair = TrackPair(filesystem_player, plex_player, source_track)
-        return pair
-
-    return _factory
-
-
-@pytest.fixture
-def playlist_pair_factory(filesystem_player, plex_player):
-    def _factory(source_playlist):
-        return PlaylistPair(filesystem_player, plex_player, source_playlist)
 
     return _factory
 
@@ -91,8 +42,6 @@ def config_args():
 
 @pytest.fixture(scope="function", autouse=True)
 def initialize_manager(monkeypatch, patch_paths, config_args):
-    import sys
-
     sys.argv = config_args
 
     logs_path, cache_path = patch_paths

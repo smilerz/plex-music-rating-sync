@@ -480,12 +480,12 @@ class Plex(MediaPlayer):
         username = self.config_mgr.username
         password = self.config_mgr.passwd
         token = self.config_mgr.token
-        if not self.config_mgr.token and not self.config_mgr.passwd:
+        if not token and not password:
             self.logger.error("Plex token or password is required for Plex player")
-            raise
-        if not self.config_mgr.server or not self.config_mgr.username:
+            raise ValueError("Plex token or password is required for Plex player")
+        if not server or not username:
             self.logger.error("Plex server and username are required for Plex player")
-            raise
+            raise ValueError("Plex server and username are required for Plex player")
 
         self.logger.info(f"Connecting to Plex server {server} as {username}")
         self.account = self._authenticate(server, username, password, token)
@@ -494,27 +494,23 @@ class Plex(MediaPlayer):
         try:
             self.plex_api_connection = self.account.resource(server).connect(timeout=5)
             self.logger.info(f"Successfully connected to {server}")
-        except NotFound:
-            # This also happens if the user is not the owner of the server
+        except NotFound as e:
             self.logger.error(f"Failed to connect to {self.name()}")
-            exit(1)
+            raise SystemExit(1) from e
 
         self.logger.info("Looking for music libraries")
         music_libraries = {section.key: section for section in self.plex_api_connection.library.sections() if section.type == "artist"}
 
-        # TODO: offer to save library to config
         if len(music_libraries) == 0:
             self.logger.error("No music library found")
-            exit(1)
+            raise SystemExit(1)
         elif len(music_libraries) == 1:
             self.music_library = next(iter(music_libraries.values()))
             self.logger.debug("Found 1 music library")
         else:
-            # TODO: refactor to use UserPrompt
             print("Found multiple music libraries:")
             for key, library in music_libraries.items():
                 print(f"\t[{key}]: {library.title}")
-
             while True:
                 try:
                     choice = input("Select the library to sync with: ")
@@ -543,7 +539,7 @@ class Plex(MediaPlayer):
                 connection_attempts_left -= 1
 
         self.logger.error(f"Exiting after {self.maximum_connection_attempts} failed attempts ...")
-        exit(1)
+        raise SystemExit(1)
 
     # --- Playlist Methods ---
     def _collect_playlists(self) -> List[Tuple[PlexPlaylist, str]]:
@@ -635,11 +631,12 @@ class Plex(MediaPlayer):
 
     def _add_track_to_playlist(self, playlist: Playlist | PlexPlaylist, track: AudioTag) -> None:
         """Add a track to a playlist using the Playlist object"""
-        native_playlist = self._search_playlists("id", playlist.ID, return_native=True)[0]
+        results = self._search_playlists("id", playlist.ID, return_native=True)
 
-        if not native_playlist:
+        if not results:
             self.logger.warning(f"Native playlist not found for {playlist.name}")
             return
+        native_playlist = results[0]
 
         try:
             matches = self.search_tracks("id", track.ID, return_native=True)
@@ -653,11 +650,12 @@ class Plex(MediaPlayer):
 
     def _remove_track_from_playlist(self, playlist: Playlist | PlexPlaylist, track: AudioTag) -> None:
         """Remove a track from a playlist using the Playlist object"""
-        native_playlist = self._search_playlists("id", playlist.ID, return_native=True)[0]
+        results = self._search_playlists("id", playlist.ID, return_native=True)
 
-        if not native_playlist:
+        if not results:
             self.logger.warning(f"Native playlist not found for {playlist.name}")
             return
+        native_playlist = results[0]
 
         try:
             matches = self.search_tracks("id", track.ID, return_native=True)
