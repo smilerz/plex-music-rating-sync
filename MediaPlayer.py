@@ -721,7 +721,7 @@ class Plex(MediaPlayer):
             song = self.search_tracks("id", track.ID, return_native=True)[0]
             song.edit(**{"userRating.value": Rating.to_float(rating, scale=self.rating_scale)})
         except Exception as e:
-            self.logger.error(f"Failed to update rating using fallback: {e!s}")
+            self.logger.error(f"Failed to update rating on {track}: {e!s}")
             raise
         self.logger.info(f"Successfully updated rating for {track}")
 
