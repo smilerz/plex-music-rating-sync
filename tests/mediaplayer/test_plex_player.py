@@ -1,5 +1,5 @@
 from contextlib import nullcontext
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 from plexapi.exceptions import BadRequest, NotFound
@@ -46,8 +46,20 @@ def plex_api():
         return _make_default_libraries(api.library_count)
 
     def _find_track_by_id(test_tracks, value):
-        """Return a list of tracks matching the given ID (as string)."""
-        return [t for t in test_tracks if getattr(t, "id", None) == value]
+        """Return a track matching the given ID."""
+        for track in test_tracks:
+            track_id = getattr(track, "id", None)
+            if track_id == value:
+                return track
+        raise RuntimeError("search error")
+
+    def _find_playlist_by_id(test_playlists, value):
+        """Return a playlist matching the given ID."""
+        for playlist in test_playlists:
+            playlist_id = getattr(playlist, "key", None)
+            if playlist_id == str(value) or playlist_id == value:
+                return playlist
+        raise RuntimeError("search error")
 
     def _mock_search_tracks(api, *args, **kwargs):
         """Mock implementation of searchTracks for the plex_api fixture."""
@@ -61,27 +73,36 @@ def plex_api():
             # Simulate rating search (very basic)
             return test_tracks
         if args:
-            matches = _find_track_by_id(test_tracks, args[0])
-            return matches[0] if matches else None
+            return _find_track_by_id(test_tracks, args[0])
         return test_tracks
 
     def _mock_fetch_item_side_effect(value):
-        # Simulate fetchItem(int(value)) to return the track with matching ID
-        test_tracks = getattr(api, "test_tracks", [])
-        matches = _find_track_by_id(test_tracks, value)
-        return matches[0] if matches else None
+        # ID Convention:
+        # - Tracks: 1-999 (start at 1)
+        # - Playlists: 1000+ (start at 1000)
+        # - Nonexistent: 999999 (special case)
+
+        value = int(value)
+        if value == 999999:  # Special case for nonexistent items
+            raise RuntimeError("search error")
+        elif value < 1000:  # Track ID range
+            test_tracks = getattr(api, "test_tracks", [])
+            return _find_track_by_id(test_tracks, value)
+        else:  # Playlist ID range (1000+)
+            test_playlists = getattr(api, "test_playlists", [])
+            return _find_playlist_by_id(test_playlists, value)
 
     def _make_side_effect(name):
         def _side_effect(*args, **kwargs):
             exc = getattr(api, f"{name}_raise", None)
             if exc is not None:
                 raise exc
-            if hasattr(api, f"{name}_return"):
-                return getattr(api, f"{name}_return")
             if name == "playlists":
                 return getattr(api, "test_playlists", [])
             if name == "searchTracks":
                 return _mock_search_tracks(api, *args, **kwargs)
+            if hasattr(api, f"{name}_return"):
+                return getattr(api, f"{name}_return")
             return None
 
         return _side_effect
@@ -89,9 +110,8 @@ def plex_api():
     resource_mock.connect = MagicMock(side_effect=_connect_side_effect)
     connection_mock.library = MagicMock(name="library")
     connection_mock.library.sections = MagicMock(side_effect=_sections_side_effect)
+    connection_mock.playlists = MagicMock(side_effect=_make_side_effect("playlists"))
 
-    # Remove _set_fetchitem_on_library and its call
-    # Remove api.fetchItem.side_effect (not used by code under test)
     api.playlists.side_effect = _make_side_effect("playlists")
     api.searchTracks.side_effect = _make_side_effect("searchTracks")
 
@@ -109,6 +129,7 @@ def native_playlist_factory():
         mock.key = str(getattr(playlist, "ID", getattr(playlist, "key", "")))
         mock.title = getattr(playlist, "name", getattr(playlist, "title", ""))
         mock.smart = getattr(playlist, "is_auto_playlist", getattr(playlist, "smart", False))
+        mock.playlistType = "audio"  # Required for _collect_playlists filter
         # items() returns tracks if set, else []
         tracks = getattr(playlist, "Tracks", getattr(playlist, "tracks", []))
         if not tracks and hasattr(playlist, "tracks"):
@@ -130,8 +151,15 @@ def native_track_factory():
         mock.title = getattr(track, "title", "")
         file_path = getattr(track, "file_path", None)
         mock.locations = [file_path] if file_path else getattr(track, "locations", ["/dev/null"])
-        mock.userRating = getattr(track, "rating", getattr(track, "userRating", None))
-        key_val = getattr(track, "ID", getattr(track, "key", getattr(track, "title", "1")))
+
+        # Convert Rating object to float for Plex ZERO_TO_TEN scale
+        rating = getattr(track, "rating", getattr(track, "userRating", None))
+        if hasattr(rating, "to_float"):  # It's a Rating object
+            mock.userRating = rating.to_float(RatingScale.ZERO_TO_TEN)
+        else:
+            mock.userRating = rating
+
+        key_val = getattr(track, "ID", getattr(track, "key", getattr(track, "title", 1)))
         mock.id = key_val
         mock.key = f"/library/metadata/{key_val}"
         mock.index = getattr(track, "track", getattr(track, "index", 1))
@@ -173,6 +201,8 @@ def plex_player(monkeypatch, request, plex_api, native_playlist_factory, native_
 
     plex = Plex()
     plex.config_mgr = config
+    plex.logger = MagicMock()
+    plex.status_mgr = MagicMock()  # Add missing status_mgr mock
 
     for k, v in config_overrides.items():
         setattr(plex.config_mgr, k, v)
@@ -276,152 +306,231 @@ class TestPlexPlaylistSearch:
         "key,value,return_native,setup_map,expect_error,expect_empty",
         [
             ("all", None, False, {}, False, False),
-            ("title", "My Playlist", False, {"my playlist": "id1"}, False, False),
-            ("id", "id1", False, {}, False, False),
+            ("title", "My Playlist", False, {"my playlist": 1000}, False, False),
+            ("id", 1000, False, {}, False, False),
             ("badkey", None, False, {}, True, False),
-            ("id", "badid", False, {}, False, True),
+            ("id", 999999, False, {}, False, True),
+        ],
+        ids=[
+            "search_all_returns_list",
+            "search_by_title_finds_playlist",
+            "search_by_id_finds_playlist",
+            "search_invalid_key_raises_error",
+            "search_nonexistent_id_returns_empty",
         ],
     )
-    def test_search_playlists_key_error(self, plex_player, plex_api, key, value, return_native, setup_map, expect_error, expect_empty, native_playlist_factory):
-        """Test playlist search with various keys and values, including error scenarios."""
+    def test_search_playlists_handles_various_parameters(self, plex_player, plex_api, key, value, return_native, setup_map, expect_error, expect_empty, native_playlist_factory):
+        """Test playlist search handles different search parameters correctly."""
         plex_player._title_to_id_map = {k.lower(): v for k, v in setup_map.items()}
-        if value == "id1":
-            playlist = Playlist(ID="id1", name="My Playlist")
+
+        if value == 1000:
+            playlist = Playlist(ID=1000, name="My Playlist")
             native_playlist = native_playlist_factory(playlist)
-            plex_api.test_playlists.append(native_playlist)
+            plex_api.test_playlists = [native_playlist]
+
         if expect_error:
             with pytest.raises(ValueError):
-                plex_player._search_playlists(key, value, return_native)
+                plex_player.search_playlists(key, value, return_native)
         else:
-            # For the 'id', 'badid' case, ensure no playlist with that ID exists in test_playlists
-            result = plex_player._search_playlists(key, value, return_native)
+            result = plex_player.search_playlists(key, value, return_native)
             if expect_empty:
                 assert result == []
             else:
                 assert isinstance(result, list)
 
     @pytest.mark.parametrize(
-        "is_auto_playlist,num_items,expect_bar",
+        "is_auto_playlist,num_items,expect_status_bar",
         [
             (True, 2, False),
             (False, 2, False),
             (False, 101, True),
         ],
+        ids=[
+            "auto_playlist_no_status_bar",
+            "manual_playlist_few_tracks_no_status_bar",
+            "manual_playlist_many_tracks_shows_status_bar",
+        ],
     )
-    def test_load_playlist_tracks_bar(self, plex_player, plex_api, is_auto_playlist, num_items, expect_bar, track_factory, native_playlist_factory, native_track_factory):
-        playlist = Playlist(ID="id1", name="Test", is_auto_playlist=is_auto_playlist)
-        # Create native tracks
-        native_tracks = [native_track_factory(track_factory(ID=f"t{i}")) for i in range(num_items)]
-        # Create native playlist and assign tracks
+    def test_load_playlist_tracks_shows_progress_for_large_playlists(
+        self, plex_player, plex_api, is_auto_playlist, num_items, expect_status_bar, track_factory, native_playlist_factory, native_track_factory
+    ):
+        """Test that progress bar appears only for large manual playlists."""
+        playlist = Playlist(ID=1000, name="Test")
+        playlist.is_auto_playlist = is_auto_playlist
+
+        test_tracks = [track_factory(ID=i) for i in range(1, num_items + 1)]
+        native_tracks = [native_track_factory(track) for track in test_tracks]
+
         native_playlist = native_playlist_factory(playlist)
-        native_playlist.Tracks = native_tracks
-        native_playlist.Tracks.Count = len(native_tracks)
-        # Register with API mock
-        plex_api.test_playlists.append(native_playlist)
-        plex_api.test_tracks = native_tracks  # Ensure fetchItem returns correct tracks
-        plex_player._title_to_id_map = {playlist.name.lower(): "id1"}
-        plex_player.status_mgr = MagicMock()
+        native_playlist.items.return_value = native_tracks
+
+        plex_api.test_playlists = [native_playlist]
         plex_player.load_playlist_tracks(playlist)
-        if expect_bar:
+
+        if expect_status_bar:
             plex_player.status_mgr.start_phase.assert_called_once()
         else:
             plex_player.status_mgr.start_phase.assert_not_called()
 
-    def test_read_native_playlist_tracks(self, plex_player, plex_api, native_playlist_factory, native_track_factory):
-        """Test reading tracks from a native playlist."""
-        # Create native tracks
-        native_tracks = [native_track_factory(ID="t1"), native_track_factory(ID="t2")]
-        # Create native playlist and assign tracks
-        native_playlist = native_playlist_factory(Playlist(ID="1", name="Test"))
-        native_playlist.Tracks = native_tracks
-        # Register with API mock
-        plex_api.test_playlists.append(native_playlist)
-        plex_api.test_tracks = native_tracks  # Ensure fetchItem returns correct tracks
-        result = plex_player._read_native_playlist_tracks(native_playlist)
-        assert isinstance(result, list)
-        assert len(result) == len(native_tracks)
+    def test_read_native_playlist_tracks_converts_to_audiotags(self, plex_player, track_factory, native_playlist_factory, native_track_factory):
+        """Test reading tracks from native playlist converts all tracks to AudioTag objects."""
+        # Create test tracks and convert to native format
+        test_tracks = [track_factory(ID=1, title="Track 1"), track_factory(ID=2, title="Track 2")]
+        native_tracks = [native_track_factory(track) for track in test_tracks]
 
-    def test_get_native_playlist_track_count(self, plex_player, plex_api, native_playlist_factory, native_track_factory):
-        """Test counting tracks in a native playlist."""
-        # Create native tracks
-        native_tracks = [native_track_factory(ID=str(i)) for i in range(1, 4)]
-        # Create native playlist and assign tracks
-        native_playlist = native_playlist_factory(Playlist(ID="1", name="Test"))
-        native_playlist.Tracks = native_tracks
-        native_playlist.Tracks.Count = len(native_tracks)
-        # Register with API mock
-        plex_api.test_playlists.append(native_playlist)
-        plex_api.test_tracks = native_tracks  # Ensure fetchItem returns correct tracks
+        # Create native playlist
+        native_playlist = native_playlist_factory(Playlist(ID=1001, name="Test"))
+        native_playlist.items.return_value = native_tracks
+
+        result = plex_player._read_native_playlist_tracks(native_playlist)
+
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert all(hasattr(track, "title") and hasattr(track, "artist") for track in result)
+
+    def test_get_native_playlist_track_count_returns_count(self, plex_player, track_factory, native_playlist_factory, native_track_factory):
+        """Test counting tracks in native playlist returns accurate number."""
+        # Create 3 test tracks
+        test_tracks = [track_factory(ID=i, title=f"Track {i}") for i in range(1, 4)]
+        native_tracks = [native_track_factory(track) for track in test_tracks]
+
+        # Create native playlist
+        native_playlist = native_playlist_factory(Playlist(ID=1002, name="Test"))
+        native_playlist.items.return_value = native_tracks
+
         result = plex_player._get_native_playlist_track_count(native_playlist)
+
         assert result == 3
 
-    def test_search_playlists_with_native_return(self, plex_player, plex_api, native_playlist_factory):
-        """Test searching playlists with return_native=True returns native playlist objects."""
-        playlist = Playlist(ID="id1", name="My Playlist")
+    def test_search_playlists_native_return_returns_native_objects(self, plex_player, plex_api, native_playlist_factory):
+        """Test searching playlists with return_native=True returns Plex API objects."""
+        playlist = Playlist(ID=1003, name="My Playlist")
         native_playlist = native_playlist_factory(playlist)
-        plex_api.test_playlists.append(native_playlist)
-        plex_player._title_to_id_map = {"my playlist": "id1"}
-        result = plex_player._search_playlists("id", "id1", True)
+        plex_api.test_playlists = [native_playlist]
+
+        result = plex_player.search_playlists("id", 1003, True)
+
         assert isinstance(result, list)
-        assert all(hasattr(p, "ID") or hasattr(p, "key") for p in result)
+        assert len(result) == 1
+        assert hasattr(result[0], "key")  # Native Plex objects have key attribute
 
 
 class TestPlexPlaylistUpdate:
-    def test_add_remove_track_from_playlist(self, plex_player, plex_api, track_factory, native_playlist_factory, native_track_factory):
-        """Test adding or removing tracks from a playlist."""
-        playlist = Playlist(ID="id1", name="Test")
-        track = track_factory(ID="1")
-        # Create native playlist and native track
+    def test_add_track_to_playlist_calls_addItems_on_native_playlist(self, plex_player, plex_api, track_factory, native_playlist_factory, native_track_factory):
+        """Test adding track to playlist calls native addItems method correctly."""
+        playlist = Playlist(ID=1002, name="Test")
+        track = track_factory(ID=1)
+
+        # Create native playlist and track
         native_playlist = native_playlist_factory(playlist)
         native_track = native_track_factory(track)
-        native_playlist.Tracks = [native_track]
-        native_playlist.Tracks.Count = 1
+
+        # Setup mock to track addItems calls
+        native_playlist.addItems = MagicMock()
+
         # Register with API mock
-        plex_api.test_playlists.append(native_playlist)
-        plex_api.test_tracks.append(native_track)
-        # Simulate add
+        plex_api.test_playlists = [native_playlist]
+        plex_api.test_tracks = [native_track]
+
         plex_player._add_track_to_playlist(playlist, track)
-        # Assert correct state (not just object identity)
-        assert native_playlist in plex_api.test_playlists
-        assert native_track in plex_api.test_tracks
 
-    def test_remove_track_from_existing_playlist(self, plex_player, plex_api, track_factory, native_playlist_factory, native_track_factory):
-        """Test removing a track from an existing playlist updates state as expected."""
-        playlist = Playlist(ID="id1", name="Test")
-        track = track_factory(ID="1")
-        # Create native playlist and native track
+        # Verify addItems was called with correct track
+        native_playlist.addItems.assert_called_once_with(native_track)
+
+    def test_remove_track_from_playlist_calls_removeItem_on_native_playlist(self, plex_player, plex_api, track_factory, native_playlist_factory, native_track_factory):
+        """Test removing track from playlist calls native removeItem method correctly."""
+        playlist = Playlist(ID=1003, name="Test")
+        track = track_factory(ID=1)
+
+        # Create native playlist and track
         native_playlist = native_playlist_factory(playlist)
         native_track = native_track_factory(track)
-        native_playlist.Tracks = [native_track]
-        native_playlist.Tracks.Count = 1
+
+        # Setup mock to track removeItem calls
+        native_playlist.removeItem = MagicMock()
+
         # Register with API mock
-        plex_api.test_playlists.append(native_playlist)
-        plex_api.test_tracks.append(native_track)
-        # Simulate remove
+        plex_api.test_playlists = [native_playlist]
+        plex_api.test_tracks = [native_track]
+
         plex_player._remove_track_from_playlist(playlist, track)
-        assert native_playlist in plex_api.test_playlists
-        assert native_track in plex_api.test_tracks
 
-    def test_add_track_to_nonexistent_playlist(self, plex_player, plex_api, track_factory):
-        """Test adding a track to a nonexistent playlist raises AttributeError (NoneType)."""
-        track = track_factory(ID="1")
-        plex_api.test_tracks.append(track)
-        with pytest.raises(AttributeError):
-            plex_player._add_track_to_playlist(None, track)
+        # Verify removeItem was called with correct track
+        native_playlist.removeItem.assert_called_once_with(native_track)
 
-    def test_remove_track_from_nonexistent_playlist(self, plex_player, plex_api, track_factory):
-        """Test removing a track from a nonexistent playlist raises AttributeError (NoneType)."""
-        track = track_factory(ID="1")
-        plex_api.test_tracks.append(track)
-        with pytest.raises(AttributeError):
-            plex_player._remove_track_from_playlist(None, track)
+    def test_add_track_to_nonexistent_playlist_logs_warning_no_operation(self, plex_player, plex_api, track_factory):
+        """Test adding track to nonexistent playlist logs warning and performs no operation."""
+        playlist = Playlist(ID=999999, name="Missing")
+        track = track_factory(ID=1)
 
-    def test_add_remove_track_error_handling(self, plex_player, plex_api, track_factory):
-        """Test error handling when both playlist and track are missing raises AttributeError (NoneType)."""
-        with pytest.raises(AttributeError):
-            plex_player._add_track_to_playlist(None, None)
-        with pytest.raises(AttributeError):
-            plex_player._remove_track_from_playlist(None, None)
+        # Ensure no playlists exist in API mock
+        plex_api.test_playlists = []
+
+        # Mock logger to verify warning
+        plex_player.logger.warning = MagicMock()
+
+        plex_player._add_track_to_playlist(playlist, track)
+
+        # Verify warning was logged (should be the final call)
+        expected_calls = [call("Failed to retrieve playlist by ID '999999': search error"), call("Native playlist not found for Missing")]
+        plex_player.logger.warning.assert_has_calls(expected_calls)
+
+    def test_remove_track_from_nonexistent_playlist_logs_warning_no_operation(self, plex_player, plex_api, track_factory):
+        """Test removing track from nonexistent playlist logs warning and performs no operation."""
+        playlist = Playlist(ID=999999, name="Missing")
+        track = track_factory(ID=1)
+
+        # Ensure no playlists exist in API mock
+        plex_api.test_playlists = []
+
+        # Mock logger to verify warning
+        plex_player.logger.warning = MagicMock()
+
+        plex_player._remove_track_from_playlist(playlist, track)
+
+        # Verify warning was logged (should be the final call)
+        expected_calls = [call("Failed to retrieve playlist by ID '999999': search error"), call("Native playlist not found for Missing")]
+        plex_player.logger.warning.assert_has_calls(expected_calls)
+
+    def test_add_track_when_track_not_found_logs_warning_no_operation(self, plex_player, plex_api, track_factory, native_playlist_factory):
+        """Test adding nonexistent track to playlist logs warning and performs no operation."""
+        playlist = Playlist(ID=1004, name="Test")
+        track = track_factory(ID=999999)  # Use non-existent integer ID
+
+        # Create playlist but no tracks
+        native_playlist = native_playlist_factory(playlist)
+        native_playlist.addItems = MagicMock()
+        plex_api.test_playlists = [native_playlist]
+        plex_api.test_tracks = []
+
+        # Mock logger to verify warning
+        plex_player.logger.warning = MagicMock()
+
+        plex_player._add_track_to_playlist(playlist, track)
+
+        # Verify warning was logged and addItems not called
+        plex_player.logger.warning.assert_called_once_with("No match found for track ID: 999999")
+        native_playlist.addItems.assert_not_called()
+
+    def test_remove_track_when_track_not_found_logs_warning_no_operation(self, plex_player, plex_api, track_factory, native_playlist_factory):
+        """Test removing nonexistent track from playlist logs warning and performs no operation."""
+        playlist = Playlist(ID=1005, name="Test")
+        track = track_factory(ID=999999)
+
+        # Create playlist but no tracks
+        native_playlist = native_playlist_factory(playlist)
+        native_playlist.removeItem = MagicMock()
+        plex_api.test_playlists = [native_playlist]
+        plex_api.test_tracks = []
+
+        # Mock logger to verify warning
+        plex_player.logger.warning = MagicMock()
+
+        plex_player._remove_track_from_playlist(playlist, track)
+
+        # Verify warning was logged and removeItem not called
+        plex_player.logger.warning.assert_called_once_with("No match found for track ID: 999999")
+        native_playlist.removeItem.assert_not_called()
 
 
 class TestPlexPlaylistCreation:
@@ -432,7 +541,7 @@ class TestPlexPlaylistCreation:
         native_track1 = native_track_factory(track1)
         native_track2 = native_track_factory(track2)
         plex_api.test_tracks = [native_track1, native_track2]
-        playlist_obj = native_playlist_factory(Playlist(ID=100, name="foo"))
+        playlist_obj = native_playlist_factory(Playlist(ID=1000, name="foo"))
         plex_api.test_playlists.append(playlist_obj)
         plex_player.plex_api_connection.createPlaylist.reset_mock()
 
@@ -442,10 +551,10 @@ class TestPlexPlaylistCreation:
     def test_create_playlist_some_tracks_success(self, plex_player, track_factory, native_playlist_factory, native_track_factory, plex_api):
         """Test creating a playlist when some tracks are missing: API called with found tracks only."""
         track1 = track_factory(ID=1)
-        missing_track = track_factory(ID="missing_track")
+        missing_track = track_factory(ID=999999)
         native_track1 = native_track_factory(track1)
         plex_api.test_tracks = [native_track1]
-        playlist_obj = native_playlist_factory(Playlist(ID=100, name="foo"))
+        playlist_obj = native_playlist_factory(Playlist(ID=1001, name="foo"))
         plex_api.test_playlists.append(playlist_obj)
         plex_player.plex_api_connection.createPlaylist.reset_mock()
 
@@ -472,37 +581,51 @@ class TestPlexPlaylistCreation:
         assert result is None
 
     def test_create_playlist_track_search_raises(self, plex_player, track_factory, plex_api):
-        """Test exception during track search: exception propagates, API not called, playlist state unchanged."""
+        """Test exception during track search: error is logged, API not called, playlist state unchanged."""
         track = track_factory(ID=1)
         plex_api.test_tracks = [track]
         plex_player.plex_api_connection.createPlaylist.reset_mock()
-        plex_api.searchTracks_raise = RuntimeError("search error")
 
-        with pytest.raises(RuntimeError):
-            plex_player._create_playlist("foo", [track])
+        plex_player._create_playlist("foo", [track])
         plex_player.plex_api_connection.createPlaylist.assert_not_called()
-        plex_api.searchTracks_raise = None
+        plex_player.logger.error.assert_any_call("Failed to search for track 1: search error")
 
 
 class TestPlexTrackSearch:
     @pytest.mark.parametrize(
         "key,value,return_native,expect_error,expect_empty",
         [
-            ("all", None, False, True, False),
             ("title", "Title", False, False, False),
-            ("id", "1", False, False, False),
+            ("id", 1, False, False, False),
+            ("rating", True, False, False, False),
             ("badkey", None, False, True, False),
-            ("id", "badid", False, True, True),
+            ("id", 999999, False, True, True),
+        ],
+        ids=[
+            "search_by_title_with_existing_track_returns_track",
+            "search_by_id_with_existing_track_returns_track",
+            "search_by_rating_returns_tracks_with_ratings",
+            "search_with_invalid_key_raises_keyerror",
+            "search_by_nonexistent_id_raises_runtime_error",
         ],
     )
-    def test_search_tracks_key_error(self, plex_player, plex_api, track_factory, key, value, return_native, expect_error, expect_empty):
-        """Test track search with various keys and values, including error scenarios."""
-        if value == "1":
-            plex_api.test_tracks.append(track_factory(ID="1"))
+    def test_search_tracks_with_various_keys_and_values(self, plex_player, plex_api, track_factory, native_track_factory, key, value, return_native, expect_error, expect_empty):
+        """Test track search handles different search parameters correctly."""
+        if value == 1:
+            test_track = track_factory(ID=1)
+            native_track = native_track_factory(test_track)
+            plex_api.test_tracks = [native_track]
         elif value == "Title":
-            plex_api.test_tracks.append(track_factory(title="Title"))
+            test_track = track_factory(title="Title")
+            native_track = native_track_factory(test_track)
+            plex_api.test_tracks = [native_track]
+        elif value is True:  # rating search
+            test_track = track_factory(ID=1, rating=0.5)
+            native_track = native_track_factory(test_track)
+            plex_api.test_tracks = [native_track]
+
         if expect_error:
-            with pytest.raises((ValueError, KeyError)):
+            with pytest.raises((ValueError, KeyError, RuntimeError)):
                 plex_player._search_tracks(key, value, return_native)
         else:
             result = plex_player._search_tracks(key, value, return_native)
@@ -511,25 +634,31 @@ class TestPlexTrackSearch:
             else:
                 assert isinstance(result, list)
 
-    def test_search_tracks_with_native_return(self, plex_player, plex_api, native_track_factory):
-        """Test searching tracks with return_native=True returns native track objects."""
-        native_track = native_track_factory(ID="1", title="Title")
-        plex_api.test_tracks.append(native_track)
-        result = plex_player._search_tracks("id", "1", True)
+    def test_search_tracks_with_native_return_true_returns_native_objects(self, plex_player, plex_api, track_factory, native_track_factory):
+        """Test searching tracks with return_native=True returns Plex API objects."""
+        test_track = track_factory(ID=1, title="Title")
+        native_track = native_track_factory(test_track)
+        plex_api.test_tracks = [native_track]
+
+        result = plex_player._search_tracks("id", 1, True)
+
         assert isinstance(result, list)
-        assert all(hasattr(t, "ID") for t in result)
+        assert len(result) == 1
+        assert hasattr(result[0], "key")  # Native Plex objects have key attribute
 
 
 class TestPlexTrackUpdate:
-    def test_read_track_metadata_all_fields(self, plex_player, native_track_factory):
+    def test_read_track_metadata_all_fields(self, plex_player, track_factory, native_track_factory):
         """Test reading all fields from a track's metadata."""
-        native_track = native_track_factory(ID="1", artist="Artist")
+        track = track_factory(ID=1, artist="Artist")
+        native_track = native_track_factory(track)
         result = plex_player._read_track_metadata(native_track)
         assert result.artist == "Artist"
 
-    def test_update_rating_success(self, plex_player, plex_api, native_track_factory):
+    def test_update_rating_success(self, plex_player, plex_api, track_factory, native_track_factory):
         """Test updating the rating of a track succeeds and calls edit."""
-        native_track = native_track_factory(ID="1")
+        track = track_factory(ID=1)
+        native_track = native_track_factory(track)
         plex_api.test_tracks = [native_track]
         called = {"edit": False}
 
@@ -541,9 +670,10 @@ class TestPlexTrackUpdate:
         plex_player._update_rating(native_track, Rating(5, scale=RatingScale.ZERO_TO_TEN))
         assert called["edit"]
 
-    def test_update_rating_edit_raises(self, plex_player, plex_api, native_track_factory):
+    def test_update_rating_edit_raises(self, plex_player, plex_api, track_factory, native_track_factory):
         """Test updating the rating of a track raises and does not call edit."""
-        native_track = native_track_factory(ID="1")
+        track = track_factory(ID=1)
+        native_track = native_track_factory(track)
         plex_api.test_tracks = [native_track]
         called = {"edit": False}
 
@@ -559,9 +689,10 @@ class TestPlexTrackUpdate:
             plex_player._update_rating(native_track, Rating(5, scale=RatingScale.ZERO_TO_TEN))
         assert called["edit"]
 
-    def test_update_rating_track_not_found(self, plex_player, plex_api, native_track_factory):
+    def test_update_rating_track_not_found(self, plex_player, plex_api, track_factory, native_track_factory):
         """Test updating the rating of a track that is not found does not call edit and raises."""
-        native_track = native_track_factory(ID="1")
+        track = track_factory(ID=1)
+        native_track = native_track_factory(track)
         plex_api.test_tracks = []
         called = {"edit": False}
 
