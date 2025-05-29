@@ -73,19 +73,21 @@ def plex_api():
             # Simulate rating search (very basic)
             return test_tracks
         if args:
-            return _find_track_by_id(test_tracks, args[0])
+            try:
+                return [_find_track_by_id(test_tracks, args[0])]
+            except RuntimeError:
+                # searchTracks should return empty list when track not found
+                return []
         return test_tracks
 
     def _mock_fetch_item_side_effect(value):
         # ID Convention:
         # - Tracks: 1-999 (start at 1)
         # - Playlists: 1000+ (start at 1000)
-        # - Nonexistent: 999999 (special case)
+        # - Nonexistent: 999999 (no special handling - just not found)
 
         value = int(value)
-        if value == 999999:  # Special case for nonexistent items
-            raise RuntimeError("search error")
-        elif value < 1000:  # Track ID range
+        if value < 1000:  # Track ID range
             test_tracks = getattr(api, "test_tracks", [])
             return _find_track_by_id(test_tracks, value)
         else:  # Playlist ID range (1000+)
