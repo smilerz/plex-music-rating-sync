@@ -695,7 +695,8 @@ class Plex(MediaPlayer):
             print(f"Collecting tracks from {self.name()}.  This may take some time for large libraries.")
             matches = self.music_library.searchTracks(**{"track.userRating!": value})
         elif key == "id":
-            matches = [self.music_library.fetchItem(int(value))]
+            item = self.music_library.fetchItem(int(value))
+            matches = [item] if item is not None else []
         else:
             raise KeyError(f"Invalid search mode {key}.")
         if return_native:
