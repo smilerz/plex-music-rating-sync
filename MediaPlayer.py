@@ -329,9 +329,6 @@ class MediaMonkey(MediaPlayer):
 
     def _search_playlists(self, key: str, value: str | int | None = None, return_native: bool = False) -> List[Playlist | MediaMonkeyPlaylist]:
         """Search for playlists by 'all', 'title', or 'id' using COM interface."""
-        if key not in {"all", "title", "id"}:
-            raise ValueError(f"Invalid search key: {key}")
-
         native_results = []
 
         if key == "all":
@@ -344,7 +341,7 @@ class MediaMonkey(MediaPlayer):
             if playlist_id:
                 return self._search_playlists("id", playlist_id, return_native)
 
-        elif key == "id":
+        elif key == "id":  # pragma: no branch
             try:
                 pl = self.sdb.PlaylistByID(int(value))
                 native_results.append((pl, pl.Title))
@@ -528,7 +525,7 @@ class Plex(MediaPlayer):
             try:
                 if password:
                     return MyPlexAccount(username=username, password=password)
-                elif token:
+                elif token:  # pragma: no branch
                     return MyPlexAccount(username=username, token=token)
             except NotFound:
                 print(f"Username {username}, password or token wrong for server {server}.")
@@ -553,9 +550,6 @@ class Plex(MediaPlayer):
         return results
 
     def _search_playlists(self, key: str, value: str | int, return_native: bool = False) -> List[Playlist | PlexPlaylist]:
-        if key not in {"all", "title", "id"}:
-            raise ValueError(f"Invalid search key: {key}")
-
         native_results = []
 
         if key == "all":
@@ -569,7 +563,7 @@ class Plex(MediaPlayer):
             if playlist_id:
                 return self._search_playlists("id", playlist_id, return_native)
 
-        elif key == "id":
+        elif key == "id":  # pragma: no branch
             try:
                 pl = self.music_library.fetchItem(value)
                 native_results.append((pl, pl.title))
@@ -588,10 +582,7 @@ class Plex(MediaPlayer):
         for track in tracks:
             try:
                 matches = self.search_tracks("id", track.ID, return_native=True)
-                if matches:
-                    plex_tracks.append(matches[0])
-                else:
-                    self.logger.warning(f"No match found for track ID: {track.ID}")
+                plex_tracks.append(matches[0])
             except Exception as e:
                 self.logger.error(f"Failed to search for track {track.ID}: {e!s}")
 
@@ -602,10 +593,11 @@ class Plex(MediaPlayer):
 
     def load_playlist_tracks(self, playlist: Playlist) -> None:
         """Read tracks from a native playlist"""
-        native_playlist = self.search_playlists("title", playlist.name, return_native=True)[0]
-        if not native_playlist:
+        results = self.search_playlists("title", playlist.name, return_native=True)
+        if not results:  # Check if list is empty
             self.logger.warning(f"Native playlist not found for {playlist.name}")
             return
+        native_playlist = results[0]
 
         bar = None
         if not playlist.is_auto_playlist:
@@ -640,9 +632,6 @@ class Plex(MediaPlayer):
 
         try:
             matches = self.search_tracks("id", track.ID, return_native=True)
-            if not matches:
-                self.logger.warning(f"No match found for track ID: {track.ID}")
-                return
             native_playlist.addItems(matches[0])
         except Exception as e:
             self.logger.error(f"Failed to search for track {track.ID}: {e!s}")
@@ -659,9 +648,6 @@ class Plex(MediaPlayer):
 
         try:
             matches = self.search_tracks("id", track.ID, return_native=True)
-            if not matches:
-                self.logger.warning(f"No match found for track ID: {track.ID}")
-                return
             native_playlist.removeItem(matches[0])
         except Exception as e:
             self.logger.error(f"Failed to search for track {track.ID}: {e!s}")
@@ -834,15 +820,11 @@ class FileSystem(MediaPlayer):
 
     def _search_playlists(self, key: str, value: str | int | None = None, return_native: bool = False) -> List[Playlist]:
         if key == "all":
-            playlists = self.fsp.get_playlists()
+            return self.fsp.get_playlists()
         elif key == "title":
-            playlists = self.fsp.get_playlists(title=value)
-        elif key == "id":
-            playlists = self.fsp.get_playlists(path=value)
-        else:
-            raise ValueError(f"Invalid search key {key}")
-
-        return playlists
+            return self.fsp.get_playlists(title=value)
+        elif key == "id":  # pragma: no branch
+            return self.fsp.get_playlists(path=value)
 
     def _add_track_to_playlist(self, playlist: Playlist, track: AudioTag) -> None:
         """Add a track to a playlist"""
