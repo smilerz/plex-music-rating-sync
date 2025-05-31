@@ -6,21 +6,39 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def initialize_manager():
+    """Isolate manager tests from global singleton state."""
+    import sys
+
+    import manager as mgr_module
     from manager import Manager
 
-    # Save original state
+    # Save complete state before any modifications
     original_instance = Manager._instance
     original_initialized = Manager._initialized
+    original_module_state = dict(mgr_module.__dict__)
+    original_sys_modules = {k: v for k, v in sys.modules.items() if k.startswith("manager")}
 
-    # Reset for tests in this file
+    # Reset singleton for tests in this file
     Manager._instance = None
     Manager._initialized = None
 
     yield
 
-    # Restore for other tests
+    # Complete restoration to prevent contamination of other tests
     Manager._instance = original_instance
     Manager._initialized = original_initialized
+
+    # Restore module state completely
+    mgr_module.__dict__.clear()
+    mgr_module.__dict__.update(original_module_state)
+
+    # Restore sys.modules to undo any import corruption
+    for key in list(sys.modules.keys()):
+        if key.startswith("manager"):
+            if key in original_sys_modules:
+                sys.modules[key] = original_sys_modules[key]
+            else:
+                del sys.modules[key]
 
 
 @pytest.fixture()
