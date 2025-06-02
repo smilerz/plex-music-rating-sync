@@ -98,11 +98,6 @@ def conflict_ratings():
     }
 
 
-@pytest.fixture
-def track(track_factory):
-    return track_factory(ID="conflict", title="Test Track", artist="Artist", album="Album", track=1)
-
-
 @pytest.fixture(autouse=True)
 def dummy_tag():
     """Autouse dummy AudioTag for tests that use throwaway tag values."""
@@ -367,7 +362,8 @@ class TestReadTags:
 
 
 class TestResolveChoice:
-    def test_resolve_choice_options_shape_correct(self, handler, conflict_ratings, track):
+    def test_resolve_choice_options_shape_correct(self, handler, conflict_ratings):
+        track = AudioTag(ID="conflict", title="Test Track", artist="Artist", album="Album", track=1)
         with patch.object(handler.prompt, "choice", return_value="Skip (no rating)") as mock_choice:
             handler._resolve_choice(conflict_ratings, track)
             args, kwargs = mock_choice.call_args
@@ -379,7 +375,8 @@ class TestResolveChoice:
                 expected_option = f"{player_name:<30} : {rating.to_display()}"
                 assert expected_option in options
 
-    def test_resolve_choice_select_rating_success(self, handler, conflict_ratings, track):
+    def test_resolve_choice_select_rating_success(self, handler, conflict_ratings):
+        track = AudioTag(ID="conflict", title="Test Track", artist="Artist", album="Album", track=1)
         items = list(conflict_ratings.items())
         player_key, expected_rating = items[0]
 
@@ -391,13 +388,17 @@ class TestResolveChoice:
             assert isinstance(result, Rating)
             assert result == expected_rating
 
-    def test_resolve_choice_select_skip_success(self, handler, conflict_ratings, track):
+    def test_resolve_choice_select_skip_success(self, handler, conflict_ratings):
+        track = AudioTag(ID="conflict", title="Test Track", artist="Artist", album="Album", track=1)
         with patch.object(handler.prompt, "choice", return_value="Skip (no rating)"):
             result = handler._resolve_choice(conflict_ratings, track)
             assert result is None
 
-    def test_resolve_choice_order_matches_items(self, handler, conflict_ratings, track):
+    def test_resolve_choice_order_matches_items(self, handler, conflict_ratings):
+        track = AudioTag(ID="conflict", title="Test Track", artist="Artist", album="Album", track=1)
         with patch.object(handler.prompt, "choice", side_effect=lambda message, options, **kwargs: options[0]):
+            result = handler._resolve_choice(conflict_ratings, track)
+            assert result is not None  # Should return first rating option
             items = list(conflict_ratings.items())
             options = [f"{handler.tag_registry.get_player_name_for_key(key):<30} : {rating.to_display()}" for key, rating in items]
             options.append("Skip (no rating)")
@@ -441,7 +442,7 @@ class TestResolvePrioritizedOrder:
 
 
 @pytest.fixture
-def mock_finalize_strategy_deps(request, handler, track_factory, monkeypatch):
+def mock_finalize_strategy_deps(request, handler, monkeypatch):
     """Mock dependencies for finalize_rating_strategy tests."""
     config = request.param if hasattr(request, "param") else {}
 
@@ -454,10 +455,10 @@ def mock_finalize_strategy_deps(request, handler, track_factory, monkeypatch):
 
     handler.conflicts = []
     for i in range(num_from_handler):
-        handler.conflicts.append({"handler": handler, "track": track_factory(ID=f"own{i}")})
+        handler.conflicts.append({"handler": handler, "track": AudioTag(ID=f"own{i}", title="Test", artist="Test", album="Test", track=1)})
     for i in range(num_from_others):
         other = MagicMock()
-        handler.conflicts.append({"handler": other, "track": track_factory(ID=f"other{i}")})
+        handler.conflicts.append({"handler": other, "track": AudioTag(ID=f"other{i}", title="Test", artist="Test", album="Test", track=1)})
 
     handler.discovered_rating_tags = {"TEXT", "MEDIAMONKEY"}
     handler.stats_mgr.get.return_value = config.get("tag_counts", {"TEXT": 5, "MEDIAMONKEY": 3})
