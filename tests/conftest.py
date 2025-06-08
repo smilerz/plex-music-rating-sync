@@ -234,7 +234,6 @@ def plex_player(monkeypatch, request, plex_api):
     config = MagicMock(**{**config_defaults, **config_overrides})
     fake_manager.get_config_manager.return_value = config
 
-    # TODO: is this needed?
     def myplexaccount_patch(*args, **kwargs):
         # retry/exit tests use this hook
         if getattr(plex_api, "account_raise", None):
