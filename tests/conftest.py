@@ -1,4 +1,6 @@
+import re
 import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -308,3 +310,284 @@ def plex_track_factory():
         return mock
 
     return _factory
+
+
+"""
+Shared MediaMonkey API fixtures for testing.
+
+This module provides comprehensive MediaMonkey COM interface mocking for both unit tests
+and integration tests. The fixtures simulate realistic MediaMonkey behavior including:
+
+- SQL query processing with regex-based pattern matching
+- Track and playlist creation with MediaMonkey-shaped objects  
+- Database operations (QuerySongs, PlaylistByTitle, PlaylistByID)
+- COM object interaction patterns (SimpleNamespace with proper attributes)
+- Error injection capabilities for testing failure scenarios
+- Nested playlist hierarchies and track collections
+
+Key fixtures:
+- mm_track_factory: Creates MediaMonkey track objects with Artist/Album nested attributes
+- mm_playlist_factory: Creates playlists with TracksCollection and AddTrack/RemoveTrack spies
+- mm_api: Complete SDBMock with query processing and data injection methods
+- mm_player: Full MediaMonkey player with patched win32com.client.Dispatch
+"""
+
+
+class SQLQueryProcessor:
+    """Simulates MediaMonkey SQL query processing with regex patterns."""
+
+    def process_query(self, sql_query, tracks):
+        if "SongTitle" in sql_query:
+            m = re.search(r'SongTitle = "(.+)"$', sql_query)
+            if m:
+                title = m.group(1).replace('""', '"')
+                return [t for t in tracks if getattr(t, "Title", None) == title]
+
+        if "ID" in sql_query and "=" in sql_query:
+            m = re.search(r"ID\s*=\s*(\d+)", sql_query)
+            if m:
+                tid = int(m.group(1))
+                return [t for t in tracks if getattr(t, "ID", None) == tid]
+
+        if "Rating" in sql_query:
+            rating_patterns = [
+                (r"Rating\s*>\s*(\d+(?:\.\d+)?)", lambda track_rating, value: track_rating > float(value)),
+                (r"Rating\s*>=\s*(\d+(?:\.\d+)?)", lambda track_rating, value: track_rating >= float(value)),
+                (r"Rating\s*=\s*(\d+(?:\.\d+)?)", lambda track_rating, value: track_rating == float(value)),
+                (r"Rating\s*<=\s*(\d+(?:\.\d+)?)", lambda track_rating, value: track_rating <= float(value)),
+                (r"Rating\s*<\s*(\d+(?:\.\d+)?)", lambda track_rating, value: track_rating < float(value)),
+                (r"Rating\s*!=\s*(\d+(?:\.\d+)?)", lambda track_rating, value: track_rating != float(value)),
+            ]
+
+            for pattern, comparator in rating_patterns:
+                m = re.search(pattern, sql_query)
+                if m:
+                    threshold = m.group(1)
+                    return [t for t in tracks if hasattr(t, "Rating") and comparator(getattr(t, "Rating", 0), threshold)]
+
+        return []
+
+
+@pytest.fixture
+def mm_track_factory():
+    def _factory(ID=1, Title="Track", Rating=0, ArtistName="Artist", AlbumName="Album", Path="/mock/path.mp3", TrackOrder=1, SongLength=180000):
+        track = SimpleNamespace()
+        track.ID = ID
+        track.Title = Title
+        track.Rating = Rating
+        track.Artist = SimpleNamespace(Name=ArtistName)
+        track.Album = SimpleNamespace(Name=AlbumName)
+        track.Path = Path
+        track.TrackOrder = TrackOrder
+        track.SongLength = SongLength
+        return track
+
+    return _factory
+
+
+@pytest.fixture
+def mm_playlist_factory():
+    def _factory(ID=1, Title="Playlist", isAutoplaylist=False, tracks=None, children=None):
+        class TracksCollection:
+            """Simulates MediaMonkey playlist track collection."""
+
+            def __init__(self, tracks_list=None):
+                self._tracks = tracks_list or []
+
+            @property
+            def Count(self):
+                return len(self._tracks)
+
+            def __getitem__(self, index):
+                return self._tracks[index]
+
+            def __len__(self):
+                return len(self._tracks)
+
+            def append(self, track):
+                self._tracks.append(track)
+
+            def remove(self, track):
+                self._tracks.remove(track)
+
+        playlist = SimpleNamespace()
+        playlist.ID = ID
+        playlist.Title = Title
+        playlist.isAutoplaylist = isAutoplaylist
+        playlist.Tracks = TracksCollection(tracks)
+        playlist.ChildPlaylists = children or []
+
+        playlist.AddTrack_calls = []
+        playlist.RemoveTrack_calls = []
+
+        def add_track_spy(track):
+            playlist.AddTrack_calls.append(track)
+            playlist.Tracks.append(track)
+
+        def remove_track_spy(track):
+            playlist.RemoveTrack_calls.append(track)
+            playlist.Tracks.remove(track)
+
+        playlist.AddTrack = add_track_spy
+        playlist.RemoveTrack = remove_track_spy
+        playlist.CreateChildPlaylist = lambda title: _factory(ID=ID * 10 + len(playlist.ChildPlaylists) + 1, Title=title)
+        return playlist
+
+    return _factory
+
+
+class QueryResultIterator:
+    """Simulates MediaMonkey query result iteration with EOF handling."""
+
+    def __init__(self, items):
+        self._items = list(items)
+        self._index = 0
+        self.EOF = len(self._items) == 0
+        self.Item = self._items[self._index] if self._items else None
+
+    def Next(self):
+        if self._index + 1 < len(self._items):
+            self._index += 1
+            self.Item = self._items[self._index]
+            self.EOF = False
+        else:
+            self._index = len(self._items)
+            self.Item = None
+            self.EOF = True
+
+
+class DatabaseMock:
+    def __init__(self, sdb):
+        self._sdb = sdb
+        self.QuerySongs = MagicMock(side_effect=self._query_songs)
+
+    def _query_songs(self, sql_query):
+        if self._sdb.QuerySongs_raise:
+            raise self._sdb.QuerySongs_raise
+        if self._sdb.QuerySongs_return is not None:
+            return self._sdb.QuerySongs_return
+        return QueryResultIterator(SQLQueryProcessor().process_query(sql_query, self._sdb._tracks))
+
+
+class TracksCollection:
+    def __init__(self, tracks_list=None):
+        self._tracks = tracks_list or []
+
+    @property
+    def Count(self):
+        return len(self._tracks)
+
+    def __getitem__(self, index):
+        return self._tracks[index]
+
+    def __len__(self):
+        return len(self._tracks)
+
+    def append(self, track):
+        self._tracks.append(track)
+
+    def remove(self, track):
+        self._tracks.remove(track)
+
+
+class SDBMock:
+    """Complex MediaMonkey database state simulation with multiple responsibilities."""
+
+    def __init__(self):
+        self.QuerySongs_raise = None
+        self.QuerySongs_return = None
+        self._tracks = []
+        self._playlists = []
+        self.Database = DatabaseMock(self)
+        self._playlist_by_id = {}
+        self._playlist_by_title = {}
+        self._root_playlist = self._make_playlist(ID=0, Title="", children=[])
+        self.PlaylistByTitle = MagicMock(side_effect=self._playlist_by_title_impl)
+        self.PlaylistByID = MagicMock(side_effect=self._playlist_by_id_impl)
+
+    def set_tracks(self, tracks):
+        self._tracks = tracks
+
+    def set_playlists(self, playlists):
+        self._playlists = playlists
+        self._playlist_by_id = {pl.ID: pl for pl in playlists}
+        self._playlist_by_title = {pl.Title.lower(): pl for pl in playlists}
+        self._root_playlist.ChildPlaylists = playlists
+
+    def _playlist_by_title_impl(self, title):
+        if title == "":
+            return self._root_playlist
+        return self._playlist_by_title.get(title.lower())
+
+    def _playlist_by_id_impl(self, id):
+        return self._playlist_by_id.get(int(id))
+
+    def _make_playlist(self, ID=1, Title="Playlist", isAutoplaylist=False, tracks=None, children=None):
+        pl = SimpleNamespace()
+        pl.ID = ID
+        pl.Title = Title
+        pl.isAutoplaylist = isAutoplaylist
+        pl.Tracks = TracksCollection(tracks)
+        pl.ChildPlaylists = children or []
+        pl.AddTrack = lambda track: pl.Tracks.append(track)
+        pl.RemoveTrack = lambda track: pl.Tracks.remove(track)
+        pl.CreateChildPlaylist = lambda title: self._make_playlist(ID=ID * 10 + len(pl.ChildPlaylists) + 1, Title=title)
+        return pl
+
+
+@pytest.fixture
+def mm_api():
+    """MediaMonkey API mock with side effect configuration.
+
+    Setup error injection: mm_api.connect_raise = Exception("msg")
+    Setup query errors: mm_api.QuerySongs_raise = Exception("msg")
+    Override query results: mm_api.QuerySongs_return = mock_iterator
+
+    Inject tracks: mm_api.set_tracks([mm_track_factory(ID=1, Title="Song")])
+    Inject playlists: mm_api.set_playlists([mm_playlist_factory(ID=100, Title="Playlist")])
+    Inject tracks into playlists: mm_playlist_factory(tracks=[track1, track2])
+    """
+    sdb = SDBMock()
+    sdb.connect_raise = None
+    sdb.set_tracks([])
+    sdb.set_playlists([])
+    return sdb
+
+
+@pytest.fixture
+def mm_player(monkeypatch, request, mm_api):
+    def dispatch_side_effect(*args, **kwargs):
+        exc = getattr(mm_api, "connect_raise", None)
+        if exc is not None:
+            raise exc
+        return mm_api
+
+    monkeypatch.setattr("win32com.client.Dispatch", dispatch_side_effect)
+
+    fake_manager = MagicMock()
+    config_defaults = {
+        "server": "mock_server",
+        "username": "mock_user",
+        "passwd": "mock_password",
+        "token": None,
+    }
+    config_overrides = getattr(request, "param", {}).get("config", {})
+    config = MagicMock(**{**config_defaults, **config_overrides})
+    fake_manager.get_config_manager.return_value = config
+    fake_manager.get_cache_manager.return_value = MagicMock()
+    fake_manager.get_status_manager.return_value = MagicMock()
+    monkeypatch.setattr("manager.get_manager", lambda: fake_manager)
+
+    from MediaPlayer import MediaMonkey
+
+    player = MediaMonkey()
+    player.config_mgr = config
+    player.logger = MagicMock()
+    player.status_mgr = MagicMock()
+    player.cache_mgr = MagicMock()
+    player.cache_mgr.get_metadata.return_value = None
+    player.cache_mgr.set_metadata.return_value = None
+    player.sdb = mm_api
+    for k, v in config_overrides.items():
+        setattr(player.config_mgr, k, v)
+    return player
