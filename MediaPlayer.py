@@ -266,7 +266,7 @@ class MediaMonkey(MediaPlayer):
             existing = self.search_playlists("title", path_title, return_native=True)
 
             if existing:
-                current_playlist = existing
+                current_playlist = existing[0]
             else:
                 current_playlist = current_playlist.CreateChildPlaylist(part)
         # Add tracks to the final playlist
@@ -291,7 +291,11 @@ class MediaMonkey(MediaPlayer):
 
     def load_playlist_tracks(self, playlist: Playlist) -> None:
         """Read tracks from a native playlist"""
-        native_playlist = self.search_playlists("title", playlist.name, return_native=True)[0]
+        native_playlists = self.search_playlists("title", playlist.name, return_native=True)
+        if not native_playlists:
+            self.logger.warning(f"Playlist '{playlist.name}' not found")
+            return
+        native_playlist = native_playlists[0]
         if not playlist.is_auto_playlist:
             bar = None
             for j in range(native_playlist.Tracks.Count):

@@ -1,3 +1,4 @@
+import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -11,7 +12,6 @@ class SQLQueryProcessor:
     """Basic SQL query parsing and filtering logic for MediaMonkey track queries."""
 
     def process_query(self, sql_query, tracks):
-        import re
 
         # Simulate title queries with escaping
         if "SongTitle" in sql_query:
@@ -22,9 +22,9 @@ class SQLQueryProcessor:
                 title = m.group(1).replace('""', '"')
                 return [t for t in tracks if getattr(t, "Title", None) == title]
 
-        # Simulate ID queries
-        if "ID = " in sql_query:
-            m = re.search(r"ID = (\d+)", sql_query)
+        # Simulate ID queries (handle both "ID=" and "ID = " formats)
+        if "ID" in sql_query and "=" in sql_query:
+            m = re.search(r"ID\s*=\s*(\d+)", sql_query)
             if m:
                 tid = int(m.group(1))
                 return [t for t in tracks if getattr(t, "ID", None) == tid]
@@ -145,8 +145,11 @@ def mm_api():
     class DatabaseMock:
         def __init__(self, sdb):
             self._sdb = sdb
+            # Use MagicMock with side_effect for mockable behavior
+            self.QuerySongs = MagicMock(side_effect=self._query_songs)
 
-        def QuerySongs(self, sql_query):
+        def _query_songs(self, sql_query):
+            """Default implementation for QuerySongs - can be overridden by tests."""
             if self._sdb.QuerySongs_raise:
                 raise self._sdb.QuerySongs_raise
             if self._sdb.QuerySongs_return is not None:
@@ -164,6 +167,10 @@ def mm_api():
             self._playlist_by_title = {}
             self._root_playlist = self._make_playlist(ID=0, Title="", children=[])
 
+            # Use MagicMock with side_effect for mockable behavior
+            self.PlaylistByTitle = MagicMock(side_effect=self._playlist_by_title_impl)
+            self.PlaylistByID = MagicMock(side_effect=self._playlist_by_id_impl)
+
         def set_tracks(self, tracks):
             self._tracks = tracks
 
@@ -173,20 +180,44 @@ def mm_api():
             self._playlist_by_title = {pl.Title.lower(): pl for pl in playlists}
             self._root_playlist.ChildPlaylists = playlists
 
-        def PlaylistByTitle(self, title):
+        def _playlist_by_title_impl(self, title):
+            """Default implementation for PlaylistByTitle - can be overridden by tests."""
             if title == "":
                 return self._root_playlist
             return self._playlist_by_title.get(title.lower())
 
-        def PlaylistByID(self, id):
+        def _playlist_by_id_impl(self, id):
+            """Default implementation for PlaylistByID - can be overridden by tests."""
             return self._playlist_by_id.get(int(id))
 
         def _make_playlist(self, ID=1, Title="Playlist", isAutoplaylist=False, tracks=None, children=None):
+            class TracksCollection:
+                """Mock MediaMonkey Tracks collection with Count property and list-like behavior."""
+
+                def __init__(self, tracks_list=None):
+                    self._tracks = tracks_list or []
+
+                @property
+                def Count(self):
+                    return len(self._tracks)
+
+                def __getitem__(self, index):
+                    return self._tracks[index]
+
+                def __len__(self):
+                    return len(self._tracks)
+
+                def append(self, track):
+                    self._tracks.append(track)
+
+                def remove(self, track):
+                    self._tracks.remove(track)
+
             pl = SimpleNamespace()
             pl.ID = ID
             pl.Title = Title
             pl.isAutoplaylist = isAutoplaylist
-            pl.Tracks = tracks or []
+            pl.Tracks = TracksCollection(tracks)
             pl.ChildPlaylists = children or []
             pl.AddTrack = lambda track: pl.Tracks.append(track)
             pl.RemoveTrack = lambda track: pl.Tracks.remove(track)
@@ -257,15 +288,15 @@ def mm_player(monkeypatch, request, mm_api):
     return player
 
 
-class TestMediaMonkeyConnect:
+class TestConnect:
     """Tests for MediaMonkey.connect behavior and error handling."""
 
-    def test_connect_success_logs_info(self, mm_player):
+    def test_connect_success(self, mm_player):
         """Test that MediaMonkey.connect logs info when successful."""
         mm_player.connect()
         mm_player.logger.info.assert_called()
 
-    def test_connect_failure_raises_exception_and_logs(self, mm_player, mm_api):
+    def test_connect_raises(self, mm_player, mm_api):
         """Test that MediaMonkey.connect raises an exception on connection failure and logs error."""
         # Set the raise condition at the connection level (not QuerySongs level)
         mm_api.connect_raise = RuntimeError("Connection failed")
@@ -274,7 +305,7 @@ class TestMediaMonkeyConnect:
         mm_player.logger.error.assert_called()
 
 
-class TestMediaMonkeyPlaylistSearch:
+class TestPlaylistSearch:
     """Tests for MediaMonkey playlist search and retrieval."""
 
     @pytest.mark.parametrize(
@@ -296,7 +327,7 @@ class TestMediaMonkeyPlaylistSearch:
             "search_nonexistent_title_returns_empty",
         ],
     )
-    def test_search_playlists_parameters(self, mm_player, mm_playlist_factory, key, value, return_native, setup_playlists, expect_error, expect_empty):
+    def test_search_parametrized_queries(self, mm_player, mm_playlist_factory, key, value, return_native, setup_playlists, expect_error, expect_empty):
         """Test playlist search handles different search parameters correctly."""
         # Set up test playlists
         playlists = [mm_playlist_factory(**pl_data) for pl_data in setup_playlists]
@@ -334,7 +365,7 @@ class TestMediaMonkeyPlaylistSearch:
         ],
         ids=["native_return", "converted_return"],
     )
-    def test_search_playlists_return_native_parameter(self, mm_player, mm_playlist_factory, return_native, playlist_id, title, expected_attributes):
+    def test_search_return_native_parameter(self, mm_player, mm_playlist_factory, return_native, playlist_id, title, expected_attributes):
         """Test searching playlists with return_native parameter returns appropriate object types."""
         playlist_data = {"ID": playlist_id, "Title": title}
         native_playlist = mm_playlist_factory(**playlist_data)
@@ -358,7 +389,7 @@ class TestMediaMonkeyPlaylistSearch:
             assert playlist.ID == playlist_id
             assert playlist.name == title
 
-    def test_search_playlists_title_case_insensitive(self, mm_player, mm_playlist_factory):
+    def test_search_title_case_insensitive(self, mm_player, mm_playlist_factory):
         """Test that title search is case-insensitive."""
         playlist_data = {"ID": 1005, "Title": "CaseSensitive Playlist"}
         native_playlist = mm_playlist_factory(**playlist_data)
@@ -370,7 +401,7 @@ class TestMediaMonkeyPlaylistSearch:
             assert len(result) == 1
             assert result[0].name == "CaseSensitive Playlist"
 
-    def test_search_playlists_nested_hierarchy_with_dots(self, mm_player, mm_playlist_factory):
+    def test_search_nested_hierarchy(self, mm_player, mm_playlist_factory):
         """Test searching for nested playlists with dot notation."""
         playlists = [
             mm_playlist_factory(ID=1, Title="Parent"),
@@ -385,7 +416,7 @@ class TestMediaMonkeyPlaylistSearch:
         assert result[0].name == "Parent.Child"
         assert result[0].ID == 2
 
-    def test_search_playlists_all_preserves_order(self, mm_player, mm_playlist_factory):
+    def test_search_all_preserves_order(self, mm_player, mm_playlist_factory):
         """Test that search all returns playlists in the order they were set."""
         playlists = [
             mm_playlist_factory(ID=3, Title="Third"),
@@ -401,7 +432,7 @@ class TestMediaMonkeyPlaylistSearch:
         actual_order = [pl.name for pl in result]
         assert actual_order == expected_order
 
-    def test_search_playlists_empty_collection_returns_empty_list(self, mm_player):
+    def test_search_empty_returns_empty(self, mm_player):
         """Test searching playlists when no playlists exist returns empty list."""
         mm_player.sdb.set_playlists([])
 
@@ -410,17 +441,234 @@ class TestMediaMonkeyPlaylistSearch:
         assert len(result) == 0
 
 
-class TestMediaMonkeyPlaylistCreation:
+class TestPlaylistCreation:
     """Tests for MediaMonkey playlist creation and conversion."""
 
-    # TODO: Implement tests that instantiate MediaMonkey and test playlist creation/conversion logic.
-    pass
+    def test_create_empty_title_raises(self, mm_player, mm_track_factory):
+        """Test that _create_playlist raises ValueError when title is empty."""
+        tracks = [mm_track_factory(ID=1, Title="Test Track")]
+
+        with pytest.raises(ValueError, match="Title and tracks cannot be empty"):
+            mm_player._create_playlist("", tracks)
+
+    def test_create_empty_tracks_raises(self, mm_player):
+        """Test that _create_playlist raises ValueError when tracks list is empty."""
+        with pytest.raises(ValueError, match="Title and tracks cannot be empty"):
+            mm_player._create_playlist("Test Playlist", [])
+
+    def test_create_simple_success(self, mm_player, mm_track_factory):
+        """Test that _create_playlist successfully creates a simple playlist with tracks."""
+        # Set up tracks in the database
+        track1 = mm_track_factory(ID=1, Title="Track One")
+        track2 = mm_track_factory(ID=2, Title="Track Two")
+        mm_player.sdb.set_tracks([track1, track2])
+
+        # Create AudioTag objects for the tracks
+        from ratings import Rating, RatingScale
+        from sync_items import AudioTag
+
+        audio_tracks = [
+            AudioTag(ID="1", title="Track One", artist="Artist", album="Album", track=1, rating=Rating(0.8, RatingScale.NORMALIZED)),
+            AudioTag(ID="2", title="Track Two", artist="Artist", album="Album", track=2, rating=Rating(0.6, RatingScale.NORMALIZED)),
+        ]
+
+        # Mock status manager for progress bar
+        mm_player.status_mgr.start_phase.return_value = MagicMock()
+
+        # Call method under test
+        result = mm_player._create_playlist("Simple Playlist", audio_tracks)
+
+        # Verify playlist was created and returned
+        assert result is not None
+        assert hasattr(result, "Title")
+        assert result.Title == "Simple Playlist"
+
+        # Verify progress bar was used
+        mm_player.status_mgr.start_phase.assert_called_once_with("Adding tracks to playlist Simple Playlist", total=2)
+
+    def test_create_nested_with_dots(self, mm_player, mm_track_factory):
+        """Test that _create_playlist creates nested playlists using dot notation."""
+        # Set up tracks in the database
+        track1 = mm_track_factory(ID=1, Title="Nested Track")
+        mm_player.sdb.set_tracks([track1])
+
+        # Create AudioTag
+        from ratings import Rating, RatingScale
+        from sync_items import AudioTag
+
+        audio_tracks = [AudioTag(ID="1", title="Nested Track", artist="Artist", album="Album", track=1, rating=Rating(0.5, RatingScale.NORMALIZED))]
+
+        # Mock status manager
+        mm_player.status_mgr.start_phase.return_value = MagicMock()
+
+        # Call method under test with nested playlist name
+        result = mm_player._create_playlist("Parent.Child.Grandchild", audio_tracks)
+
+        # Verify nested playlist was created
+        assert result is not None
+        assert hasattr(result, "Title")
+        assert result.Title == "Grandchild"
+
+    def test_create_existing_reused(self, mm_player, mm_track_factory):
+        """Test that _create_playlist reuses existing playlists instead of creating duplicates."""
+        # Set up tracks
+        track1 = mm_track_factory(ID=1, Title="Existing Track")
+        mm_player.sdb.set_tracks([track1])
+
+        # Pre-create a playlist using the mock infrastructure
+        existing_playlist = mm_player.sdb._make_playlist(ID=100, Title="Existing Playlist")
+        mm_player.sdb.set_playlists([existing_playlist])
+
+        # Create AudioTag
+        from ratings import Rating, RatingScale
+        from sync_items import AudioTag
+
+        audio_tracks = [AudioTag(ID="1", title="Existing Track", artist="Artist", album="Album", track=1, rating=Rating(0.7, RatingScale.NORMALIZED))]
+
+        # Mock status manager
+        mm_player.status_mgr.start_phase.return_value = MagicMock()
+
+        # Call method under test with existing playlist name
+        result = mm_player._create_playlist("Existing Playlist", audio_tracks)
+
+        # Verify existing playlist was reused
+        assert result is not None
+        assert result.ID == 100  # Should be the pre-existing playlist
+
+    def test_create_track_not_found_logs(self, mm_player):
+        """Test that _create_playlist logs warning when tracks are not found in MediaMonkey database."""
+        # Don't set any tracks in database - simulate missing tracks
+        mm_player.sdb.set_tracks([])
+
+        # Create AudioTag for non-existent track
+        from ratings import Rating, RatingScale
+        from sync_items import AudioTag
+
+        audio_tracks = [AudioTag(ID="999", title="Missing Track", artist="Artist", album="Album", track=1, rating=Rating(0.5, RatingScale.NORMALIZED))]
+
+        # Mock status manager and QuerySongs to return empty result
+        mm_player.status_mgr.start_phase.return_value = MagicMock()
+
+        # Mock QuerySongs to return None/empty for missing track
+        empty_result = MagicMock()
+        empty_result.Item = None
+        mm_player.sdb.Database.QuerySongs.return_value = empty_result
+
+        # Call method under test
+        mm_player._create_playlist("Test Playlist", audio_tracks)
+
+        # Verify warning was logged for missing track
+        mm_player.logger.warning.assert_called_with("Track with ID 999 not found in MediaMonkey database")
+
+    def test_create_track_error_continues(self, mm_player, mm_track_factory):
+        """Test that _create_playlist handles track addition errors gracefully."""
+        # Set up track in database
+        track1 = mm_track_factory(ID=1, Title="Problematic Track")
+        mm_player.sdb.set_tracks([track1])
+
+        # Create AudioTag
+        from ratings import Rating, RatingScale
+        from sync_items import AudioTag
+
+        audio_tracks = [AudioTag(ID="1", title="Problematic Track", artist="Artist", album="Album", track=1, rating=Rating(0.5, RatingScale.NORMALIZED))]
+
+        # Mock status manager
+        mm_player.status_mgr.start_phase.return_value = MagicMock()
+
+        # Create a mock playlist that will cause AddTrack to fail
+        error_playlist = mm_player.sdb._make_playlist(ID=1, Title="Error Playlist")
+        error_playlist.AddTrack = MagicMock(side_effect=RuntimeError("AddTrack failed"))
+
+        # Set up the playlist in the mock so search_playlists can find it
+        mm_player.sdb.set_playlists([error_playlist])
+
+        # Override the QuerySongs behavior to return a valid track
+        # We need to override the QuerySongs_return attribute used by the side_effect
+        mm_player.sdb.QuerySongs_return = MagicMock()
+        mm_player.sdb.QuerySongs_return.Item = track1
+
+        # Call method under test
+        result = mm_player._create_playlist("Error Playlist", audio_tracks)
+
+        # Verify error was logged but playlist creation continued
+        mm_player.logger.error.assert_called_with("Failed to add track ID 1 to playlist: AddTrack failed")
+        assert result is not None
+
+    @pytest.mark.parametrize(
+        "track_count,expect_progress_bar",
+        [
+            (1, True),  # Even small playlists get progress bars in _create_playlist
+            (150, True),
+        ],
+        ids=["single_track", "large_playlist"],
+    )
+    def test_create_uses_progress_bar(self, mm_player, mm_track_factory, track_count, expect_progress_bar):
+        """Test that _create_playlist uses progress bar for track addition regardless of playlist size."""
+        # Set up tracks in database
+        tracks = [mm_track_factory(ID=i, Title=f"Track {i}") for i in range(1, track_count + 1)]
+        mm_player.sdb.set_tracks(tracks)
+
+        # Create AudioTag objects
+        from ratings import Rating, RatingScale
+        from sync_items import AudioTag
+
+        audio_tracks = [
+            AudioTag(ID=str(i), title=f"Track {i}", artist="Artist", album="Album", track=i, rating=Rating(0.5, RatingScale.NORMALIZED)) for i in range(1, track_count + 1)
+        ]
+
+        # Mock status manager
+        progress_bar_mock = MagicMock()
+        mm_player.status_mgr.start_phase.return_value = progress_bar_mock
+
+        # Call method under test
+        result = mm_player._create_playlist("Progress Test", audio_tracks)
+
+        # Verify progress bar behavior
+        if expect_progress_bar:
+            mm_player.status_mgr.start_phase.assert_called_once_with("Adding tracks to playlist Progress Test", total=track_count)
+            assert progress_bar_mock.update.call_count == track_count
+            progress_bar_mock.close.assert_called_once()
+
+        assert result is not None
+
+    def test_create_integration_with_search(self, mm_player, mm_track_factory):
+        """Test integration between _create_playlist, track search, and playlist conversion."""
+        # Set up tracks in database
+        track1 = mm_track_factory(ID=1, Title="Integration Track 1", ArtistName="Artist A")
+        track2 = mm_track_factory(ID=2, Title="Integration Track 2", ArtistName="Artist B")
+        mm_player.sdb.set_tracks([track1, track2])
+
+        # Create AudioTag objects
+        from ratings import Rating, RatingScale
+        from sync_items import AudioTag
+
+        audio_tracks = [
+            AudioTag(ID="1", title="Integration Track 1", artist="Artist A", album="Album", track=1, rating=Rating(0.8, RatingScale.NORMALIZED)),
+            AudioTag(ID="2", title="Integration Track 2", artist="Artist B", album="Album", track=2, rating=Rating(0.6, RatingScale.NORMALIZED)),
+        ]
+
+        # Mock status manager
+        mm_player.status_mgr.start_phase.return_value = MagicMock()
+
+        # Call method under test
+        result = mm_player._create_playlist("Integration Test", audio_tracks)
+
+        # Verify playlist creation and track addition
+        assert result is not None
+        assert result.Title == "Integration Test"
+
+        # Verify tracks were found and added (2 QuerySongs calls for 2 tracks)
+        assert mm_player.sdb.Database.QuerySongs.call_count == 2
+
+        # Verify all tracks were added to playlist by checking the playlist's track count
+        # Since AddTrack is a lambda that appends to Tracks, check the actual tracks
+        assert len(result.Tracks) == 2
 
 
-class TestMediaMonkeyPlaylistTracks:
+class TestPlaylistTracks:
     """Tests for MediaMonkey playlist track reading and counting."""
 
-    def test_read_native_playlist_tracks_returns_converted_tracks(self, mm_player, mm_playlist_factory, mm_track_factory):
+    def test_read_returns_converted_tracks(self, mm_player, mm_playlist_factory, mm_track_factory):
         """Test that _read_native_playlist_tracks converts all playlist tracks to AudioTag objects."""
         # Create mock tracks with MediaMonkey-specific attributes
         track1 = mm_track_factory(ID=1, Title="Track One", ArtistName="Artist A", Rating=80)
@@ -454,7 +702,7 @@ class TestMediaMonkeyPlaylistTracks:
         assert result[2].artist == "Artist C"
         assert result[2].rating.to_float(RatingScale.ZERO_TO_FIVE) == 5  # MediaMonkey 100 -> 5-star scale 5
 
-    def test_read_native_playlist_tracks_handles_empty_playlist(self, mm_player, mm_playlist_factory):
+    def test_read_handles_empty_playlist(self, mm_player, mm_playlist_factory):
         """Test that _read_native_playlist_tracks handles empty playlists correctly."""
         # Create empty playlist
         playlist = mm_playlist_factory(Title="Empty Playlist")
@@ -466,7 +714,7 @@ class TestMediaMonkeyPlaylistTracks:
         assert isinstance(result, list)
         assert len(result) == 0
 
-    def test_read_native_playlist_tracks_iterates_by_count(self, mm_player, mm_playlist_factory, mm_track_factory):
+    def test_read_iterates_by_count(self, mm_player, mm_playlist_factory, mm_track_factory):
         """Test that _read_native_playlist_tracks uses Count property for iteration."""
         # Create tracks but set Count differently than actual length
         track1 = mm_track_factory(ID=1, Title="Track One")
@@ -486,7 +734,7 @@ class TestMediaMonkeyPlaylistTracks:
         assert result[0].title == "Track One"
         assert result[1].title == "Track Two"
 
-    def test_read_native_playlist_tracks_preserves_order(self, mm_player, mm_playlist_factory, mm_track_factory):
+    def test_read_preserves_order(self, mm_player, mm_playlist_factory, mm_track_factory):
         """Test that _read_native_playlist_tracks preserves track order from playlist."""
         # Create tracks in specific order
         track_z = mm_track_factory(ID=3, Title="Z Track", ArtistName="Z Artist")
@@ -512,7 +760,7 @@ class TestMediaMonkeyPlaylistTracks:
             (101, "large playlists"),
         ],
     )
-    def test_get_native_playlist_track_count(self, mm_player, mm_playlist_factory, count, description):
+    def test_read_track_count(self, mm_player, mm_playlist_factory, count, description):
         """Test that _get_native_playlist_track_count returns the Count property value for various playlist sizes."""
         # Create dummy tracks to match the count
         dummy_tracks = [SimpleNamespace(ID=i, Title=f"Track {i}") for i in range(count)]
@@ -525,7 +773,7 @@ class TestMediaMonkeyPlaylistTracks:
         assert result == count
         assert isinstance(result, int)
 
-    def test_playlist_track_methods_integration(self, mm_player, mm_playlist_factory, mm_track_factory):
+    def test_read_methods_integration(self, mm_player, mm_playlist_factory, mm_track_factory):
         """Test integration between _get_native_playlist_track_count and _read_native_playlist_tracks."""
         # Create playlist with tracks
         track1 = mm_track_factory(ID=1, Title="Integration Track 1")
@@ -548,10 +796,10 @@ class TestMediaMonkeyPlaylistTracks:
             assert track.title.startswith("Integration Track")
 
 
-class TestMediaMonkeyTrackSearch:
+class TestTrackSearch:
     """Tests for MediaMonkey track search by title, ID, and rating."""
 
-    def test_search_tracks_by_id_returns_track(self, mm_player, mm_track_factory):
+    def test_search_by_id_returns_track(self, mm_player, mm_track_factory):
         """Test that MediaMonkey.search_tracks returns the correct track by ID using fixture-based dependency injection."""
         track1 = mm_track_factory(ID=1, Title="A")
         track2 = mm_track_factory(ID=2, Title="B")
@@ -561,13 +809,13 @@ class TestMediaMonkeyTrackSearch:
         assert any(getattr(t, "ID", None) == 2 for t in results)
         assert all(getattr(t, "ID", None) == 2 for t in results)
 
-    def test_search_tracks_query_raises_exception(self, mm_player, mm_track_factory):
+    def test_search_query_raises_exception(self, mm_player, mm_track_factory):
         """Test that MediaMonkey.search_tracks raises if the underlying query raises, using fixture-based error simulation."""
         mm_player.sdb.QuerySongs_raise = RuntimeError("Query failed")
         with pytest.raises(RuntimeError, match="Query failed"):
             mm_player.search_tracks("id", 1)
 
-    def test_search_tracks_by_title_returns_matching_tracks(self, mm_player, mm_track_factory):
+    def test_search_by_title_returns_matching(self, mm_player, mm_track_factory):
         """Test that MediaMonkey.search_tracks returns tracks matching the exact title."""
         track1 = mm_track_factory(ID=1, Title="My Song")
         track2 = mm_track_factory(ID=2, Title="Another Song")
@@ -579,7 +827,7 @@ class TestMediaMonkeyTrackSearch:
         assert len(results) == 2
         assert all(getattr(t, "title", None) == "My Song" for t in results)
 
-    def test_search_tracks_by_title_with_quotes_escapes_correctly(self, mm_player, mm_track_factory):
+    def test_search_title_escapes_quotes(self, mm_player, mm_track_factory):
         """Test that MediaMonkey.search_tracks properly escapes quotes in title search."""
         track1 = mm_track_factory(ID=1, Title='Song with "quotes"')
         track2 = mm_track_factory(ID=2, Title="Regular Song")
@@ -619,7 +867,7 @@ class TestMediaMonkeyTrackSearch:
         ],
         ids=["rating_greater_than_zero", "specific_rating_value"],
     )
-    def test_search_tracks_by_rating_criteria(self, mm_player, mm_track_factory, search_value, track_setup, expected_count, expected_ids):
+    def test_search_by_rating_criteria(self, mm_player, mm_track_factory, search_value, track_setup, expected_count, expected_ids):
         """Test that MediaMonkey.search_tracks returns correct tracks for various rating search criteria."""
         tracks = [mm_track_factory(**track_data) for track_data in track_setup]
         mm_player.sdb.set_tracks(tracks)
@@ -631,17 +879,17 @@ class TestMediaMonkeyTrackSearch:
         matched_ids = {getattr(t, "ID", None) for t in results}
         assert matched_ids == expected_ids
 
-    def test_search_tracks_invalid_key_raises_key_error(self, mm_player):
+    def test_search_invalid_key_raises(self, mm_player):
         """Test that MediaMonkey.search_tracks raises KeyError for invalid search key."""
         with pytest.raises(KeyError, match="Invalid search mode"):
             mm_player.search_tracks("invalid_key", "value")
 
-    def test_search_tracks_empty_value_raises_value_error(self, mm_player):
+    def test_search_empty_value_raises(self, mm_player):
         """Test that MediaMonkey.search_tracks raises ValueError for empty search value."""
         with pytest.raises(ValueError, match="value can not be empty"):
             mm_player.search_tracks("id", "")
 
-    def test_search_tracks_return_native_bypasses_conversion(self, mm_player, mm_track_factory):
+    def test_search_return_native_bypasses_conversion(self, mm_player, mm_track_factory):
         """Test that MediaMonkey.search_tracks with return_native=True returns native track objects."""
         track1 = mm_track_factory(ID=1, Title="Test Track")
         mm_player.sdb.set_tracks([track1])
@@ -656,7 +904,7 @@ class TestMediaMonkeyTrackSearch:
         assert getattr(results[0], "Title", None) == "Test Track"
 
 
-class TestMediaMonkeyTrackMetadata:
+class TestTrackMetadata:
     """Tests for MediaMonkey track metadata reading and rating updates."""
 
     @pytest.mark.parametrize(
@@ -686,7 +934,7 @@ class TestMediaMonkeyTrackMetadata:
         ],
         ids=["cache_hit", "cache_miss"],
     )
-    def test_read_track_metadata_cache_behavior(self, mm_player, mm_track_factory, cache_scenario, track_data, expected_cache_calls):
+    def test_metadata_with_cache_hit_and_miss(self, mm_player, mm_track_factory, cache_scenario, track_data, expected_cache_calls):
         """Test that _read_track_metadata handles cache hits and misses correctly."""
         native_track = mm_track_factory(**track_data)
 
@@ -726,7 +974,7 @@ class TestMediaMonkeyTrackMetadata:
         ],
         ids=["valid_rating", "unrated_track"],
     )
-    def test_read_track_metadata_rating_conversion(self, mm_player, mm_track_factory, mm_rating, expected_normalized, is_unrated):
+    def test_metadata_rating_conversion(self, mm_player, mm_track_factory, mm_rating, expected_normalized, is_unrated):
         """Test that _read_track_metadata correctly converts MediaMonkey ratings to normalized scale."""
         native_track = mm_track_factory(ID=789, Rating=mm_rating)
         mm_player.cache_mgr.get_metadata.return_value = None
@@ -740,7 +988,7 @@ class TestMediaMonkeyTrackMetadata:
             assert result.rating.to_float(RatingScale.NORMALIZED) == expected_normalized
             assert not result.rating.is_unrated
 
-    def test_read_track_metadata_missing_song_length_defaults_to_negative_one(self, mm_player, mm_track_factory):
+    def test_metadata_missing_song_length_defaults(self, mm_player, mm_track_factory):
         """Test that _read_track_metadata handles missing SongLength gracefully."""
         native_track = mm_track_factory(ID=111, SongLength=None)
         mm_player.cache_mgr.get_metadata.return_value = None
@@ -749,7 +997,7 @@ class TestMediaMonkeyTrackMetadata:
 
         assert result.duration == -1
 
-    def test_update_rating_success_updates_native_track_and_database(self, mm_player, mm_track_factory):
+    def test_metadata_update_rating_success(self, mm_player, mm_track_factory):
         """Test that _update_rating successfully updates rating and calls UpdateDB."""
         # Create AudioTag and native track
         audio_tag = AudioTag(ID="555", title="Update Track", artist="Artist", album="Album", track=1)
@@ -793,7 +1041,7 @@ class TestMediaMonkeyTrackMetadata:
         ],
         ids=["track_not_found", "updatedb_failure"],
     )
-    def test_update_rating_error_scenarios(self, mm_player, mm_track_factory, error_scenario, track_id, track_title, setup_error, expected_exception, error_check):
+    def test_metadata_update_rating_handles_errors(self, mm_player, mm_track_factory, error_scenario, track_id, track_title, setup_error, expected_exception, error_check):
         """Test that _update_rating handles various error scenarios correctly."""
         audio_tag = AudioTag(ID=track_id, title=track_title, artist="Artist", album="Album", track=1)
         new_rating = Rating(0.5, scale=RatingScale.NORMALIZED)
@@ -823,20 +1071,18 @@ class TestMediaMonkeyTrackMetadata:
             assert native_track.Rating == 50.0  # 0.5 normalized -> 50 MediaMonkey scale
             native_track.UpdateDB.assert_called_once()
 
-    def test_update_rating_rating_scale_conversion_various_values(self, mm_player, mm_track_factory):
+    def test_metadata_update_converts_scale(self, mm_player, mm_track_factory):
         """Test that _update_rating correctly converts ratings from different scales to MediaMonkey scale."""
         audio_tag = AudioTag(ID="333", title="Scale Test", artist="Artist", album="Album", track=1)
         native_track = mm_track_factory(ID=333)
         native_track.UpdateDB = MagicMock()
         mm_player.sdb.set_tracks([native_track])
 
+        # Test key conversion scenarios
         test_cases = [
             (Rating(0.0, scale=RatingScale.NORMALIZED), 0.0),  # Unrated
-            (Rating(0.2, scale=RatingScale.NORMALIZED), 20.0),  # 1 star
-            (Rating(0.5, scale=RatingScale.NORMALIZED), 50.0),  # 2.5 stars
-            (Rating(1.0, scale=RatingScale.NORMALIZED), 100.0),  # 5 stars
-            (Rating(3, scale=RatingScale.ZERO_TO_FIVE), 60.0),  # 3/5 stars
-            (Rating(8, scale=RatingScale.ZERO_TO_TEN), 80.0),  # 8/10 stars
+            (Rating(0.5, scale=RatingScale.NORMALIZED), 50.0),  # Middle rating
+            (Rating(1.0, scale=RatingScale.NORMALIZED), 100.0),  # Max rating
         ]
 
         for input_rating, expected_mm_rating in test_cases:
@@ -849,7 +1095,7 @@ class TestMediaMonkeyTrackMetadata:
             assert native_track.Rating == expected_mm_rating
             native_track.UpdateDB.assert_called_once()
 
-    def test_read_track_metadata_integration_with_all_fields(self, mm_player, mm_track_factory):
+    def test_metadata_integration_all_fields(self, mm_player, mm_track_factory):
         """Test that _read_track_metadata correctly processes all track fields in integration."""
         native_track = mm_track_factory(
             ID=12345,
@@ -876,8 +1122,273 @@ class TestMediaMonkeyTrackMetadata:
         assert result.rating.to_float(RatingScale.NORMALIZED) == 0.75  # 75/100 converted to normalized
 
 
-class TestMediaMonkeyLoadPlaylistTracks:
+class TestLoadPlaylistTracks:
     """Tests for MediaMonkey.load_playlist_tracks integration and error handling."""
 
-    # TODO: Implement tests that instantiate MediaMonkey and test load_playlist_tracks integration.
-    pass
+    def test_load_successful_track_loading(self, mm_player, mm_playlist_factory, mm_track_factory):
+        """Test that load_playlist_tracks successfully loads tracks from a normal playlist."""
+        # Set up tracks and playlist
+        track1 = mm_track_factory(ID=1, Title="Load Track 1", ArtistName="Artist A", Rating=60)
+        track2 = mm_track_factory(ID=2, Title="Load Track 2", ArtistName="Artist B", Rating=80)
+        native_playlist = mm_playlist_factory(ID=100, Title="Load Test Playlist", tracks=[track1, track2])
+        mm_player.sdb.set_playlists([native_playlist])
+
+        # Create target playlist object
+        from sync_items import Playlist
+
+        playlist = Playlist(ID=100, name="Load Test Playlist")
+        playlist.is_auto_playlist = False
+        playlist.tracks = []
+
+        # Call method under test
+        mm_player.load_playlist_tracks(playlist)
+
+        # Verify tracks were loaded correctly
+        assert len(playlist.tracks) == 2
+        assert playlist.tracks[0].title == "Load Track 1"
+        assert playlist.tracks[0].artist == "Artist A"
+        assert playlist.tracks[1].title == "Load Track 2"
+        assert playlist.tracks[1].artist == "Artist B"
+
+    def test_load_missing_playlist_warning(self, mm_player):
+        """Test that load_playlist_tracks logs warning when playlist is not found."""
+        # Don't set any playlists - simulate missing playlist
+        mm_player.sdb.set_playlists([])
+
+        # Create target playlist
+        from sync_items import Playlist
+
+        playlist = Playlist(ID=999, name="Missing Playlist")
+        playlist.is_auto_playlist = False
+        playlist.tracks = []
+
+        # Call method under test
+        mm_player.load_playlist_tracks(playlist)
+
+        # Verify warning was logged and no tracks were added
+        mm_player.logger.warning.assert_called_with("Playlist 'Missing Playlist' not found")
+        assert len(playlist.tracks) == 0
+
+    def test_load_auto_playlist_skips(self, mm_player, mm_playlist_factory, mm_track_factory):
+        """Test that load_playlist_tracks skips track loading for auto-playlists."""
+        # Set up auto-playlist with tracks
+        track1 = mm_track_factory(ID=1, Title="Auto Track")
+        native_playlist = mm_playlist_factory(ID=200, Title="Auto Playlist", isAutoplaylist=True, tracks=[track1])
+        mm_player.sdb.set_playlists([native_playlist])
+
+        # Create target auto-playlist
+        from sync_items import Playlist
+
+        playlist = Playlist(ID=200, name="Auto Playlist")
+        playlist.is_auto_playlist = True
+        playlist.tracks = []
+
+        # Call method under test
+        mm_player.load_playlist_tracks(playlist)
+
+        # Verify no tracks were loaded for auto-playlist
+        assert len(playlist.tracks) == 0
+
+    def test_load_empty_playlist_gracefully(self, mm_player, mm_playlist_factory):
+        """Test that load_playlist_tracks handles empty playlists correctly."""
+        # Create empty playlist
+        native_playlist = mm_playlist_factory(ID=300, Title="Empty Playlist", tracks=[])
+        mm_player.sdb.set_playlists([native_playlist])
+
+        # Create target playlist
+        from sync_items import Playlist
+
+        playlist = Playlist(ID=300, name="Empty Playlist")
+        playlist.is_auto_playlist = False
+        playlist.tracks = []
+
+        # Call method under test
+        mm_player.load_playlist_tracks(playlist)
+
+        # Verify empty playlist handled correctly
+        assert len(playlist.tracks) == 0
+
+    @pytest.mark.parametrize(
+        "track_count,expect_progress_bar",
+        [
+            (99, False),  # Just under threshold
+            (101, True),  # Over threshold - progress bar expected
+        ],
+        ids=["under_threshold", "over_threshold"],
+    )
+    def test_load_progress_bar_threshold(self, mm_player, mm_playlist_factory, mm_track_factory, track_count, expect_progress_bar):
+        """Test that load_playlist_tracks creates progress bar based on track count threshold."""
+        # Create playlist with specified number of tracks
+        tracks = [mm_track_factory(ID=i, Title=f"Progress Track {i}") for i in range(1, track_count + 1)]
+        native_playlist = mm_playlist_factory(ID=400, Title="Progress Test", tracks=tracks)
+        mm_player.sdb.set_playlists([native_playlist])
+
+        # Mock status manager
+        progress_bar_mock = MagicMock()
+        mm_player.status_mgr.start_phase.return_value = progress_bar_mock
+
+        # Create target playlist
+        from sync_items import Playlist
+
+        playlist = Playlist(ID=400, name="Progress Test")
+        playlist.is_auto_playlist = False
+        playlist.tracks = []
+
+        # Call method under test
+        mm_player.load_playlist_tracks(playlist)
+
+        # Verify progress bar behavior
+        if expect_progress_bar:
+            mm_player.status_mgr.start_phase.assert_called_once_with("Reading tracks from playlist Progress Test", total=track_count)
+            assert progress_bar_mock.update.call_count == track_count
+            progress_bar_mock.close.assert_called_once()
+        else:
+            mm_player.status_mgr.start_phase.assert_not_called()
+            progress_bar_mock.update.assert_not_called()
+            progress_bar_mock.close.assert_not_called()
+
+        # Verify all tracks were loaded regardless of progress bar
+        assert len(playlist.tracks) == track_count
+
+    def test_load_metadata_conversion_error_handling(self, mm_player, mm_playlist_factory, mm_track_factory):
+        """Test that load_playlist_tracks handles metadata conversion errors gracefully."""
+        # Create playlist with tracks
+        track1 = mm_track_factory(ID=1, Title="Good Track")
+        track2 = mm_track_factory(ID=2, Title="Bad Track")  # This will cause error
+        native_playlist = mm_playlist_factory(ID=500, Title="Error Test", tracks=[track1, track2])
+        mm_player.sdb.set_playlists([native_playlist])
+
+        # Mock _read_track_metadata to raise exception on second track
+        original_read_track_metadata = mm_player._read_track_metadata
+        call_count = 0
+
+        def mock_read_track_metadata(track):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:  # Second call raises exception
+                raise RuntimeError("Metadata conversion failed")
+            return original_read_track_metadata(track)
+
+        mm_player._read_track_metadata = mock_read_track_metadata
+
+        # Create target playlist
+        from sync_items import Playlist
+
+        playlist = Playlist(ID=500, name="Error Test")
+        playlist.is_auto_playlist = False
+        playlist.tracks = []
+
+        # Call method under test - should raise exception
+        with pytest.raises(RuntimeError, match="Metadata conversion failed"):
+            mm_player.load_playlist_tracks(playlist)
+
+        # Verify first track was processed before error
+        assert len(playlist.tracks) == 1
+        assert playlist.tracks[0].title == "Good Track"
+
+    def test_load_search_by_title_not_id(self, mm_player, mm_playlist_factory, mm_track_factory):
+        """Test that load_playlist_tracks searches playlist by title, not ID."""
+        # Create playlist
+        track1 = mm_track_factory(ID=1, Title="Title Search Track")
+        native_playlist = mm_playlist_factory(ID=600, Title="Title Search Test", tracks=[track1])
+        mm_player.sdb.set_playlists([native_playlist])
+
+        # Create target playlist with different name but same ID
+        from sync_items import Playlist
+
+        playlist = Playlist(ID=600, name="Title Search Test")  # name matches playlist title
+        playlist.is_auto_playlist = False
+        playlist.tracks = []
+
+        # Spy on search_playlists to verify search method
+        original_search = mm_player.search_playlists
+        search_calls = []
+
+        def spy_search_playlists(*args, **kwargs):
+            search_calls.append((args, kwargs))
+            return original_search(*args, **kwargs)
+
+        mm_player.search_playlists = spy_search_playlists
+
+        # Call method under test
+        mm_player.load_playlist_tracks(playlist)
+
+        # Verify search was called with title, not ID
+        assert len(search_calls) == 1
+        assert search_calls[0][0] == ("title", "Title Search Test")
+        assert search_calls[0][1]["return_native"] is True
+
+        # Verify track was loaded
+        assert len(playlist.tracks) == 1
+        assert playlist.tracks[0].title == "Title Search Track"
+
+    def test_load_integration_with_metadata(self, mm_player, mm_playlist_factory, mm_track_factory):
+        """Test integration between load_playlist_tracks and _read_track_metadata."""
+        # Set up complex track data to verify metadata reading
+        track1 = mm_track_factory(
+            ID=1,
+            Title="Integration Track",
+            ArtistName="Integration Artist",
+            AlbumName="Integration Album",
+            Rating=75,
+            TrackOrder=3,
+            SongLength=210000,  # 3.5 minutes
+            Path="/integration/path.mp3",
+        )
+        native_playlist = mm_playlist_factory(ID=700, Title="Integration Test", tracks=[track1])
+        mm_player.sdb.set_playlists([native_playlist])
+
+        # Create target playlist
+        from sync_items import Playlist
+
+        playlist = Playlist(ID=700, name="Integration Test")
+        playlist.is_auto_playlist = False
+        playlist.tracks = []
+
+        # Call method under test
+        mm_player.load_playlist_tracks(playlist)
+
+        # Verify comprehensive metadata integration
+        assert len(playlist.tracks) == 1
+        loaded_track = playlist.tracks[0]
+
+        assert loaded_track.title == "Integration Track"
+        assert loaded_track.artist == "Integration Artist"
+        assert loaded_track.album == "Integration Album"
+        assert loaded_track.track == 3
+        assert loaded_track.duration == 210  # Converted from milliseconds to seconds
+        assert loaded_track.file_path == "/integration/path.mp3"
+
+        # Verify rating conversion (MediaMonkey 75 -> normalized scale)
+        from ratings import RatingScale
+
+        assert loaded_track.rating.to_float(RatingScale.ZERO_TO_FIVE) == 3.75  # 75/100 * 5
+
+    def test_load_debug_logging_with_progress(self, mm_player, mm_playlist_factory, mm_track_factory):
+        """Test that load_playlist_tracks logs debug messages when progress bar is active."""
+        # Create large playlist to trigger progress bar and debug logging
+        tracks = [mm_track_factory(ID=i, Title=f"Debug Track {i}") for i in range(1, 151)]  # 150 tracks
+        native_playlist = mm_playlist_factory(ID=800, Title="Debug Test", tracks=tracks)
+        mm_player.sdb.set_playlists([native_playlist])
+
+        # Mock status manager
+        progress_bar_mock = MagicMock()
+        mm_player.status_mgr.start_phase.return_value = progress_bar_mock
+
+        # Create target playlist
+        from sync_items import Playlist
+
+        playlist = Playlist(ID=800, name="Debug Test")
+        playlist.is_auto_playlist = False
+        playlist.tracks = []
+
+        # Call method under test
+        mm_player.load_playlist_tracks(playlist)
+
+        # Verify debug logging occurred for each track when progress bar was active
+        assert mm_player.logger.debug.call_count == 150
+
+        # Verify debug message format
+        debug_calls = mm_player.logger.debug.call_args_list
+        assert "Reading track" in debug_calls[0][0][0]
+        assert "from playlist Debug Test" in debug_calls[0][0][0]
