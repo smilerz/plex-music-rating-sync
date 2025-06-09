@@ -269,20 +269,19 @@ class MediaMonkey(MediaPlayer):
                 current_playlist = existing[0]
             else:
                 current_playlist = current_playlist.CreateChildPlaylist(part)
-        # Add tracks to the final playlist
-        if tracks:
-            bar = self.status_mgr.start_phase(f"Adding tracks to playlist {title}", total=len(tracks))
-            for track in tracks:
-                try:
-                    song = self.sdb.Database.QuerySongs(f"ID={track.ID}").Item
-                    if song:
-                        current_playlist.AddTrack(song)
-                    else:
-                        self.logger.warning(f"Track with ID {track.ID} not found in MediaMonkey database")
-                except Exception as e:
-                    self.logger.error(f"Failed to add track ID {track.ID} to playlist: {e}")
-                bar.update()
-            bar.close()
+
+        bar = self.status_mgr.start_phase(f"Adding tracks to playlist {title}", total=len(tracks))
+        for track in tracks:
+            try:
+                song = self.sdb.Database.QuerySongs(f"ID={track.ID}").Item
+                if song:
+                    current_playlist.AddTrack(song)
+                else:
+                    self.logger.warning(f"Track with ID {track.ID} not found in MediaMonkey database")
+            except Exception as e:
+                self.logger.error(f"Failed to add track ID {track.ID} to playlist: {e}")
+            bar.update()
+        bar.close()
 
         return current_playlist
 
@@ -424,11 +423,11 @@ class MediaMonkey(MediaPlayer):
 
     def _add_track_to_playlist(self, playlist: Playlist | MediaMonkeyPlaylist, track: AudioTag) -> None:
         """Add a track to a playlist using the Playlist object"""
-        native_playlist = self.search_playlists("id", playlist.ID, return_native=True)[0]
-
-        if not native_playlist:
+        results = self.search_playlists("id", playlist.ID, return_native=True)
+        if not results:
             self.logger.warning(f"Native playlist not found for {playlist.name}")
             return
+        native_playlist = results[0]
 
         matches = self.search_tracks("id", track.ID, return_native=True)
         if not matches:
@@ -438,12 +437,13 @@ class MediaMonkey(MediaPlayer):
 
     def _remove_track_from_playlist(self, playlist: Playlist | MediaMonkeyPlaylist, track: AudioTag) -> None:
         """Remove a track from a playlist using the Playlist object"""
-        native_playlist = self.search_playlists("id", playlist.ID, return_native=True)[0]
-        if not native_playlist:
+        results = self.search_playlists("id", playlist.ID, return_native=True)
+        if not results:
             self.logger.warning(f"Native playlist not found for {playlist.name}")
             return
+        native_playlist = results[0]
 
-        matches = self.search_tracks("id", track.ID)
+        matches = self.search_tracks("id", track.ID, return_native=True)
         if not matches:
             self.logger.warning(f"Could not find track for: {track} in {self.name()}")
             return

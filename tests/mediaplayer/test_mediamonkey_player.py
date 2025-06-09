@@ -12,7 +12,6 @@ class SQLQueryProcessor:
     """Basic SQL query parsing and filtering logic for MediaMonkey track queries."""
 
     def process_query(self, sql_query, tracks):
-
         # Simulate title queries with escaping
         if "SongTitle" in sql_query:
             # Handle escaped quotes in MediaMonkey format: "" becomes "
@@ -440,6 +439,42 @@ class TestPlaylistSearch:
         assert isinstance(result, list)
         assert len(result) == 0
 
+    def test_convert_invalid_playlist_returns_none(self, mm_player):
+        """Test that _convert_playlist returns None when given invalid parameters."""
+        # Test with None playlist parameter
+        result = mm_player._convert_playlist(None, "test")
+        assert result is None
+
+        # Test with empty title
+        mock_playlist = mm_player.sdb._make_playlist(ID=1, Title="Test")
+        result = mm_player._convert_playlist(mock_playlist, "")
+        assert result is None
+
+    def test_collect_nested_playlists_returns_flattened_list(self, mm_player, mm_playlist_factory):
+        """Test that _collect_playlists returns all nested playlists in a flattened list."""
+        # Create nested playlist hierarchy using factory
+        grandchild_playlist = mm_playlist_factory(ID=3, Title="Grandchild", children=[])
+        child_playlist = mm_playlist_factory(ID=2, Title="Child", children=[grandchild_playlist])
+        parent_playlist = mm_playlist_factory(ID=1, Title="Parent", children=[child_playlist])
+
+        # Call method under test
+        results = mm_player._collect_playlists(parent_playlist, "Root")
+
+        # Verify all nested playlists are collected
+        assert isinstance(results, list)
+        assert len(results) == 2  # Child and grandchild
+
+        # Verify playlist titles and order
+        playlist_titles = [title for _, title in results]
+        assert "Root.Child" in playlist_titles
+        assert "Root.Child.Grandchild" in playlist_titles
+
+        # Verify playlist objects are returned correctly
+        playlist_objects = [pl for pl, _ in results]
+        playlist_ids = [pl.ID for pl in playlist_objects]
+        assert 2 in playlist_ids  # Child playlist
+        assert 3 in playlist_ids  # Grandchild playlist
+
 
 class TestPlaylistCreation:
     """Tests for MediaMonkey playlist creation and conversion."""
@@ -663,6 +698,313 @@ class TestPlaylistCreation:
         # Verify all tracks were added to playlist by checking the playlist's track count
         # Since AddTrack is a lambda that appends to Tracks, check the actual tracks
         assert len(result.Tracks) == 2
+
+
+class TestGetPlaylists:
+    """Tests for MediaMonkey._get_playlists method."""
+
+    def test_get_delegates_to_search_all(self, mm_player):
+        """Test that _get_playlists calls search_playlists('all')."""
+        # Mock search_playlists to verify method call
+        mm_player.search_playlists = MagicMock(return_value=[])
+
+        # Call method under test
+        mm_player._get_playlists()
+
+        # Verify search_playlists was called once with 'all'
+        mm_player.search_playlists.assert_called_once_with("all")
+
+
+class TestAddTrackToPlaylist:
+    """Tests for MediaMonkey._add_track_to_playlist method."""
+
+    def test_add_success(self, mm_player, mm_playlist_factory, mm_track_factory):
+        """Test that _add_track_to_playlist successfully adds track to playlist."""
+        # Set up playlist and track
+        track = mm_track_factory(ID=1, Title="Test Track")
+        native_playlist = mm_playlist_factory(ID=100, Title="Test Playlist", tracks=[])
+        mm_player.sdb.set_playlists([native_playlist])
+        mm_player.sdb.set_tracks([track])
+
+        # Create Playlist object to pass to method
+        from ratings import Rating, RatingScale
+        from sync_items import AudioTag, Playlist
+
+        playlist = Playlist(ID=100, name="Test Playlist")
+        audio_track = AudioTag(ID="1", title="Test Track", artist="Artist", album="Album", track=1, rating=Rating(0.5, RatingScale.NORMALIZED))
+
+        # Call method under test
+        mm_player._add_track_to_playlist(playlist, audio_track)
+
+        # Verify track was added to native playlist
+        assert len(native_playlist.Tracks) == 1
+        assert native_playlist.Tracks[0].ID == 1
+
+    def test_add_native_playlist_success(self, mm_player, mm_playlist_factory, mm_track_factory):
+        """Test that _add_track_to_playlist works with native MediaMonkey playlist object."""
+        # Set up playlist and track
+        track = mm_track_factory(ID=2, Title="Native Test Track")
+        native_playlist = mm_playlist_factory(ID=200, Title="Native Playlist", tracks=[])
+        mm_player.sdb.set_playlists([native_playlist])
+        mm_player.sdb.set_tracks([track])
+
+        # Create AudioTag
+        from ratings import Rating, RatingScale
+        from sync_items import AudioTag
+
+        audio_track = AudioTag(ID="2", title="Native Test Track", artist="Artist", album="Album", track=1, rating=Rating(0.5, RatingScale.NORMALIZED))
+
+        # Call method under test with native playlist
+        mm_player._add_track_to_playlist(native_playlist, audio_track)
+
+        # Verify track was added
+        assert len(native_playlist.Tracks) == 1
+        assert native_playlist.Tracks[0].ID == 2
+
+    def test_add_playlist_not_found_logs_warning(self, mm_player, mm_track_factory):
+        """Test that _add_track_to_playlist logs warning when playlist not found."""
+        # Set up track but no playlists
+        track = mm_track_factory(ID=1, Title="Test Track")
+        mm_player.sdb.set_playlists([])
+        mm_player.sdb.set_tracks([track])
+
+        # Create objects
+        from ratings import Rating, RatingScale
+        from sync_items import AudioTag, Playlist
+
+        playlist = Playlist(ID=999, name="Missing Playlist")
+        audio_track = AudioTag(ID="1", title="Test Track", artist="Artist", album="Album", track=1, rating=Rating(0.5, RatingScale.NORMALIZED))
+
+        # Call method under test
+        mm_player._add_track_to_playlist(playlist, audio_track)
+
+        # Verify warning was logged
+        mm_player.logger.warning.assert_called_with("Native playlist not found for Missing Playlist")
+
+    def test_add_track_not_found_logs_warning(self, mm_player, mm_playlist_factory):
+        """Test that _add_track_to_playlist logs warning when track not found."""
+        # Set up playlist but no tracks
+        native_playlist = mm_playlist_factory(ID=100, Title="Test Playlist", tracks=[])
+        mm_player.sdb.set_playlists([native_playlist])
+        mm_player.sdb.set_tracks([])
+
+        # Create objects
+        from ratings import Rating, RatingScale
+        from sync_items import AudioTag, Playlist
+
+        playlist = Playlist(ID=100, name="Test Playlist")
+        audio_track = AudioTag(ID="999", title="Missing Track", artist="Artist", album="Album", track=1, rating=Rating(0.5, RatingScale.NORMALIZED))
+
+        # Call method under test
+        mm_player._add_track_to_playlist(playlist, audio_track)
+
+        # Verify warning was logged
+        mm_player.logger.warning.assert_called_with("Could not find track for: Artist - Album - Missing Track in MediaMonkey")
+
+    def test_add_calls_native_addtrack(self, mm_player, mm_playlist_factory, mm_track_factory):
+        """Test that _add_track_to_playlist calls AddTrack on the native playlist."""
+        # Set up with spy on AddTrack
+        track = mm_track_factory(ID=1, Title="Spy Track")
+        native_playlist = mm_playlist_factory(ID=100, Title="Spy Playlist", tracks=[])
+
+        # Spy on AddTrack method
+        original_add_track = native_playlist.AddTrack
+        add_track_calls = []
+
+        def spy_add_track(track_obj):
+            add_track_calls.append(track_obj)
+            return original_add_track(track_obj)
+
+        native_playlist.AddTrack = spy_add_track
+
+        mm_player.sdb.set_playlists([native_playlist])
+        mm_player.sdb.set_tracks([track])
+
+        # Create objects
+        from ratings import Rating, RatingScale
+        from sync_items import AudioTag, Playlist
+
+        playlist = Playlist(ID=100, name="Spy Playlist")
+        audio_track = AudioTag(ID="1", title="Spy Track", artist="Artist", album="Album", track=1, rating=Rating(0.5, RatingScale.NORMALIZED))
+
+        # Call method under test
+        mm_player._add_track_to_playlist(playlist, audio_track)
+
+        # Verify AddTrack was called with correct track
+        assert len(add_track_calls) == 1
+        assert add_track_calls[0].ID == 1
+
+    def test_add_uses_return_native_for_track_search(self, mm_player, mm_playlist_factory, mm_track_factory):
+        """Test that _add_track_to_playlist uses return_native=True for track search."""
+        # Set up
+        track = mm_track_factory(ID=1, Title="Search Track")
+        native_playlist = mm_playlist_factory(ID=100, Title="Search Playlist", tracks=[])
+        mm_player.sdb.set_playlists([native_playlist])
+        mm_player.sdb.set_tracks([track])
+
+        # Spy on search_tracks to verify return_native parameter
+        original_search_tracks = mm_player.search_tracks
+        search_calls = []
+
+        def spy_search_tracks(*args, **kwargs):
+            search_calls.append((args, kwargs))
+            return original_search_tracks(*args, **kwargs)
+
+        mm_player.search_tracks = spy_search_tracks
+
+        # Create objects
+        from ratings import Rating, RatingScale
+        from sync_items import AudioTag, Playlist
+
+        playlist = Playlist(ID=100, name="Search Playlist")
+        audio_track = AudioTag(ID="1", title="Search Track", artist="Artist", album="Album", track=1, rating=Rating(0.5, RatingScale.NORMALIZED))
+
+        # Call method under test
+        mm_player._add_track_to_playlist(playlist, audio_track)
+
+        # Verify search_tracks was called with return_native=True
+        assert len(search_calls) == 1
+        args, kwargs = search_calls[0]
+        assert args == ("id", "1")
+        assert kwargs.get("return_native") is True
+
+
+class TestRemoveTrackFromPlaylist:
+    """Tests for MediaMonkey._remove_track_from_playlist method."""
+
+    def test_remove_success(self, mm_player, mm_playlist_factory, mm_track_factory):
+        """Test that _remove_track_from_playlist successfully removes track from playlist."""
+        # Set up playlist with track already in it
+        track = mm_track_factory(ID=1, Title="Remove Track")
+        native_playlist = mm_playlist_factory(ID=100, Title="Remove Playlist", tracks=[track])
+        mm_player.sdb.set_playlists([native_playlist])
+        mm_player.sdb.set_tracks([track])
+
+        # Create objects
+        from ratings import Rating, RatingScale
+        from sync_items import AudioTag, Playlist
+
+        playlist = Playlist(ID=100, name="Remove Playlist")
+        audio_track = AudioTag(ID="1", title="Remove Track", artist="Artist", album="Album", track=1, rating=Rating(0.5, RatingScale.NORMALIZED))
+
+        # Verify track is initially in playlist
+        assert len(native_playlist.Tracks) == 1
+
+        # Call method under test
+        mm_player._remove_track_from_playlist(playlist, audio_track)
+
+        # Verify track was removed
+        assert len(native_playlist.Tracks) == 0
+
+    def test_remove_playlist_not_found_logs_warning(self, mm_player, mm_track_factory):
+        """Test that _remove_track_from_playlist logs warning when playlist not found."""
+        # Set up track but no playlists
+        track = mm_track_factory(ID=1, Title="Test Track")
+        mm_player.sdb.set_playlists([])
+        mm_player.sdb.set_tracks([track])
+
+        # Create objects
+        from ratings import Rating, RatingScale
+        from sync_items import AudioTag, Playlist
+
+        playlist = Playlist(ID=999, name="Missing Playlist")
+        audio_track = AudioTag(ID="1", title="Test Track", artist="Artist", album="Album", track=1, rating=Rating(0.5, RatingScale.NORMALIZED))
+
+        # Call method under test
+        mm_player._remove_track_from_playlist(playlist, audio_track)
+
+        # Verify warning was logged
+        mm_player.logger.warning.assert_called_with("Native playlist not found for Missing Playlist")
+
+    def test_remove_track_not_found_logs_warning(self, mm_player, mm_playlist_factory):
+        """Test that _remove_track_from_playlist logs warning when track not found."""
+        # Set up playlist but no tracks
+        native_playlist = mm_playlist_factory(ID=100, Title="Test Playlist", tracks=[])
+        mm_player.sdb.set_playlists([native_playlist])
+        mm_player.sdb.set_tracks([])
+
+        # Create objects
+        from ratings import Rating, RatingScale
+        from sync_items import AudioTag, Playlist
+
+        playlist = Playlist(ID=100, name="Test Playlist")
+        audio_track = AudioTag(ID="999", title="Missing Track", artist="Artist", album="Album", track=1, rating=Rating(0.5, RatingScale.NORMALIZED))
+
+        # Call method under test
+        mm_player._remove_track_from_playlist(playlist, audio_track)
+
+        # Verify warning was logged
+        mm_player.logger.warning.assert_called_with("Could not find track for: Artist - Album - Missing Track in MediaMonkey")
+
+    def test_remove_calls_native_removetrack(self, mm_player, mm_playlist_factory, mm_track_factory):
+        """Test that _remove_track_from_playlist calls RemoveTrack on the native playlist."""
+        # Set up with spy on RemoveTrack
+        track = mm_track_factory(ID=1, Title="Spy Remove Track")
+        native_playlist = mm_playlist_factory(ID=100, Title="Spy Remove Playlist", tracks=[track])
+
+        # Spy on RemoveTrack method
+        original_remove_track = native_playlist.RemoveTrack
+        remove_track_calls = []
+
+        def spy_remove_track(track_obj):
+            remove_track_calls.append(track_obj)
+            return original_remove_track(track_obj)
+
+        native_playlist.RemoveTrack = spy_remove_track
+
+        mm_player.sdb.set_playlists([native_playlist])
+        mm_player.sdb.set_tracks([track])
+
+        # Create objects
+        from ratings import Rating, RatingScale
+        from sync_items import AudioTag, Playlist
+
+        playlist = Playlist(ID=100, name="Spy Remove Playlist")
+        audio_track = AudioTag(ID="1", title="Spy Remove Track", artist="Artist", album="Album", track=1, rating=Rating(0.5, RatingScale.NORMALIZED))
+
+        # Call method under test
+        mm_player._remove_track_from_playlist(playlist, audio_track)
+
+        # Verify RemoveTrack was called with correct track
+        assert len(remove_track_calls) == 1
+        # Note: _remove_track_from_playlist uses native track (return_native=True), so we get native track object
+        assert remove_track_calls[0].ID == 1  # Native track ID is integer
+        assert remove_track_calls[0].Title == "Spy Remove Track"
+
+    def test_remove_uses_native_track_search(self, mm_player, mm_playlist_factory, mm_track_factory):
+        """Test that _remove_track_from_playlist uses return_native=True for track search (consistent with add)."""
+        # Set up
+        track = mm_track_factory(ID=1, Title="Convert Track")
+        native_playlist = mm_playlist_factory(ID=100, Title="Convert Playlist", tracks=[track])
+        mm_player.sdb.set_playlists([native_playlist])
+        mm_player.sdb.set_tracks([track])
+
+        # Spy on search_tracks to verify return_native parameter
+        original_search_tracks = mm_player.search_tracks
+        search_calls = []
+
+        def spy_search_tracks(*args, **kwargs):
+            search_calls.append((args, kwargs))
+            return original_search_tracks(*args, **kwargs)
+
+        mm_player.search_tracks = spy_search_tracks
+
+        # Create objects
+        from ratings import Rating, RatingScale
+        from sync_items import AudioTag, Playlist
+
+        playlist = Playlist(ID=100, name="Convert Playlist")
+        audio_track = AudioTag(ID="1", title="Convert Track", artist="Artist", album="Album", track=1, rating=Rating(0.5, RatingScale.NORMALIZED))
+
+        # Call method under test
+        mm_player._remove_track_from_playlist(playlist, audio_track)
+
+        # Verify search_tracks was called with return_native=True (consistent with _add_track_to_playlist)
+        assert len(search_calls) == 1
+        args, kwargs = search_calls[0]
+        assert args == ("id", "1")
+        # Should have return_native=True, same as _add_track_to_playlist
+        assert kwargs.get("return_native") is True
 
 
 class TestPlaylistTracks:
@@ -902,6 +1244,51 @@ class TestTrackSearch:
         assert hasattr(results[0], "Title")
         assert getattr(results[0], "ID", None) == 1
         assert getattr(results[0], "Title", None) == "Test Track"
+
+    def test_search_by_query_passes_sql_directly(self, mm_player, mm_track_factory):
+        """Test that MediaMonkey.search_tracks passes raw SQL queries directly to the database."""
+        track1 = mm_track_factory(ID=1, Title="Test Track", ArtistName="Test Artist", Rating=75)
+        mm_player.sdb.set_tracks([track1])
+
+        # Search using raw SQL query
+        query_sql = "Artist='Test Artist' AND Rating > 50"
+        results = mm_player.search_tracks("query", query_sql)
+
+        # Verify the query was processed and returned expected results
+        assert isinstance(results, list)
+        assert len(results) == 1
+        assert getattr(results[0], "title", None) == "Test Track"
+
+    def test_search_with_cache_returns_cached_result(self, mm_player, mm_track_factory):
+        """Test that MediaMonkey.search_tracks returns cached results for ID searches when available."""
+        track1 = mm_track_factory(ID=123, Title="Cached Track")
+        mm_player.sdb.set_tracks([track1])
+
+        # Setup cached result
+        cached_tag = AudioTag(title="Cached", artist="Test", album="Album", file_path="/test")
+        mm_player.cache_mgr.get_metadata.return_value = cached_tag
+
+        # Search by ID should return cached result when return_native=False
+        results = mm_player.search_tracks("id", 123, return_native=False)
+        assert len(results) == 1
+        assert results[0] == cached_tag
+        mm_player.cache_mgr.get_metadata.assert_called_once_with("MediaMonkey", "123")
+
+    def test_search_handles_large_resultsets(self, mm_player, mm_track_factory):
+        """Test that MediaMonkey.search_tracks properly handles large result sets."""
+        # Create multiple tracks with the same title for exact title matching
+        tracks = [mm_track_factory(ID=i, Title="Test Track") for i in range(55)]
+        mm_player.sdb.set_tracks(tracks)
+
+        # Search for tracks with exact title match
+        results = mm_player.search_tracks("title", "Test Track")
+
+        # Verify all tracks are returned
+        assert isinstance(results, list)
+        assert len(results) == 55
+        # Verify tracks are properly converted
+        assert all(hasattr(track, "title") for track in results)
+        assert all(track.title == "Test Track" for track in results)
 
 
 class TestTrackMetadata:
