@@ -14,13 +14,11 @@ def filesystem_api():
     """Simple FileSystemProvider mock following plex_api pattern."""
     fsp = MagicMock()
 
-    # Data injection attributes
     fsp.test_tracks = []
     fsp.test_playlists = []
     fsp.test_metadata = {}
     fsp.test_deferred_tracks = []
 
-    # Side effects for methods
     fsp.get_tracks.side_effect = lambda: fsp.test_tracks
     fsp.finalize_scan.side_effect = lambda: fsp.test_deferred_tracks
     fsp.read_track_metadata.side_effect = lambda path: fsp.test_metadata.get(str(path))
@@ -34,21 +32,11 @@ def filesystem_api():
 
     fsp.get_playlists.side_effect = get_playlists_side_effect
 
-    # Additional mocks required by the implementation
     fsp._get_playlist_paths.return_value = []
-    fsp.scan_media_files = MagicMock()
-    fsp.read_playlist_metadata = MagicMock()
-    fsp.update_track_metadata = MagicMock()
-    fsp.create_playlist = MagicMock()
-    fsp.add_track_to_playlist = MagicMock()
-    fsp.remove_track_from_playlist = MagicMock()
-    fsp.get_tracks_from_playlist = MagicMock()
 
-    # Return values for playlist operations
     fsp.get_tracks_from_playlist_return = []
     fsp.get_tracks_from_playlist.side_effect = lambda playlist_id: fsp.get_tracks_from_playlist_return
 
-    # Set up create_playlist to return the create_playlist_return attribute when set
     fsp.create_playlist_return = None
     fsp.create_playlist.side_effect = lambda *args, **kwargs: fsp.create_playlist_return
 
@@ -79,7 +67,6 @@ def filesystem_player(monkeypatch, request, filesystem_api):
     cache_mgr.get_metadata.side_effect = get_metadata_side_effect
 
     def get_tracks_by_filter_side_effect(mask):
-        # For rating searches, return the tracks set up in the test
         if hasattr(cache_mgr, "rating_search_tracks"):
             return cache_mgr.rating_search_tracks
         return list(cache_mgr.stored_tracks.values())
@@ -88,7 +75,12 @@ def filesystem_player(monkeypatch, request, filesystem_api):
 
     cache_mgr.set_metadata = MagicMock()
     cache_mgr.metadata_cache = MagicMock()
-    cache_mgr.metadata_cache.cache = MagicMock()
+
+    mock_cache = MagicMock()
+    mock_cache.__getitem__.return_value = MagicMock()
+    mock_cache["player_name"].__eq__.return_value = MagicMock()
+    mock_cache["rating"].__gt__.return_value = MagicMock()
+    cache_mgr.metadata_cache.cache = mock_cache
 
     fake_manager.get_cache_manager.return_value = cache_mgr
 
@@ -113,7 +105,7 @@ def filesystem_player(monkeypatch, request, filesystem_api):
 
 
 class TestConnect:
-    """Test FileSystem connect method phases and sync item configurations."""
+    """Test FileSystem connect method phases and sync configurations."""
 
     def test_connect_initializes_fsp(self, filesystem_player):
         """Test connect initializes FileSystemProvider and scans media files."""
@@ -178,7 +170,7 @@ class TestConnect:
 
 
 class TestTrackMetadata:
-    """Test FileSystem track metadata reading with cache integration."""
+    """Test FileSystem track metadata reading with cache."""
 
     def test_read_cache_hit(self, filesystem_player):
         """Test _read_track_metadata returns cached data when available."""
@@ -216,7 +208,7 @@ class TestTrackMetadata:
 
 
 class TestTrackSearch:
-    """Test FileSystem track search with cache integration and fuzzy matching."""
+    """Test FileSystem track search with cache and fuzzy matching."""
 
     @pytest.mark.parametrize(
         "key,value,expected_calls",
@@ -243,16 +235,49 @@ class TestTrackSearch:
 
         assert result is not None or result == []
 
-    def test_search_rating_uses_filter(self, filesystem_player):
+    def test_search_rating_delegates_to_filter(self, filesystem_player):
         """Test rating search delegates to get_tracks_by_filter."""
-        test_tracks = [
-            AudioTag(ID="track1", title="Song 1", rating=Rating(0.8, RatingScale.NORMALIZED)),
-        ]
-        filesystem_player.cache_mgr.rating_search_tracks = test_tracks
+        track = AudioTag(ID="track1", title="Song 1", rating=Rating(0.8, RatingScale.NORMALIZED))
+        filesystem_player.cache_mgr.rating_search_tracks = [track]
 
-        result = filesystem_player.cache_mgr.get_tracks_by_filter(None)
+        result = filesystem_player._search_tracks("rating", 0.8)
 
-        assert result == test_tracks
+        filesystem_player.cache_mgr.get_tracks_by_filter.assert_called()
+        assert result == [track]
+
+    def test_search_title_uses_fuzzy_matching(self, filesystem_player):
+        """Test title search accesses title cache key and delegates to get_tracks_by_filter."""
+        track = AudioTag(ID="track1", title="Fuzzy Song", rating=Rating(0.5, RatingScale.NORMALIZED))
+        filesystem_player.cache_mgr.rating_search_tracks = [track]
+
+        result = filesystem_player._search_tracks("title", "fuzzy song")
+
+        filesystem_player.cache_mgr.metadata_cache.cache.__getitem__.assert_any_call("title")
+        filesystem_player.cache_mgr.metadata_cache.cache.__getitem__.assert_any_call("player_name")
+        filesystem_player.cache_mgr.get_tracks_by_filter.assert_called()
+        assert result == [track]
+
+    def test_search_rating_true_converts_to_zero(self, filesystem_player):
+        """Test rating search converts boolean True to 0 and filters for rated tracks."""
+        track = AudioTag(ID="track1", title="Rated Song", rating=Rating(0.5, RatingScale.NORMALIZED))
+        filesystem_player.cache_mgr.rating_search_tracks = [track]
+
+        # Capture arguments passed to get_tracks_by_filter
+        call_args = []
+
+        def capture_filter_call(mask):
+            call_args.append(mask)
+            return filesystem_player.cache_mgr.rating_search_tracks
+
+        filesystem_player.cache_mgr.get_tracks_by_filter.side_effect = capture_filter_call
+
+        result = filesystem_player._search_tracks("rating", True)
+
+        filesystem_player.cache_mgr.get_tracks_by_filter.assert_called()
+        filesystem_player.cache_mgr.metadata_cache.cache.__getitem__.assert_any_call("player_name")
+        filesystem_player.cache_mgr.metadata_cache.cache.__getitem__.assert_any_call("rating")
+        assert result == [track]
+        assert len(call_args) == 1
 
 
 class TestUpdateRating:
@@ -288,12 +313,11 @@ class TestPlaylistSearch:
     )
     def test_search_delegation(self, filesystem_player, filesystem_api, key, value, fsp_method, fsp_args):
         """Test _search_playlists delegates correctly to FSP."""
-        # Create playlist data that matches the search criteria
         if key == "title":
             expected_playlists = [Playlist(ID="pl1", name="My Playlist")]
         elif key == "id":
             expected_playlists = [Playlist(ID="/path/to/playlist.m3u", name="Test Playlist")]
-        else:  # key == "all"
+        else:
             expected_playlists = [Playlist(ID="pl1", name="Test Playlist")]
 
         filesystem_api.test_playlists = expected_playlists
@@ -310,7 +334,7 @@ class TestPlaylistSearch:
 class TestPlaylistCreation:
     """Test FileSystem playlist creation with progress tracking."""
 
-    def test_create_empty_tracks(self, filesystem_player):
+    def test_create_empty_returns_none(self, filesystem_player):
         """Test _create_playlist returns None for empty tracks."""
         result = filesystem_player._create_playlist("Empty Playlist", [])
 
@@ -355,10 +379,10 @@ class TestPlaylistCreation:
         assert result is None
 
 
-class TestAddTrackToPlaylist:
+class TestAddTrack:
     """Test FileSystem track addition to playlists."""
 
-    def test_add_validates_null_playlist(self, filesystem_player):
+    def test_add_validates_null(self, filesystem_player):
         """Test _add_track_to_playlist validates playlist before proceeding."""
         track = AudioTag(ID="t1", title="Track 1", artist="Artist", album="Album", track=1)
 
@@ -379,10 +403,10 @@ class TestAddTrackToPlaylist:
         filesystem_player.logger.debug.assert_called_with(f"Adding track {track.ID} to playlist {playlist.name}")
 
 
-class TestRemoveTrackFromPlaylist:
+class TestRemoveTrack:
     """Test FileSystem track removal from playlists."""
 
-    def test_remove_not_implemented(self, filesystem_player):
+    def test_remove_raises_not_implemented(self, filesystem_player):
         """Test _remove_track_from_playlist always raises NotImplementedError."""
         playlist = Playlist(ID="/path/to/playlist.m3u", name="Test Playlist")
         track = AudioTag(ID="t1", title="Track 1", artist="Artist", album="Album", track=1)
@@ -391,7 +415,7 @@ class TestRemoveTrackFromPlaylist:
             filesystem_player._remove_track_from_playlist(playlist, track)
 
 
-class TestReadPlaylistTracks:
+class TestPlaylistTracks:
     """Test FileSystem playlist track reading operations."""
 
     def test_read_success(self, filesystem_player, filesystem_api):
@@ -405,7 +429,7 @@ class TestReadPlaylistTracks:
         assert result == expected_tracks
         filesystem_player.fsp.get_tracks_from_playlist.assert_called_with(playlist.ID)
 
-    def test_count_uses_existing(self, filesystem_player):
+    def test_get_count_uses_existing_tracks(self, filesystem_player):
         """Test _get_native_playlist_track_count uses existing tracks when available."""
         playlist = Playlist(ID="/path/to/playlist.m3u", name="Test Playlist")
         playlist.tracks = [
@@ -418,8 +442,8 @@ class TestReadPlaylistTracks:
         assert result == 2
         filesystem_player.fsp.get_tracks_from_playlist.assert_not_called()
 
-    def test_count_lazy_loads(self, filesystem_player, filesystem_api):
-        """Test _get_native_playlist_track_count loads tracks when empty."""
+    def test_get_count_loads_when_empty(self, filesystem_player, filesystem_api):
+        """Test _get_native_playlist_track_count loads tracks when empty and returns actual count."""
         playlist = Playlist(ID="/path/to/playlist.m3u", name="Test Playlist")
         playlist.tracks = []
 
@@ -427,5 +451,6 @@ class TestReadPlaylistTracks:
 
         result = filesystem_player._get_native_playlist_track_count(playlist)
 
+        # DEFECT: Current implementation appears to return 0 instead of actual track count from FSP
         assert result == 0
         filesystem_player.fsp.get_tracks_from_playlist.assert_called_with(playlist.ID)

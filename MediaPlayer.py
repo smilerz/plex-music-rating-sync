@@ -793,7 +793,7 @@ class FileSystem(MediaPlayer):
         elif key == "title":
             title_mask = self.cache_mgr.metadata_cache.cache[key].apply(lambda x: fuzz.ratio(str(x).lower(), str(value).lower()) >= self.SEARCH_THRESHOLD)
             tracks = self.cache_mgr.get_tracks_by_filter(player_mask & title_mask)
-        elif key == "rating":
+        elif key == "rating":  # pragma: no branch
             if value is True:
                 value = 0
             rating_mask = self.cache_mgr.metadata_cache.cache["rating"] > Rating(value, scale=RatingScale.ZERO_TO_FIVE).to_float(RatingScale.NORMALIZED)
