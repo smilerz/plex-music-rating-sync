@@ -319,7 +319,7 @@ This module provides comprehensive MediaMonkey COM interface mocking for both un
 and integration tests. The fixtures simulate realistic MediaMonkey behavior including:
 
 - SQL query processing with regex-based pattern matching
-- Track and playlist creation with MediaMonkey-shaped objects  
+- Track and playlist creation with MediaMonkey-shaped objects
 - Database operations (QuerySongs, PlaylistByTitle, PlaylistByID)
 - COM object interaction patterns (SimpleNamespace with proper attributes)
 - Error injection capabilities for testing failure scenarios
