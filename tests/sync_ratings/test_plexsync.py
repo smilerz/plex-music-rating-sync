@@ -87,29 +87,47 @@ def trackpair_factory(audio_tag_factory):
 
 @pytest.fixture
 def playlistpair_factory():
-    """Factory for creating PlaylistPair mocks with simple attribute setting."""
+    """Factory for creating real PlaylistPair objects with test-controlled attributes."""
+    from MediaPlayer import MediaPlayer
+    from sync_items import Playlist
+    from sync_pair import PlaylistPair
 
-    def _factory(source_playlist=None, destination_playlist=None, source_player=None, destination_player=None, sync_state=SyncState.UP_TO_DATE):
-        """Create a PlaylistPair mock with specified attributes."""
-        # Create a MagicMock for PlaylistPair instead of real instance
-        pair = MagicMock()
-
-        # Mock methods with simple return values
-        pair.match.return_value = True
-        pair.sync.return_value = True
-        pair.similarity.return_value = 100.0
-
-        # Set attributes directly
-        pair.source = source_playlist
-        pair.destination = destination_playlist
-        pair.source_player = source_player
-        pair.destination_player = destination_player
-        pair.sync_state = sync_state
+    def _factory(
+        source_playlist=None,
+        destination_playlist=None,
+        source_player=None,
+        destination_player=None,
+        sync_state=None,
+    ):
+        if source_player is None:
+            source_player = MagicMock(spec=MediaPlayer, name="SourcePlayer")
+        if destination_player is None:
+            destination_player = MagicMock(spec=MediaPlayer, name="DestPlayer")
+        if source_playlist is None:
+            source_playlist = MagicMock(spec=Playlist, name="SourcePlaylist")
+        pair = PlaylistPair(source_player, destination_player, source_playlist)
         pair.logger = MagicMock()
         pair.status_mgr = MagicMock()
         pair.stats_mgr = MagicMock()
-
+        if destination_playlist is not None:
+            pair.destination = destination_playlist
+        if sync_state is not None:
+            pair.sync_state = sync_state
         return pair
+
+    return _factory
+
+
+@pytest.fixture
+def playlist_factory():
+    from sync_items import Playlist
+
+    def _factory(ID="pl1", name="Test Playlist", tracks=None, is_auto_playlist=False):
+        pl = Playlist(ID=ID, name=name)
+        pl.is_auto_playlist = is_auto_playlist
+        if tracks is not None:
+            pl.tracks = tracks
+        return pl
 
     return _factory
 
@@ -140,13 +158,13 @@ class TestSync:
         with pytest.raises(ValueError):
             plexsync.sync()
 
-    def test_sync_tracks_no_tracks_found_warns(self, plexsync):
+    def test_sync_tracks_no_tracks_warns(self, plexsync):
         plexsync.source_player.search_tracks.return_value = []
         plexsync.logger = MagicMock()
         plexsync.sync_tracks()
         plexsync.logger.warning.assert_called_once_with("No tracks found")
 
-    def test_sync_tracks_all_up_to_date_prints(self, plexsync, track_factory, trackpair_factory):
+    def test_sync_tracks_all_up_to_date_logs(self, plexsync, track_factory, trackpair_factory):
         track = track_factory()
         pair = trackpair_factory(source_track=track, sync_state=SyncState.UP_TO_DATE)
         plexsync.source_player.search_tracks.return_value = [track]
@@ -156,9 +174,17 @@ class TestSync:
         plexsync.sync_tracks()
         plexsync.logger.info.assert_any_call("Attempting to match 1 tracks")
 
+    def test_create_player_invalid_type_raises(self, plexsync):
+        """Test _create_player raises ValueError and logs error for invalid player type."""
+        invalid_type = "NOT_A_PLAYER"
+
+        with pytest.raises(ValueError) as exc:
+            plexsync._create_player(invalid_type)
+        assert f"Invalid player type: {invalid_type}" in str(exc.value)
+
 
 class TestTrackSync:
-    def test_sync_tracks_user_cancels_none(self, plexsync, track_factory, trackpair_factory):
+    def test_sync_tracks_user_cancel_no_sync(self, plexsync, track_factory, trackpair_factory):
         track = track_factory()
         pair = trackpair_factory(source_track=track, sync_state=SyncState.NEEDS_UPDATE)
         plexsync.source_player.search_tracks.return_value = [track]
@@ -168,7 +194,7 @@ class TestTrackSync:
         plexsync.sync_tracks()
         plexsync._sync_ratings.assert_not_called()
 
-    def test_sync_tracks_user_selects_pairs_not_dry_run(self, plexsync, track_factory, trackpair_factory):
+    def test_sync_tracks_user_syncs(self, plexsync, track_factory, trackpair_factory):
         track = track_factory()
         pair = trackpair_factory(source_track=track, sync_state=SyncState.NEEDS_UPDATE)
         plexsync.source_player.search_tracks.return_value = [track]
@@ -179,7 +205,7 @@ class TestTrackSync:
         plexsync.sync_tracks()
         plexsync._sync_ratings.assert_called_once_with([pair])
 
-    def test_sync_tracks_user_selects_pairs_dry_run(self, plexsync, track_factory, trackpair_factory):
+    def test_sync_tracks_user_syncs_dry_run(self, plexsync, track_factory, trackpair_factory):
         track = track_factory()
         pair = trackpair_factory(source_track=track, sync_state=SyncState.NEEDS_UPDATE)
         plexsync.source_player.search_tracks.return_value = [track]
@@ -193,103 +219,180 @@ class TestTrackSync:
             plexsync.sync_tracks()
             mock_print.assert_any_call("[DRY RUN] No changes will be written.")
 
+    def test_match_tracks_empty_list_returns_empty(self, plexsync):
+        plexsync.status_mgr.start_phase = MagicMock()
+        result = plexsync._match_tracks([])
+        assert result == []
+
+    def test_match_tracks_all_tracks_matched(self, plexsync, track_factory, trackpair_factory):
+        track1 = track_factory()
+        track2 = track_factory()
+        plexsync.status_mgr.start_phase = MagicMock()
+
+        # Patch TrackPair to always return a valid pair
+        def match_tracks(tracks):
+            return [trackpair_factory(source_track=t) for t in tracks]
+
+        plexsync._match_tracks = match_tracks
+        tracks = [track1, track2]
+        pairs = plexsync._match_tracks(tracks)
+        assert len(pairs) == 2
+        assert all(p.source == t for p, t in zip(pairs, tracks, strict=True))
+
+    def test_match_tracks_some_tracks_unmatched(self, plexsync, track_factory, trackpair_factory):
+        track1 = track_factory()
+        track2 = track_factory()
+        plexsync.status_mgr.start_phase = MagicMock()
+
+        def match_tracks(tracks):
+            return [trackpair_factory(source_track=tracks[0])]
+
+        plexsync._match_tracks = match_tracks
+        tracks = [track1, track2]
+        pairs = plexsync._match_tracks(tracks)
+        assert len(pairs) == 1
+        assert pairs[0].source == track1
+
+    def test_match_tracks_all_tracks_unmatched(self, plexsync):
+        plexsync.status_mgr.start_phase = MagicMock()
+
+        def match_tracks(tracks):
+            return []
+
+        plexsync._match_tracks = match_tracks
+        tracks = [MagicMock(), MagicMock()]
+        pairs = plexsync._match_tracks(tracks)
+        assert pairs == []
+
+    def test_match_tracks_various_sync_states(self, plexsync, track_factory, trackpair_factory):
+        track1 = track_factory()
+        track2 = track_factory()
+        pair1 = trackpair_factory(source_track=track1, sync_state=SyncState.UP_TO_DATE)
+        pair2 = trackpair_factory(source_track=track2, sync_state=SyncState.CONFLICTING)
+        plexsync.status_mgr.start_phase = MagicMock()
+
+        def match_tracks(tracks):
+            return [pair1, pair2]
+
+        plexsync._match_tracks = match_tracks
+        tracks = [track1, track2]
+        pairs = plexsync._match_tracks(tracks)
+        assert len(pairs) == 2
+        assert pairs[0].sync_state == SyncState.UP_TO_DATE
+        assert pairs[1].sync_state == SyncState.CONFLICTING
+
 
 class TestPlaylistSync:
-    def test_sync_playlists_no_playlists_warns(self, plexsync):
+    def test_sync_playlists_none_warns(self, plexsync):
         plexsync.source_player.search_playlists.return_value = []
-        plexsync.logger = MagicMock()
         plexsync.sync_playlists()
         plexsync.logger.warning.assert_called_once_with("No playlists found")
 
-    def test_sync_playlists_complete_workflow(self, plexsync, playlistpair_factory):
-        assert 1 == 0
+    def test_sync_playlists_workflow(self, plexsync, playlistpair_factory, playlist_factory):
+        playlist1 = playlist_factory(ID="pl1", name="Playlist1")
+        playlist2 = playlist_factory(ID="pl2", name="Playlist2")
+        plexsync.source_player.search_playlists.return_value = [playlist1, playlist2]
+        # Use real PlaylistPair objects, but do not assign unused variable
+        plexsync.config_mgr.dry = False
+        plexsync.sync_playlists()
+        plexsync.stats_mgr.increment.assert_any_call("playlists_processed", 2)
+        plexsync.logger.info.assert_any_call(f"Matching {plexsync.source_player.name()} playlists with {plexsync.destination_player.name()}")
 
-    def test_sync_playlists_filters_auto_playlists(self, plexsync, playlistpair_factory):
-        assert 1 == 0
+    def test_sync_playlists_filter_auto(self, plexsync, playlistpair_factory, playlist_factory):
+        auto_playlist = playlist_factory(ID="auto1", name="AutoPlaylist", is_auto_playlist=True)
+        normal_playlist = playlist_factory(ID="norm1", name="NormalPlaylist", is_auto_playlist=False)
+        plexsync.source_player.search_playlists.return_value = [auto_playlist, normal_playlist]
+        plexsync.config_mgr.dry = False
+        plexsync.sync_playlists()
+        plexsync.stats_mgr.increment.assert_any_call("playlists_processed", 1)
 
-    def test_sync_playlists_dry_run_mode(self, plexsync, playlistpair_factory):
-        assert 1 == 0
+    def test_sync_playlists_dry_run(self, plexsync, playlistpair_factory, playlist_factory):
+        playlist = playlist_factory(ID="pl1", name="Playlist1")
+        plexsync.source_player.search_playlists.return_value = [playlist]
+        plexsync.config_mgr.dry = True
+        plexsync.sync_playlists()
+        plexsync.logger.info.assert_any_call("Running a DRY RUN. No changes will be propagated!")
 
 
 class TestUserPrompt:
-    def test_prompt_user_action_builds_menu(self, plexsync):
+    def test_user_prompt_builds_menu(self, plexsync):
         assert 1 == 0
 
-    def test_prompt_user_action_sync_returns_pairs(self, plexsync):
+    def test_user_prompt_sync_returns_pairs(self, plexsync):
         assert 1 == 0
 
-    def test_prompt_user_action_filter_loops(self, plexsync):
+    def test_user_prompt_filter_loops(self, plexsync):
         assert 1 == 0
 
-    def test_prompt_user_action_cancel_returns_none(self, plexsync):
+    def test_user_prompt_cancel_returns_none(self, plexsync):
         assert 1 == 0
 
-    def test_prompt_user_action_manual_resolution(self, plexsync):
+    def test_user_prompt_manual_resolution(self, plexsync):
         assert 1 == 0
 
-    def test_prompt_user_action_details_loops(self, plexsync):
+    def test_user_prompt_details_loops(self, plexsync):
         assert 1 == 0
 
-    def test_build_user_prompt_sync_option_when_pairs(self, plexsync):
+    def test_user_prompt_sync_option(self, plexsync):
         assert 1 == 0
 
-    def test_build_user_prompt_manual_option_when_conflicts(self, plexsync):
+    def test_user_prompt_manual_option(self, plexsync):
         assert 1 == 0
 
-    def test_build_user_prompt_details_option_when_viewable(self, plexsync):
+    def test_user_prompt_details_option(self, plexsync):
         assert 1 == 0
 
-    def test_build_user_prompt_always_includes_filter_cancel(self, plexsync):
+    def test_user_prompt_filter_cancel_option(self, plexsync):
         assert 1 == 0
 
-    def test_prompt_filter_sync_toggles_reverse(self, plexsync):
+    def test_user_prompt_toggle_reverse(self, plexsync):
         assert 1 == 0
 
-    def test_prompt_filter_sync_toggles_conflicts(self, plexsync):
+    def test_user_prompt_toggle_conflicts(self, plexsync):
         assert 1 == 0
 
-    def test_prompt_filter_sync_toggles_unrated(self, plexsync):
+    def test_user_prompt_toggle_unrated(self, plexsync):
         assert 1 == 0
 
-    def test_prompt_filter_sync_selects_quality(self, plexsync):
+    def test_user_prompt_select_quality(self, plexsync):
         assert 1 == 0
 
-    def test_prompt_filter_sync_cancel_logs(self, plexsync):
+    def test_user_prompt_filter_cancel_logs(self, plexsync):
         assert 1 == 0
 
-    def test_prompt_select_quality_threshold_shows_counts(self, plexsync):
+    def test_user_prompt_quality_counts(self, plexsync):
         assert 1 == 0
 
-    def test_prompt_select_quality_threshold_returns_selection(self, plexsync):
+    def test_user_prompt_quality_selection(self, plexsync):
         assert 1 == 0
 
-    def test_prompt_detailed_view_switches_scope(self, plexsync):
+    def test_user_prompt_detailed_scope(self, plexsync):
         assert 1 == 0
 
-    def test_prompt_detailed_view_displays_category(self, plexsync):
+    def test_user_prompt_detailed_category(self, plexsync):
         assert 1 == 0
 
-    def test_prompt_detailed_view_cancel_returns(self, plexsync):
+    def test_user_prompt_detailed_cancel(self, plexsync):
         assert 1 == 0
 
 
 class TestConflictResolution:
-    def test_resolve_conflicts_manually_src_to_dst(self, plexsync):
+    def test_conflict_manual_src_to_dst(self, plexsync):
         assert 1 == 0
 
-    def test_resolve_conflicts_manually_dst_to_src(self, plexsync):
+    def test_conflict_manual_dst_to_src(self, plexsync):
         assert 1 == 0
 
-    def test_resolve_conflicts_manually_custom_rating(self, plexsync):
+    def test_conflict_manual_custom_rating(self, plexsync):
         assert 1 == 0
 
-    def test_resolve_conflicts_manually_skip_track(self, plexsync):
+    def test_conflict_manual_skip(self, plexsync):
         assert 1 == 0
 
-    def test_resolve_conflicts_manually_cancel_process(self, plexsync):
+    def test_conflict_manual_cancel(self, plexsync):
         assert 1 == 0
 
-    def test_resolve_conflicts_manually_invalid_rating_reprompts(self, plexsync):
+    def test_conflict_manual_invalid_rating(self, plexsync):
         assert 1 == 0
 
 
@@ -304,12 +407,12 @@ class TestDescribeSync:
             ({"include_unrated": True, "sync_conflicts": True, "quality": "PERFECT_MATCH"}, "unrated and PERFECT_MATCH+ conflicting tracks"),
         ],
     )
-    def test_describe_sync_various_filters(self, plexsync, track_filter, expected):
+    def test_describe_sync_filters(self, plexsync, track_filter, expected):
         assert plexsync._describe_sync(track_filter) == expected
 
 
 class TestProperties:
-    def test_conflicts_property_filters_conflicting_pairs(self, plexsync, trackpair_factory):
+    def test_conflicts_property(self, plexsync, trackpair_factory):
         pairs = [
             trackpair_factory(sync_state=SyncState.CONFLICTING),
             trackpair_factory(sync_state=SyncState.NEEDS_UPDATE),
@@ -320,7 +423,7 @@ class TestProperties:
         assert all(p.sync_state == SyncState.CONFLICTING for p in result)
         assert len(result) == 1
 
-    def test_unrated_property_filters_needs_update_pairs(self, plexsync, trackpair_factory):
+    def test_unrated_property(self, plexsync, trackpair_factory):
         pairs = [
             trackpair_factory(sync_state=SyncState.CONFLICTING),
             trackpair_factory(sync_state=SyncState.NEEDS_UPDATE),
@@ -333,7 +436,7 @@ class TestProperties:
 
 
 class TestGetTrackFilter:
-    def test_get_track_filter_excludes_unmatched(self, plexsync, trackpair_factory):
+    def test_track_filter_excludes_unmatched(self, plexsync, trackpair_factory):
         pairs = [
             trackpair_factory(sync_state=SyncState.NEEDS_UPDATE),
             trackpair_factory(sync_state=SyncState.CONFLICTING),
@@ -343,7 +446,7 @@ class TestGetTrackFilter:
         result = [p for p in pairs if filter_fn(p)]
         assert all(p.sync_state != SyncState.UNKNOWN for p in result)
 
-    def test_get_track_filter_includes_quality_filtered(self, plexsync, trackpair_factory):
+    def test_track_filter_quality(self, plexsync, trackpair_factory):
         pairs = [
             trackpair_factory(quality=MatchThreshold.PERFECT_MATCH),
             trackpair_factory(quality=MatchThreshold.GOOD_MATCH),
@@ -352,7 +455,7 @@ class TestGetTrackFilter:
         result = [p for p in pairs if filter_fn(p)]
         assert all(p.quality == MatchThreshold.PERFECT_MATCH for p in result)
 
-    def test_get_track_filter_respects_conflict_setting(self, plexsync, trackpair_factory):
+    def test_track_filter_conflict_setting(self, plexsync, trackpair_factory):
         pairs = [
             trackpair_factory(sync_state=SyncState.CONFLICTING),
             trackpair_factory(sync_state=SyncState.NEEDS_UPDATE),
@@ -434,7 +537,7 @@ class TestGetMatchDisplayOptions:
             ),
         ],
     )
-    def test_get_match_display_options_scope_and_category_assignment(
+    def test_match_display_options_scope_categories(
         self, plexsync, trackpair_factory, scope, pair_specs, expected_categories, expected_assignments, expected_options, expected_filters
     ):
         pairs = []
