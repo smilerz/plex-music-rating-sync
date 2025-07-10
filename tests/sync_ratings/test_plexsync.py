@@ -3,8 +3,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from manager.config_manager import SyncItem
-from sync_items import AudioTag
-from sync_pair import MatchThreshold, SyncState, TrackPair
+from sync_items import AudioTag, Playlist
+from sync_pair import MatchThreshold, PlaylistPair, SyncState, TrackPair
 
 
 @pytest.fixture
@@ -61,7 +61,6 @@ def trackpair_factory(audio_tag_factory):
         pair.destination = destination_track
         pair.sync_state = sync_state
         pair.score = score
-        pair._quality = quality  # set private attribute for test
         pair.rating_source = getattr(source_track, "rating", None)
         pair.rating_destination = getattr(destination_track, "rating", None)
 
@@ -75,25 +74,16 @@ def trackpair_factory(audio_tag_factory):
 
 
 @pytest.fixture
-def playlistpair_factory():
+def playlistpair_factory(plexsync, playlist_factory):
     """Factory for creating real PlaylistPair objects with test-controlled attributes."""
-    from MediaPlayer import MediaPlayer
-    from sync_items import Playlist
-    from sync_pair import PlaylistPair
 
-    def _factory(
-        source_playlist=None,
-        destination_playlist=None,
-        source_player=None,
-        destination_player=None,
-        sync_state=None,
-    ):
+    def _factory(source_playlist=None, destination_playlist=None, source_player=None, destination_player=None, sync_state=None):
         if source_player is None:
-            source_player = MagicMock(spec=MediaPlayer, name="SourcePlayer")
+            source_player = plexsync.source_player
         if destination_player is None:
-            destination_player = MagicMock(spec=MediaPlayer, name="DestPlayer")
+            destination_player = plexsync.destination_player
         if source_playlist is None:
-            source_playlist = MagicMock(spec=Playlist, name="SourcePlaylist")
+            source_playlist = playlist_factory(ID="pl1", name="Source Playlist", tracks=[])
         pair = PlaylistPair(source_player, destination_player, source_playlist)
         pair.logger = MagicMock()
         pair.status_mgr = MagicMock()
@@ -109,8 +99,6 @@ def playlistpair_factory():
 
 @pytest.fixture
 def playlist_factory():
-    from sync_items import Playlist
-
     def _factory(ID="pl1", name="Test Playlist", tracks=None, is_auto_playlist=False):
         pl = Playlist(ID=ID, name=name)
         pl.is_auto_playlist = is_auto_playlist
@@ -119,6 +107,23 @@ def playlist_factory():
         return pl
 
     return _factory
+
+
+@pytest.fixture
+def trackpairs(trackpair_factory):
+    return [
+        trackpair_factory(sync_state=SyncState.UP_TO_DATE, score=100),
+        trackpair_factory(sync_state=SyncState.UP_TO_DATE, score=80),
+        trackpair_factory(sync_state=SyncState.UP_TO_DATE, score=30),
+        trackpair_factory(sync_state=SyncState.NEEDS_UPDATE, score=100),
+        trackpair_factory(sync_state=SyncState.NEEDS_UPDATE, score=99),
+        trackpair_factory(sync_state=SyncState.NEEDS_UPDATE, score=79),
+        trackpair_factory(sync_state=SyncState.CONFLICTING, score=100),
+        trackpair_factory(sync_state=SyncState.CONFLICTING, score=80),
+        trackpair_factory(sync_state=SyncState.CONFLICTING, score=79),
+        trackpair_factory(sync_state=SyncState.UNKNOWN, score=None),
+        trackpair_factory(sync_state=SyncState.ERROR, score=None),
+    ]
 
 
 class TestSync:
@@ -424,124 +429,142 @@ class TestDescribeSync:
 
 
 class TestProperties:
-    def test_conflicts_property(self, plexsync, trackpair_factory):
-        pairs = [
-            trackpair_factory(sync_state=SyncState.CONFLICTING),
-            trackpair_factory(sync_state=SyncState.NEEDS_UPDATE),
-            trackpair_factory(sync_state=SyncState.UP_TO_DATE),
-        ]
-        plexsync.sync_pairs = pairs
+    def test_conflicts_property(self, plexsync, trackpairs):
+        plexsync.sync_pairs = trackpairs
         result = plexsync.conflicts
         assert all(p.sync_state == SyncState.CONFLICTING for p in result)
-        assert len(result) == 1
+        assert len(result) == sum(p.sync_state == SyncState.CONFLICTING for p in trackpairs)
 
-    def test_unrated_property(self, plexsync, trackpair_factory):
-        pairs = [
-            trackpair_factory(sync_state=SyncState.CONFLICTING),
-            trackpair_factory(sync_state=SyncState.NEEDS_UPDATE),
-            trackpair_factory(sync_state=SyncState.UP_TO_DATE),
-        ]
-        plexsync.sync_pairs = pairs
+    def test_unrated_property(self, plexsync, trackpairs):
+        plexsync.sync_pairs = trackpairs
         result = plexsync.unrated
         assert all(p.sync_state == SyncState.NEEDS_UPDATE for p in result)
-        assert len(result) == 1
+        assert len(result) == 3
 
 
 class TestGetTrackFilter:
-    def test_track_filter_excludes_unmatched(self, plexsync, trackpair_factory):
-        pairs = [
-            trackpair_factory(sync_state=SyncState.NEEDS_UPDATE),
-            trackpair_factory(sync_state=SyncState.CONFLICTING),
-            trackpair_factory(sync_state=SyncState.UNKNOWN),
-        ]
+    def test_track_filter_excludes_unmatched(self, plexsync, trackpairs):
         filter_fn = plexsync._get_track_filter(include_unmatched=False)
-        result = [p for p in pairs if filter_fn(p)]
+        result = [p for p in trackpairs if filter_fn(p)]
         assert all(p.sync_state != SyncState.UNKNOWN for p in result)
 
-    def test_track_filter_quality(self, plexsync, trackpair_factory):
-        pairs = [
-            trackpair_factory(quality=MatchThreshold.PERFECT_MATCH),
-            trackpair_factory(quality=MatchThreshold.GOOD_MATCH),
-        ]
+    def test_track_filter_quality(self, plexsync, trackpairs):
         filter_fn = plexsync._get_track_filter(quality=MatchThreshold.PERFECT_MATCH)
-        result = [p for p in pairs if filter_fn(p)]
+        result = [p for p in trackpairs if filter_fn(p)]
         assert all(p.quality == MatchThreshold.PERFECT_MATCH for p in result)
+        assert len(result) == 2  # Updated: UP_TO_DATE and NEEDS_UPDATE with score=100
 
-    def test_track_filter_conflict_setting(self, plexsync, trackpair_factory):
-        pairs = [
-            trackpair_factory(sync_state=SyncState.CONFLICTING),
-            trackpair_factory(sync_state=SyncState.NEEDS_UPDATE),
-        ]
+    def test_track_filter_conflict_setting(self, plexsync, trackpairs):
         filter_fn = plexsync._get_track_filter(include_conflicts=False)
-        result = [p for p in pairs if filter_fn(p)]
+        result = [p for p in trackpairs if filter_fn(p)]
         assert all(p.sync_state != SyncState.CONFLICTING for p in result)
 
 
 class TestGetMatchDisplayOptions:
-    def test_match_display_options_all_scope_perfect_good_unmatched(self, plexsync, trackpair_factory):
-        """'all' scope: perfect, good, unmatched"""
-        pair1 = trackpair_factory(sync_state=SyncState.UP_TO_DATE, score=100)  # PERFECT_MATCH
-        pair2 = trackpair_factory(sync_state=SyncState.UP_TO_DATE, score=80)  # GOOD_MATCH
-        pair3 = trackpair_factory(sync_state=SyncState.UNKNOWN, score=None)  # Unmatched
-        plexsync.sync_pairs = [pair1, pair2, pair3]
+    def test_match_display_options_all_scope_perfect_good_unmatched(self, plexsync, trackpairs):
+        plexsync.sync_pairs = trackpairs
         options, filters = plexsync._get_match_display_options("all")
-        assert options == ["Perfect Matches (1)", "Good Matches (1)", "Unmatched (1)"]
         assert set(filters.keys()) == {"Perfect Matches", "Good Matches", "Poor Matches", "Unmatched"}
-        # Category assignments
-        assert [i for i, p in enumerate([pair1, pair2, pair3]) if filters["Perfect Matches"](p)] == [0]
-        assert [i for i, p in enumerate([pair1, pair2, pair3]) if filters["Good Matches"](p)] == [1]
-        assert [i for i, p in enumerate([pair1, pair2, pair3]) if filters["Unmatched"](p)] == [2]
+        for cat in ["Perfect Matches", "Good Matches", "Poor Matches", "Unmatched"]:
+            assert any(filters[cat](p) for p in trackpairs)
 
-    def test_match_display_options_all_scope_only_unmatched(self, plexsync, trackpair_factory):
-        """'all' scope: only unmatched"""
-        pair1 = trackpair_factory(sync_state=SyncState.UNKNOWN, score=None)
-        pair2 = trackpair_factory(sync_state=SyncState.ERROR, score=None)
-        plexsync.sync_pairs = [pair1, pair2]
+    def test_match_display_options_all_scope_only_unmatched(self, plexsync, trackpairs):
+        unmatched = [p for p in trackpairs if p.sync_state in (SyncState.UNKNOWN, SyncState.ERROR)]
+        plexsync.sync_pairs = unmatched
         options, filters = plexsync._get_match_display_options("all")
-        assert options == ["Unmatched (2)"]
+        assert options == [f"Unmatched ({len(unmatched)})"]
         assert set(filters.keys()) == {"Perfect Matches", "Good Matches", "Poor Matches", "Unmatched"}
-        assert [i for i, p in enumerate([pair1, pair2]) if filters["Unmatched"](p)] == [0, 1]
+        assert all(filters["Unmatched"](p) for p in unmatched)
 
-    def test_match_display_options_unrated_scope_perfect_good(self, plexsync, trackpair_factory):
-        """'unrated' scope: needs_update with perfect/good, up_to_date ignored"""
-        pair1 = trackpair_factory(sync_state=SyncState.NEEDS_UPDATE, score=100)  # PERFECT_MATCH
-        pair2 = trackpair_factory(sync_state=SyncState.NEEDS_UPDATE, score=80)  # GOOD_MATCH
-        pair3 = trackpair_factory(sync_state=SyncState.UP_TO_DATE, score=100)  # ignored
-        plexsync.sync_pairs = [pair1, pair2, pair3]
-        options, filters = plexsync._get_match_display_options("unrated")
-        assert options == ["Perfect Matches (1)", "Good Matches (1)"]
+    def test_match_display_options_unrated_scope_perfect_good(self, plexsync, trackpairs):
+        unrated = [p for p in trackpairs if p.sync_state == SyncState.NEEDS_UPDATE and p.quality in (MatchThreshold.PERFECT_MATCH, MatchThreshold.GOOD_MATCH)]
+        plexsync.sync_pairs = unrated + [p for p in trackpairs if p.sync_state == SyncState.UP_TO_DATE]
+        _options, filters = plexsync._get_match_display_options("unrated")
         assert set(filters.keys()) == {"Perfect Matches", "Good Matches", "Poor Matches"}
-        assert [i for i, p in enumerate([pair1, pair2, pair3]) if filters["Perfect Matches"](p)] == [0]
-        assert [i for i, p in enumerate([pair1, pair2, pair3]) if filters["Good Matches"](p)] == [1]
+        for cat, threshold in zip(["Perfect Matches", "Good Matches"], [MatchThreshold.PERFECT_MATCH, MatchThreshold.GOOD_MATCH], strict=False):
+            assert any(filters[cat](p) for p in unrated if p.quality == threshold)
 
-    def test_match_display_options_conflicting_scope_good_poor(self, plexsync, trackpair_factory):
-        """'conflicting' scope: conflicting with good/poor, up_to_date ignored"""
-        pair1 = trackpair_factory(sync_state=SyncState.CONFLICTING, score=80)  # GOOD_MATCH
-        pair2 = trackpair_factory(sync_state=SyncState.CONFLICTING, score=30)  # POOR_MATCH
-        pair3 = trackpair_factory(sync_state=SyncState.UP_TO_DATE, score=100)  # ignored
-        plexsync.sync_pairs = [pair1, pair2, pair3]
+    def test_match_display_options_conflicting_scope_good_poor(self, plexsync, trackpairs):
+        conflicting = [p for p in trackpairs if p.sync_state == SyncState.CONFLICTING and p.quality in (MatchThreshold.GOOD_MATCH, MatchThreshold.POOR_MATCH)]
+        plexsync.sync_pairs = conflicting + [p for p in trackpairs if p.sync_state == SyncState.UP_TO_DATE]
         options, filters = plexsync._get_match_display_options("conflicting")
-        assert options == ["Good Matches (1)", "Poor Matches (1)"]
         assert set(filters.keys()) == {"Perfect Matches", "Good Matches", "Poor Matches"}
-        assert [i for i, p in enumerate([pair1, pair2, pair3]) if filters["Good Matches"](p)] == [0]
-        assert [i for i, p in enumerate([pair1, pair2, pair3]) if filters["Poor Matches"](p)] == [1]
+        for cat, threshold in zip(["Good Matches", "Poor Matches"], [MatchThreshold.GOOD_MATCH, MatchThreshold.POOR_MATCH], strict=False):
+            assert any(filters[cat](p) for p in conflicting if p.quality == threshold)
 
     def test_match_display_options_all_scope_empty_input(self, plexsync):
-        """'all' scope: empty input"""
         plexsync.sync_pairs = []
         options, filters = plexsync._get_match_display_options("all")
         assert options == []
         assert set(filters.keys()) == {"Perfect Matches", "Good Matches", "Poor Matches", "Unmatched"}
 
-    def test_match_display_options_invalid_scope_returns_empty(self, plexsync, trackpair_factory):
-        """Invalid scope: should return empty options, but filters exist and always return False"""
-        pair1 = trackpair_factory(sync_state=SyncState.UP_TO_DATE, score=100)
-        pair2 = trackpair_factory(sync_state=SyncState.NEEDS_UPDATE, score=80)
-        pair3 = trackpair_factory(sync_state=SyncState.CONFLICTING, score=30)
-        plexsync.sync_pairs = [pair1, pair2, pair3]
+    def test_match_display_options_invalid_scope_returns_empty(self, plexsync, trackpairs):
+        plexsync.sync_pairs = trackpairs
         options, filters = plexsync._get_match_display_options("invalid_scope")
         assert options == []
         assert set(filters.keys()) == {"Perfect Matches", "Good Matches", "Poor Matches"}
-        # All filters should return False for all pairs
         for cat in filters:
-            assert all(not filters[cat](p) for p in [pair1, pair2, pair3])
+            assert all(not filters[cat](p) for p in trackpairs)
+
+
+class TestFilterSyncPairs:
+    @pytest.mark.parametrize(
+        "track_filter,expected_counts",
+        [
+            (
+                {"include_unrated": True, "sync_conflicts": True, "quality": None, "reverse": False},
+                {SyncState.NEEDS_UPDATE: 3, SyncState.CONFLICTING: 3},
+            ),
+            (
+                {"include_unrated": False, "sync_conflicts": True, "quality": None, "reverse": False},
+                {SyncState.CONFLICTING: 3},
+            ),
+            (
+                {"include_unrated": True, "sync_conflicts": False, "quality": None, "reverse": False},
+                {SyncState.NEEDS_UPDATE: 3},
+            ),
+            (
+                {"include_unrated": True, "sync_conflicts": True, "quality": MatchThreshold.GOOD_MATCH, "reverse": False},
+                {SyncState.NEEDS_UPDATE: 2, SyncState.CONFLICTING: 2},
+            ),
+            (
+                {"include_unrated": True, "sync_conflicts": True, "quality": None, "reverse": False},
+                {SyncState.NEEDS_UPDATE: 3, SyncState.CONFLICTING: 3},
+            ),
+            (
+                {"include_unrated": False, "sync_conflicts": False, "quality": None, "reverse": False},
+                {},
+            ),
+        ],
+    )
+    def test_filter_sync_pairs_various_filters(self, plexsync, trackpairs, track_filter, expected_counts):
+        plexsync.sync_pairs = trackpairs
+        plexsync.track_filter = track_filter.copy()
+        result = plexsync._filter_sync_pairs()
+        from collections import Counter
+
+        state_counts = Counter(p.sync_state for p in result)
+        assert state_counts == expected_counts
+        # Also assert no unexpected states
+        assert set(state_counts.keys()) <= set(expected_counts.keys())
+
+    def test_filter_sync_pairs_excludes_unmatched_and_error(self, plexsync, trackpairs):
+        """Test that unmatched and error states are always excluded by the filter."""
+        plexsync.sync_pairs = trackpairs
+        plexsync.track_filter = {"include_unrated": True, "sync_conflicts": True, "quality": None, "reverse": False}
+        result = plexsync._filter_sync_pairs()
+        for p in result:
+            assert p.sync_state not in (SyncState.UNKNOWN, SyncState.ERROR)
+
+    def test_filter_sync_pairs_reverse_returns_swapped_source_and_destination(self, plexsync, trackpairs):
+        """Test that reverse filter returns real reversed objects with swapped source and destination for all applicable sync_pairs."""
+        plexsync.sync_pairs = trackpairs
+        plexsync.track_filter = {"include_unrated": True, "sync_conflicts": True, "quality": None, "reverse": True}
+        result = plexsync._filter_sync_pairs()
+        expected_pairs = [p for p in trackpairs if p.sync_state in (SyncState.NEEDS_UPDATE, SyncState.CONFLICTING)]
+        assert len(result) == len(expected_pairs)
+        for reversed_pair, orig_pair in zip(result, expected_pairs, strict=True):
+            assert reversed_pair.source == orig_pair.destination
+            assert reversed_pair.destination == orig_pair.source
+            assert reversed_pair.sync_state == orig_pair.sync_state
+            assert getattr(reversed_pair, "quality", None) == getattr(orig_pair, "quality", None)

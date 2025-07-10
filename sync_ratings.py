@@ -405,7 +405,7 @@ class PlexSync:
         }
 
         if scope == "all":
-            label_filters["Unmatched"] = lambda p: p.is_unmatched()
+            label_filters["Unmatched"] = lambda p: p.is_unmatched
 
         # Generate option strings with counts
         options = []
@@ -494,7 +494,7 @@ class PlexSync:
         """
 
         def fn(pair: TrackPair) -> bool:
-            if not include_unmatched and pair.is_unmatched():
+            if not include_unmatched and pair.is_unmatched:
                 return False
 
             if pair.sync_state == SyncState.NEEDS_UPDATE:

@@ -77,16 +77,18 @@ class TrackPair(SyncPair):
             return MatchThreshold.POOR_MATCH
         return None
 
-    def has_min_quality(self, quality: MatchThreshold) -> bool:
-        return self.quality is not None and self.quality >= quality
-
+    @property
     def is_sync_candidate(self) -> bool:
         """Eligible for syncing: either unrated or conflicting."""
         return self.sync_state in {SyncState.NEEDS_UPDATE, SyncState.CONFLICTING}
 
+    @property
     def is_unmatched(self) -> bool:
         """Failed to match due to system or search failure."""
         return self.sync_state in {SyncState.UNKNOWN, SyncState.ERROR}
+
+    def has_min_quality(self, quality: MatchThreshold) -> bool:
+        return self.quality is not None and self.quality >= quality
 
     def _record_match_quality(self, score: int) -> None:
         """Track match quality statistics based on the score."""
@@ -111,6 +113,7 @@ class TrackPair(SyncPair):
         reversed_pair.rating_source = self.rating_destination
         reversed_pair.rating_destination = self.rating_source
         reversed_pair.score = self.score
+        reversed_pair.sync_state = self.sync_state
         return reversed_pair
 
     @staticmethod

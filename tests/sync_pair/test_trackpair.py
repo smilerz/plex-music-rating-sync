@@ -398,8 +398,8 @@ class TestSyncCandidateStatus:
         pair = TrackPair(source_player=source_player, destination_player=destination_player, source_track=src_track)
         pair.destination = dst_good
         pair.sync_state = sync_state
-        assert pair.is_sync_candidate() is expected_is_candidate
-        assert pair.is_unmatched() is expected_is_unmatched
+        assert pair.is_sync_candidate is expected_is_candidate
+        assert pair.is_unmatched is expected_is_unmatched
 
 
 class TestRecordMatchQuality:
