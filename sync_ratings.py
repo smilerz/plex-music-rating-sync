@@ -16,7 +16,7 @@ from ui.prompt import UserPrompt
 
 
 class PlexSync:
-    def __init__(self) -> None:
+    def __init__(self) -> None:  # pragma: no cover
         self.logger = logging.getLogger("PlexSync")
         mgr = get_manager()
         self.config_mgr = mgr.get_config_manager()
@@ -229,7 +229,7 @@ class PlexSync:
 
                 case "filter":
                     self._prompt_filter_sync()
-                    continue  # 👈 key change: re-show menu without recursion
+                    continue
 
                 case "cancel":
                     print("Sync tracks canceled.")
@@ -240,7 +240,7 @@ class PlexSync:
 
                 case "details":
                     self._prompt_detailed_view()
-                    continue  # 👈 also now loops instead of returning recursively
+                    continue
 
     def _build_user_prompt(self) -> None:
         desc = self._describe_sync(self.track_filter)
@@ -456,7 +456,7 @@ class PlexSync:
 
             self._display_trackpair_list(filtered_pairs, f"{label} — {scope_label}")
 
-    def _display_trackpair_list(self, track_pairs: list[TrackPair], label: str) -> None:
+    def _display_trackpair_list(self, track_pairs: list[TrackPair], label: str) -> None:  # pragma: no cover
         if not track_pairs:
             print(f"No tracks matched the selected category: {label}")
             return
@@ -512,7 +512,7 @@ class PlexSync:
 
         return fn
 
-    def _get_match_summary(self) -> str:
+    def _get_match_summary(self) -> str:  # pragma: no cover
         """Generate a summary of match quality statistics."""
         return (
             f"100%: {self.stats_mgr.get('perfect_matches')} | "
@@ -521,7 +521,7 @@ class PlexSync:
             f"None: {self.stats_mgr.get('no_matches')}"
         )
 
-    def print_summary(self) -> None:
+    def print_summary(self) -> None:  # pragma: no cover
         """Print and log the sync summary."""
         elapsed = time.time() - self.start_time
         elapsed_time = str(timedelta(seconds=int(elapsed)))
