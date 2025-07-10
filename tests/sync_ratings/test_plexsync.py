@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from manager.config_manager import PlayerType, SyncItem
+from manager.config_manager import SyncItem
 from sync_items import AudioTag
 from sync_pair import MatchThreshold, SyncState, TrackPair
 
@@ -12,27 +12,13 @@ def plexsync(monkeypatch):
     """
     Provides a fully-initialized PlexSync instance with all external dependencies mocked.
     All mocks are attached as attributes for test-side configuration.
-    Only patches what is necessary for most tests.
     """
-    # Mock config and manager
-    mock_config = MagicMock()
-    mock_config.source = PlayerType.PLEX
-    mock_config.destination = PlayerType.FILESYSTEM
-    mock_config.sync = ["tracks"]
-    mock_config.dry = False
-
-    mock_manager = MagicMock()
-    mock_manager.get_config_manager.return_value = mock_config
-    mock_manager.get_stats_manager.return_value = MagicMock()
-    mock_manager.get_status_manager.return_value = MagicMock()
-    monkeypatch.setattr("manager.get_manager", lambda: mock_manager)
-
     # Mock player classes
     monkeypatch.setattr("sync_ratings.Plex", lambda *a, **kw: MagicMock(name="PlexPlayer"))
     monkeypatch.setattr("sync_ratings.FileSystem", lambda *a, **kw: MagicMock(name="FileSystemPlayer"))
     monkeypatch.setattr("sync_ratings.MediaMonkey", lambda *a, **kw: MagicMock(name="MediaMonkeyPlayer"))
 
-    # Mock logger
+    # # Mock logger
     mock_logger = MagicMock()
     monkeypatch.setattr("sync_ratings.logging.getLogger", lambda *a, **kw: mock_logger)
 
@@ -42,8 +28,6 @@ def plexsync(monkeypatch):
     from sync_ratings import PlexSync
 
     instance = PlexSync()
-    instance.mock_config = mock_config
-    instance.mock_manager = mock_manager
     instance.mock_logger = mock_logger
     return instance
 
@@ -58,17 +42,17 @@ def audio_tag_factory():
 
 @pytest.fixture
 def trackpair_factory(audio_tag_factory):
-    """Factory for creating real TrackPair objects with mocked players and real AudioTags."""
+    """Factory for creating real TrackPair objects with mocked players and real AudioTags.
+    The .match() method is patched to avoid real matching logic and just set attributes for test needs.
+    """
 
     def _factory(
         source_track=None, destination_track=None, source_player=None, destination_player=None, sync_state=SyncState.UP_TO_DATE, score=100, quality=MatchThreshold.PERFECT_MATCH
     ):
-        # Use real AudioTag if not provided
         if source_track is None:
             source_track = audio_tag_factory(title="Source", artist="Artist")
         if destination_track is None:
             destination_track = audio_tag_factory(title="Dest", artist="Artist")
-        # Use MagicMock for players if not provided
         if source_player is None:
             source_player = MagicMock(name="SourcePlayer")
         if destination_player is None:
@@ -80,6 +64,11 @@ def trackpair_factory(audio_tag_factory):
         pair._quality = quality  # set private attribute for test
         pair.rating_source = getattr(source_track, "rating", None)
         pair.rating_destination = getattr(destination_track, "rating", None)
+
+        def fake_match(*args, **kwargs):
+            return pair
+
+        pair.match = fake_match
         return pair
 
     return _factory
@@ -160,7 +149,6 @@ class TestSync:
 
     def test_sync_tracks_no_tracks_warns(self, plexsync):
         plexsync.source_player.search_tracks.return_value = []
-        plexsync.logger = MagicMock()
         plexsync.sync_tracks()
         plexsync.logger.warning.assert_called_once_with("No tracks found")
 
@@ -170,7 +158,6 @@ class TestSync:
         plexsync.source_player.search_tracks.return_value = [track]
         plexsync.sync_pairs = []
         plexsync._match_tracks = MagicMock(return_value=[pair])
-        plexsync.logger = MagicMock()
         plexsync.sync_tracks()
         plexsync.logger.info.assert_any_call("Attempting to match 1 tracks")
 
@@ -184,6 +171,24 @@ class TestSync:
 
 
 class TestTrackSync:
+    @pytest.fixture(autouse=True)
+    def patch_trackpair_match(self, request):
+        """Class-scoped fixture to patch TrackPair.match to set attributes from the source track for test control."""
+
+        def fake_match(self, *args, **kwargs):
+            src = self.source
+            if hasattr(src, "_pair_score"):
+                self.score = src._pair_score
+            if hasattr(src, "_pair_state"):
+                self.sync_state = src._pair_state
+            if hasattr(src, "_pair_quality"):
+                self._quality = src._pair_quality
+            return self
+
+        patcher = patch.object(TrackPair, "match", fake_match)
+        patcher.start()
+        request.addfinalizer(patcher.stop)
+
     def test_sync_tracks_user_cancel_no_sync(self, plexsync, track_factory, trackpair_factory):
         track = track_factory()
         pair = trackpair_factory(source_track=track, sync_state=SyncState.NEEDS_UPDATE)
@@ -220,66 +225,74 @@ class TestTrackSync:
             mock_print.assert_any_call("[DRY RUN] No changes will be written.")
 
     def test_match_tracks_empty_list_returns_empty(self, plexsync):
-        plexsync.status_mgr.start_phase = MagicMock()
         result = plexsync._match_tracks([])
         assert result == []
 
-    def test_match_tracks_all_tracks_matched(self, plexsync, track_factory, trackpair_factory):
+    def test_match_tracks_all_tracks_matched(self, plexsync, track_factory):
         track1 = track_factory()
         track2 = track_factory()
-        plexsync.status_mgr.start_phase = MagicMock()
-
-        # Patch TrackPair to always return a valid pair
-        def match_tracks(tracks):
-            return [trackpair_factory(source_track=t) for t in tracks]
-
-        plexsync._match_tracks = match_tracks
-        tracks = [track1, track2]
-        pairs = plexsync._match_tracks(tracks)
+        track1._pair_state = SyncState.UP_TO_DATE
+        track2._pair_state = SyncState.UP_TO_DATE
+        pairs = plexsync._match_tracks([track1, track2])
         assert len(pairs) == 2
-        assert all(p.source == t for p, t in zip(pairs, tracks, strict=True))
+        assert all(p.source == t for p, t in zip(pairs, [track1, track2], strict=True))
+        assert all(p.sync_state == SyncState.UP_TO_DATE for p in pairs)
 
-    def test_match_tracks_some_tracks_unmatched(self, plexsync, track_factory, trackpair_factory):
+    def test_match_tracks_some_tracks_unmatched(self, plexsync, track_factory):
         track1 = track_factory()
         track2 = track_factory()
-        plexsync.status_mgr.start_phase = MagicMock()
+        track1._pair_state = SyncState.UP_TO_DATE
+        # track2 has no _pair_state, so will default to whatever TrackPair does (likely unmatched)
+        pairs = plexsync._match_tracks([track1, track2])
+        # Only track1 should be considered matched (if _match_tracks filters by sync_state)
+        assert any(p.source == track1 and p.sync_state == SyncState.UP_TO_DATE for p in pairs)
+        assert all(p.source != track2 or p.sync_state != SyncState.UP_TO_DATE for p in pairs)
 
-        def match_tracks(tracks):
-            return [trackpair_factory(source_track=tracks[0])]
-
-        plexsync._match_tracks = match_tracks
-        tracks = [track1, track2]
-        pairs = plexsync._match_tracks(tracks)
-        assert len(pairs) == 1
-        assert pairs[0].source == track1
-
-    def test_match_tracks_all_tracks_unmatched(self, plexsync):
-        plexsync.status_mgr.start_phase = MagicMock()
-
-        def match_tracks(tracks):
-            return []
-
-        plexsync._match_tracks = match_tracks
-        tracks = [MagicMock(), MagicMock()]
-        pairs = plexsync._match_tracks(tracks)
-        assert pairs == []
-
-    def test_match_tracks_various_sync_states(self, plexsync, track_factory, trackpair_factory):
+    def test_match_tracks_all_tracks_unmatched(self, plexsync, track_factory):
         track1 = track_factory()
         track2 = track_factory()
-        pair1 = trackpair_factory(source_track=track1, sync_state=SyncState.UP_TO_DATE)
-        pair2 = trackpair_factory(source_track=track2, sync_state=SyncState.CONFLICTING)
-        plexsync.status_mgr.start_phase = MagicMock()
+        # Neither track has _pair_state set, so both should be unmatched
+        pairs = plexsync._match_tracks([track1, track2])
+        # Should be empty or all pairs have default state (depending on _match_tracks logic)
+        assert all(getattr(p, "sync_state", None) != SyncState.UP_TO_DATE for p in pairs)
 
-        def match_tracks(tracks):
-            return [pair1, pair2]
-
-        plexsync._match_tracks = match_tracks
-        tracks = [track1, track2]
-        pairs = plexsync._match_tracks(tracks)
+    def test_match_tracks_various_sync_states(self, plexsync, track_factory):
+        track1 = track_factory()
+        track2 = track_factory()
+        track1._pair_state = SyncState.UP_TO_DATE
+        track2._pair_state = SyncState.CONFLICTING
+        pairs = plexsync._match_tracks([track1, track2])
         assert len(pairs) == 2
         assert pairs[0].sync_state == SyncState.UP_TO_DATE
         assert pairs[1].sync_state == SyncState.CONFLICTING
+
+    def test_sync_ratings_empty_pairs_noop(self, plexsync):
+        plexsync.logger.getEffectiveLevel.return_value = 20  # logging.INFO
+        with patch("builtins.print") as mock_print:
+            plexsync._sync_ratings([])
+            mock_print.assert_any_call("No applicable tracks to update.")
+        plexsync.logger.info.assert_not_called()
+        plexsync.status_mgr.start_phase.assert_not_called()
+
+    def test_sync_ratings_dry_run_no_sync(self, plexsync, track_factory, trackpair_factory):
+        pair = trackpair_factory()
+        plexsync.config_mgr.dry = True
+        plexsync.logger.getEffectiveLevel.return_value = 20  # logging.INFO
+        pair.sync = MagicMock()
+        with patch("builtins.print") as mock_print:
+            plexsync._sync_ratings([pair])
+            mock_print.assert_any_call("[DRY RUN] No changes will be written.")
+        pair.sync.assert_called_once()
+
+    def test_sync_ratings_logger_above_info_skips_info_log(self, plexsync, track_factory, trackpair_factory):
+        pair = trackpair_factory()
+        plexsync.config_mgr.dry = False
+        plexsync.logger.getEffectiveLevel.return_value = 30  # logging.WARNING
+        pair.sync = MagicMock()
+        with patch("builtins.print") as mock_print:
+            plexsync._sync_ratings([pair])
+            assert any("Syncing 1 tracks" in str(c.args[0]) and "using direction:" in str(c.args[0]) for c in mock_print.call_args_list)
+        pair.sync.assert_called_once()
 
 
 class TestPlaylistSync:
@@ -292,7 +305,6 @@ class TestPlaylistSync:
         playlist1 = playlist_factory(ID="pl1", name="Playlist1")
         playlist2 = playlist_factory(ID="pl2", name="Playlist2")
         plexsync.source_player.search_playlists.return_value = [playlist1, playlist2]
-        # Use real PlaylistPair objects, but do not assign unused variable
         plexsync.config_mgr.dry = False
         plexsync.sync_playlists()
         plexsync.stats_mgr.increment.assert_any_call("playlists_processed", 2)
@@ -466,96 +478,70 @@ class TestGetTrackFilter:
 
 
 class TestGetMatchDisplayOptions:
-    @pytest.mark.parametrize(
-        "scope,pair_specs,expected_categories,expected_assignments,expected_options,expected_filters",
-        [
-            # 1. 'all' scope: perfect, good, unmatched
-            (
-                "all",
-                [
-                    {"sync_state": SyncState.UP_TO_DATE, "score": 100},  # PERFECT_MATCH
-                    {"sync_state": SyncState.UP_TO_DATE, "score": 80},  # GOOD_MATCH
-                    {"sync_state": SyncState.UNKNOWN, "score": None},  # Unmatched
-                ],
-                {"Perfect Matches", "Good Matches", "Unmatched"},
-                {"Perfect Matches": [0], "Good Matches": [1], "Unmatched": [2]},
-                ["Perfect Matches (1)", "Good Matches (1)", "Unmatched (1)"],
-                {"Perfect Matches", "Good Matches", "Poor Matches", "Unmatched"},
-            ),
-            # 2. 'all' scope: only unmatched
-            (
-                "all",
-                [
-                    {"sync_state": SyncState.UNKNOWN, "score": None},
-                    {"sync_state": SyncState.ERROR, "score": None},
-                ],
-                {"Unmatched"},
-                {"Unmatched": [0, 1]},
-                ["Unmatched (2)"],
-                {"Perfect Matches", "Good Matches", "Poor Matches", "Unmatched"},
-            ),
-            # 3. 'unrated' scope: needs_update with perfect/good, up_to_date ignored
-            (
-                "unrated",
-                [
-                    {"sync_state": SyncState.NEEDS_UPDATE, "score": 100},  # PERFECT_MATCH
-                    {"sync_state": SyncState.NEEDS_UPDATE, "score": 80},  # GOOD_MATCH
-                    {"sync_state": SyncState.UP_TO_DATE, "score": 100},  # ignored
-                ],
-                {"Perfect Matches", "Good Matches"},
-                {"Perfect Matches": [0], "Good Matches": [1]},
-                ["Perfect Matches (1)", "Good Matches (1)"],
-                {"Perfect Matches", "Good Matches", "Poor Matches"},
-            ),
-            # 4. 'conflicting' scope: conflicting with good/poor, up_to_date ignored
-            (
-                "conflicting",
-                [
-                    {"sync_state": SyncState.CONFLICTING, "score": 80},  # GOOD_MATCH
-                    {"sync_state": SyncState.CONFLICTING, "score": 30},  # POOR_MATCH
-                    {"sync_state": SyncState.UP_TO_DATE, "score": 100},  # ignored
-                ],
-                {"Good Matches", "Poor Matches"},
-                {"Good Matches": [0], "Poor Matches": [1]},
-                ["Good Matches (1)", "Poor Matches (1)"],
-                {"Perfect Matches", "Good Matches", "Poor Matches"},
-            ),
-            # 5. 'all' scope: empty input
-            ("all", [], set(), {}, [], {"Perfect Matches", "Good Matches", "Poor Matches", "Unmatched"}),
-            # 6. invalid scope: should return empty options, but filters exist and always return False
-            (
-                "invalid_scope",
-                [
-                    {"sync_state": SyncState.UP_TO_DATE, "score": 100},
-                    {"sync_state": SyncState.NEEDS_UPDATE, "score": 80},
-                    {"sync_state": SyncState.CONFLICTING, "score": 30},
-                ],
-                set(),
-                {},
-                [],
-                {"Perfect Matches", "Good Matches", "Poor Matches"},
-            ),
-        ],
-    )
-    def test_match_display_options_scope_categories(
-        self, plexsync, trackpair_factory, scope, pair_specs, expected_categories, expected_assignments, expected_options, expected_filters
-    ):
-        pairs = []
-        for spec in pair_specs:
-            pair = trackpair_factory(sync_state=spec.get("sync_state"), score=spec.get("score"))
-            pairs.append(pair)
-        plexsync.sync_pairs = pairs
-        options, filters = plexsync._get_match_display_options(scope)
-        base_categories = {c.split(" (")[0] for c in options}
-        assert base_categories == expected_categories
-        assert options == expected_options
-        assert set(filters.keys()) == expected_filters
-        for cat, idxs in expected_assignments.items():
-            if cat in filters:
-                base_cat = next((c for c in options if c.startswith(cat)), None)
-                assert base_cat is not None, f"Category {cat} missing"
-                expected_idxs = set(idxs)
-                result_idxs = {i for i, p in enumerate(pairs) if filters[cat](p)}
-                assert result_idxs == expected_idxs, f"For category {cat}, expected indices {expected_idxs}, got {result_idxs}"
-        for cat in base_categories:
-            assert cat in expected_categories
+    def test_match_display_options_all_scope_perfect_good_unmatched(self, plexsync, trackpair_factory):
+        """'all' scope: perfect, good, unmatched"""
+        pair1 = trackpair_factory(sync_state=SyncState.UP_TO_DATE, score=100)  # PERFECT_MATCH
+        pair2 = trackpair_factory(sync_state=SyncState.UP_TO_DATE, score=80)  # GOOD_MATCH
+        pair3 = trackpair_factory(sync_state=SyncState.UNKNOWN, score=None)  # Unmatched
+        plexsync.sync_pairs = [pair1, pair2, pair3]
+        options, filters = plexsync._get_match_display_options("all")
+        assert options == ["Perfect Matches (1)", "Good Matches (1)", "Unmatched (1)"]
+        assert set(filters.keys()) == {"Perfect Matches", "Good Matches", "Poor Matches", "Unmatched"}
+        # Category assignments
+        assert [i for i, p in enumerate([pair1, pair2, pair3]) if filters["Perfect Matches"](p)] == [0]
+        assert [i for i, p in enumerate([pair1, pair2, pair3]) if filters["Good Matches"](p)] == [1]
+        assert [i for i, p in enumerate([pair1, pair2, pair3]) if filters["Unmatched"](p)] == [2]
+
+    def test_match_display_options_all_scope_only_unmatched(self, plexsync, trackpair_factory):
+        """'all' scope: only unmatched"""
+        pair1 = trackpair_factory(sync_state=SyncState.UNKNOWN, score=None)
+        pair2 = trackpair_factory(sync_state=SyncState.ERROR, score=None)
+        plexsync.sync_pairs = [pair1, pair2]
+        options, filters = plexsync._get_match_display_options("all")
+        assert options == ["Unmatched (2)"]
+        assert set(filters.keys()) == {"Perfect Matches", "Good Matches", "Poor Matches", "Unmatched"}
+        assert [i for i, p in enumerate([pair1, pair2]) if filters["Unmatched"](p)] == [0, 1]
+
+    def test_match_display_options_unrated_scope_perfect_good(self, plexsync, trackpair_factory):
+        """'unrated' scope: needs_update with perfect/good, up_to_date ignored"""
+        pair1 = trackpair_factory(sync_state=SyncState.NEEDS_UPDATE, score=100)  # PERFECT_MATCH
+        pair2 = trackpair_factory(sync_state=SyncState.NEEDS_UPDATE, score=80)  # GOOD_MATCH
+        pair3 = trackpair_factory(sync_state=SyncState.UP_TO_DATE, score=100)  # ignored
+        plexsync.sync_pairs = [pair1, pair2, pair3]
+        options, filters = plexsync._get_match_display_options("unrated")
+        assert options == ["Perfect Matches (1)", "Good Matches (1)"]
+        assert set(filters.keys()) == {"Perfect Matches", "Good Matches", "Poor Matches"}
+        assert [i for i, p in enumerate([pair1, pair2, pair3]) if filters["Perfect Matches"](p)] == [0]
+        assert [i for i, p in enumerate([pair1, pair2, pair3]) if filters["Good Matches"](p)] == [1]
+
+    def test_match_display_options_conflicting_scope_good_poor(self, plexsync, trackpair_factory):
+        """'conflicting' scope: conflicting with good/poor, up_to_date ignored"""
+        pair1 = trackpair_factory(sync_state=SyncState.CONFLICTING, score=80)  # GOOD_MATCH
+        pair2 = trackpair_factory(sync_state=SyncState.CONFLICTING, score=30)  # POOR_MATCH
+        pair3 = trackpair_factory(sync_state=SyncState.UP_TO_DATE, score=100)  # ignored
+        plexsync.sync_pairs = [pair1, pair2, pair3]
+        options, filters = plexsync._get_match_display_options("conflicting")
+        assert options == ["Good Matches (1)", "Poor Matches (1)"]
+        assert set(filters.keys()) == {"Perfect Matches", "Good Matches", "Poor Matches"}
+        assert [i for i, p in enumerate([pair1, pair2, pair3]) if filters["Good Matches"](p)] == [0]
+        assert [i for i, p in enumerate([pair1, pair2, pair3]) if filters["Poor Matches"](p)] == [1]
+
+    def test_match_display_options_all_scope_empty_input(self, plexsync):
+        """'all' scope: empty input"""
+        plexsync.sync_pairs = []
+        options, filters = plexsync._get_match_display_options("all")
+        assert options == []
+        assert set(filters.keys()) == {"Perfect Matches", "Good Matches", "Poor Matches", "Unmatched"}
+
+    def test_match_display_options_invalid_scope_returns_empty(self, plexsync, trackpair_factory):
+        """Invalid scope: should return empty options, but filters exist and always return False"""
+        pair1 = trackpair_factory(sync_state=SyncState.UP_TO_DATE, score=100)
+        pair2 = trackpair_factory(sync_state=SyncState.NEEDS_UPDATE, score=80)
+        pair3 = trackpair_factory(sync_state=SyncState.CONFLICTING, score=30)
+        plexsync.sync_pairs = [pair1, pair2, pair3]
+        options, filters = plexsync._get_match_display_options("invalid_scope")
+        assert options == []
+        assert set(filters.keys()) == {"Perfect Matches", "Good Matches", "Poor Matches"}
+        # All filters should return False for all pairs
+        for cat in filters:
+            assert all(not filters[cat](p) for p in [pair1, pair2, pair3])

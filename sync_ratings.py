@@ -483,12 +483,7 @@ class PlexSync:
                     break
 
     def _get_track_filter(
-        self,
-        *,
-        quality: MatchThreshold = None,
-        include_unmatched: bool = False,
-        include_needs_update: bool = True,
-        include_conflicts: bool = True,
+        self, *, quality: MatchThreshold = None, include_unmatched: bool = False, include_needs_update: bool = True, include_conflicts: bool = True
     ) -> Callable[[TrackPair], bool]:
         """
         Returns a filter function for TrackPairs based on:
