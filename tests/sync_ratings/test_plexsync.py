@@ -32,8 +32,8 @@ def plexsync(monkeypatch):
     monkeypatch.setattr("sync_ratings.logging.getLogger", lambda *a, **kw: mock_logger)
 
     class DummyPrompt:
-        def choice(self, *a, **k):
-            return PROMPT_RESPONSES.pop(0) if PROMPT_RESPONSES else None
+        def choice(self, prompt, options, **kwargs):
+            return PROMPT_RESPONSES.pop(0)
 
         def yes_no(self, *a, **k):
             return PROMPT_RESPONSES.pop(0) if PROMPT_RESPONSES else None

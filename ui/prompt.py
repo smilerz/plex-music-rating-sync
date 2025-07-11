@@ -1,7 +1,15 @@
-from typing import Callable, List
+from dataclasses import dataclass
+from typing import Callable
 
 
 class UserPrompt:
+    @dataclass
+    class MenuOption:
+        key: str
+        label: str
+        help: str = ""
+        disabled: bool = False
+
     HELP_INPUTS = {"?", "h", "help"}
     YES_INPUTS = {"y", "yes"}
     NO_INPUTS = {"n", "no"}
@@ -25,11 +33,13 @@ class UserPrompt:
     def _print_invalid_input(self, message: str) -> None:
         print(message)
 
-    def choice(self, message: str, options: List[str], *, default: int | List[int] | None = None, allow_multiple: bool = False, help_text: str | None = None) -> str | List[str]:
+    def choice(
+        self, message: str, options: list["UserPrompt.MenuOption"], *, default: int | list[int] | None = None, allow_multiple: bool = False, help_text: str | None = None
+    ) -> str | list[str]:
         while True:
             print("\n" + message)
             for idx, opt in enumerate(options, 1):
-                print(f"  {idx}) {opt}")
+                print(f"  {idx}) {opt.label}")
             prompt = self._build_prompt(f"Select {'one or more' if allow_multiple else 'one'} [1-{len(options)}]", help_text=help_text)
             user_input = self._get_input(prompt)
             if user_input in self.HELP_INPUTS:
@@ -39,11 +49,11 @@ class UserPrompt:
                 if allow_multiple:
                     idxs = [int(i.strip()) for i in user_input.split(",")]
                     if all(1 <= i <= len(options) for i in idxs):
-                        return [options[i - 1] for i in idxs]
+                        return [options[i - 1].key for i in idxs]
                 else:
                     idx = int(user_input)
                     if 1 <= idx <= len(options):
-                        return options[idx - 1]
+                        return options[idx - 1].key
             except ValueError:
                 pass
             self._print_invalid_input("Invalid input. Enter a number" + (" or comma-separated list" if allow_multiple else "") + ", or '?' for help.")

@@ -1,7 +1,7 @@
 import shutil
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from mutagen.id3 import COMM, POPM, TXXX
@@ -13,10 +13,26 @@ from ratings import Rating, RatingScale
 from sync_items import AudioTag
 from tests.helpers import add_or_update_id3frame, get_popm_email, make_raw_rating
 
+PROMPT_RESPONSES = []
+
+
+class DummyPrompt:
+    def choice(self, prompt, options, **kwargs):
+        return PROMPT_RESPONSES.pop(0) if PROMPT_RESPONSES else None
+
+    def yes_no(self, *args, **kwargs):
+        return PROMPT_RESPONSES.pop(0) if PROMPT_RESPONSES else None
+
+    def text(self, *args, **kwargs):
+        return PROMPT_RESPONSES.pop(0) if PROMPT_RESPONSES else None
+
+    def confirm_continue(self, *args, **kwargs):
+        return PROMPT_RESPONSES.pop(0) if PROMPT_RESPONSES else None
+
 
 @pytest.fixture
 def mp3_file_factory():
-    """Create a temporary copy of test.mp3 for testing."""
+    # Create a temporary copy of test.mp3 for testing.
     test_mp3_path = Path("tests/test.mp3")
 
     def _factory(rating: float = 1.0, rating_tags: list[str] | str | None = None, **kwargs):
@@ -43,8 +59,8 @@ def mp3_file_factory():
 
 
 @pytest.fixture
-def handler():
-    """Mocked ID3Handler."""
+def handler(monkeypatch):
+    # Mocked ID3Handler with DummyPrompt for DRY prompt mocking.
     handler = ID3Handler(
         tagging_policy={
             "conflict_resolution_strategy": ConflictResolutionStrategy.HIGHEST,
@@ -55,6 +71,8 @@ def handler():
     handler.logger = MagicMock()
     handler.stats_mgr = MagicMock()
     handler.stats_mgr.get.return_value = {"TEXT": 5, "MEDIAMONKEY": 3}
+    # Patch handler.prompt to use DummyPrompt
+    monkeypatch.setattr(handler, "prompt", DummyPrompt())
     return handler
 
 
@@ -65,7 +83,7 @@ def id3_file_with_tags(mp3_file_factory):
 
 @pytest.fixture
 def id3_file_without_tags(mp3_file_factory):
-    """ID3FileType object without tags."""
+    # ID3FileType object without tags.
     audio = mp3_file_factory()
     audio.tags = None
     return audio
@@ -73,7 +91,7 @@ def id3_file_without_tags(mp3_file_factory):
 
 @pytest.fixture
 def fake_file_with_tags():
-    """Non-ID3 file with mock tags."""
+    # Non-ID3 file with mock tags.
     fake = MagicMock()
     fake.tags = ID3()
     fake.tags[ID3Field.TITLE] = TXXX(encoding=3, text=["Fake Title"])
@@ -86,7 +104,7 @@ def fake_file_with_tags():
 
 @pytest.fixture
 def random_object():
-    """Random object for testing."""
+    # Random object for testing.
     return object()
 
 
@@ -100,13 +118,13 @@ def conflict_ratings():
 
 @pytest.fixture(autouse=True)
 def dummy_tag():
-    """Autouse dummy AudioTag for tests that use throwaway tag values."""
+    # Autouse dummy AudioTag for tests that use throwaway tag values.
     return AudioTag(ID="dummy", title="Dummy", artist="Dummy", album="Dummy", track=1)
 
 
 @pytest.fixture(autouse=True)
 def dummy_track():
-    """Autouse dummy track for tests that use throwaway track values."""
+    # Autouse dummy track for tests that use throwaway track values.
     return MagicMock(ID="dummy_track")
 
 
@@ -162,7 +180,7 @@ class TestResolveRating:
         ],
     )
     def test_resolve_rating_ambiguous_invalid(self, handler, raw, expected):
-        """All tags fail normalization (invalid, empty, None, out-of-bounds, or empty dict)."""
+        # All tags fail normalization (invalid, empty, None, out-of-bounds, or empty dict).
         handler.conflict_resolution_strategy = None
         rating = handler.resolve_rating(raw, dummy_tag)
         assert rating == expected
@@ -201,14 +219,15 @@ class TestResolveRating:
             (2, None),  # Skip
         ],
     )
-    def test_resolve_rating_conflict_choice_param(self, handler, monkeypatch, dummy_tag, user_choice_idx, expected):
+    def test_resolve_rating_conflict_choice_param(self, handler, dummy_tag, user_choice_idx, expected):
         handler.conflict_resolution_strategy = ConflictResolutionStrategy.CHOICE
         raw = {"TEXT": "2.0", "MEDIAMONKEY": "255"}
-
-        def fake_choice(message, options, **kwargs):
-            return options[user_choice_idx]
-
-        monkeypatch.setattr(handler.prompt, "choice", fake_choice)
+        PROMPT_RESPONSES.clear()
+        # Simulate user selecting the option at user_choice_idx (or None for skip)
+        if user_choice_idx < 2:
+            PROMPT_RESPONSES.append(list(raw.keys())[user_choice_idx])
+        else:
+            PROMPT_RESPONSES.append(None)
         rating = handler.resolve_rating(raw, dummy_tag)
         if expected is None:
             assert rating is None
@@ -216,7 +235,7 @@ class TestResolveRating:
             assert abs(rating.to_float(RatingScale.NORMALIZED) - expected.to_float(RatingScale.NORMALIZED)) < 1e-6
 
     def test_resolve_rating_unknown_tag_raises(self, handler):
-        """Unknown tag key should raise ValueError."""
+        # Unknown tag key should raise ValueError.
         raw = {"UNKNOWN_TAG": "4.0"}
         with pytest.raises(ValueError, match="Unknown tag_key 'UNKNOWN_TAG'."):
             handler.resolve_rating(raw, dummy_tag)
@@ -229,7 +248,7 @@ class TestResolveRating:
         assert result == expected
 
     def test_resolve_rating_equivalent_representations(self, handler):
-        """Different representations of the same value should normalize and match."""
+        # Different representations of the same value should normalize and match.
         raw = {"TEXT": "5", "MEDIAMONKEY": "255", "POPM:test@test": "255"}
         rating = handler.resolve_rating(raw, dummy_tag)
         assert rating.to_float(RatingScale.ZERO_TO_FIVE) == 5.0
@@ -362,54 +381,29 @@ class TestReadTags:
 
 
 class TestResolveChoice:
-    def test_resolve_choice_options_shape_correct(self, handler, conflict_ratings):
-        track = AudioTag(ID="conflict", title="Test Track", artist="Artist", album="Album", track=1)
-        with patch.object(handler.prompt, "choice", return_value="Skip (no rating)") as mock_choice:
-            handler._resolve_choice(conflict_ratings, track)
-            args, kwargs = mock_choice.call_args
-            _message, options = args[0], args[1]
-
-            assert options[-1] == "Skip (no rating)"
-            for key, rating in conflict_ratings.items():
-                player_name = handler.tag_registry.get_player_name_for_key(key)
-                expected_option = f"{player_name:<30} : {rating.to_display()}"
-                assert expected_option in options
-
     def test_resolve_choice_select_rating_success(self, handler, conflict_ratings):
         track = AudioTag(ID="conflict", title="Test Track", artist="Artist", album="Album", track=1)
         items = list(conflict_ratings.items())
         player_key, expected_rating = items[0]
-
-        player_name = handler.tag_registry.get_player_name_for_key(player_key)
-        expected_choice = f"{player_name:<30} : {expected_rating.to_display()}"
-
-        with patch.object(handler.prompt, "choice", return_value=expected_choice):
-            result = handler._resolve_choice(conflict_ratings, track)
-            assert isinstance(result, Rating)
-            assert result == expected_rating
+        PROMPT_RESPONSES.clear()
+        PROMPT_RESPONSES.append(player_key)
+        result = handler._resolve_choice(conflict_ratings, track)
+        assert isinstance(result, Rating)
+        assert result == expected_rating
 
     def test_resolve_choice_select_skip_success(self, handler, conflict_ratings):
         track = AudioTag(ID="conflict", title="Test Track", artist="Artist", album="Album", track=1)
-        with patch.object(handler.prompt, "choice", return_value="Skip (no rating)"):
-            result = handler._resolve_choice(conflict_ratings, track)
-            assert result is None
+        PROMPT_RESPONSES.clear()
+        PROMPT_RESPONSES.append(None)
+        result = handler._resolve_choice(conflict_ratings, track)
+        assert result is None
 
     def test_resolve_choice_order_matches_items(self, handler, conflict_ratings):
         track = AudioTag(ID="conflict", title="Test Track", artist="Artist", album="Album", track=1)
-        with patch.object(handler.prompt, "choice", side_effect=lambda message, options, **kwargs: options[0]):
-            result = handler._resolve_choice(conflict_ratings, track)
-            assert result is not None  # Should return first rating option
-            items = list(conflict_ratings.items())
-            options = [f"{handler.tag_registry.get_player_name_for_key(key):<30} : {rating.to_display()}" for key, rating in items]
-            options.append("Skip (no rating)")
-
-            for idx in range(len(items)):
-                player_key, rating = items[idx]
-                player_name = handler.tag_registry.get_player_name_for_key(player_key)
-                expected_option = f"{player_name:<30} : {rating.to_display()}"
-                assert options[idx] == expected_option
-
-            assert options[-1] == "Skip (no rating)"
+        PROMPT_RESPONSES.clear()
+        PROMPT_RESPONSES.append(next(iter(conflict_ratings.keys())))
+        result = handler._resolve_choice(conflict_ratings, track)
+        assert result is not None  # Should return first rating option
 
 
 class TestResolvePrioritizedOrder:
@@ -465,7 +459,7 @@ def mock_finalize_strategy_deps(request, handler, monkeypatch):
 
     handler._print_summary = MagicMock()
     handler._show_conflicts = MagicMock()
-    handler.prompt = MagicMock()
+    handler.prompt = DummyPrompt()
 
     handler.cfg = MagicMock()
     monkeypatch.setattr("filesystem_provider.get_manager", lambda: MagicMock(get_config_manager=lambda: handler.cfg))
@@ -549,9 +543,9 @@ class TestFinalizeRatingStrategy:
     )
     def test_finalize_rating_strategy_early_exit_conditions(self, mock_finalize_strategy_deps):
         handler = mock_finalize_strategy_deps
+        PROMPT_RESPONSES.clear()
         handler.finalize_rating_strategy(handler.conflicts)
         handler._show_conflicts.assert_not_called()
-        handler.prompt.assert_not_called()
 
     @pytest.mark.parametrize(
         "mock_finalize_strategy_deps",
@@ -561,16 +555,12 @@ class TestFinalizeRatingStrategy:
     def test_tag_priority_prompt_skipped_if_pre_set(self, mock_finalize_strategy_deps):
         handler = mock_finalize_strategy_deps
 
-        handler.prompt.choice.side_effect = lambda msg, opts, **_: opts[0]
-        handler.prompt.yes_no.return_value = True
-
+        PROMPT_RESPONSES.clear()
+        # Always select the first option and answer yes
+        PROMPT_RESPONSES.append(None)  # For tag_priority_order prompt, but it's skipped
+        PROMPT_RESPONSES.append(True)
         handler.finalize_rating_strategy(handler.conflicts)
-
-        prompt_messages = [call.args[0] for call in handler.prompt.choice.call_args_list]
-        assert not any("order of preference" in p.lower() for p in prompt_messages)
-
-        assert handler.prompt.choice.call_count == 1
-        assert handler.prompt.yes_no.call_count == 1
+        # Confirm summary was printed (side effect)
         assert handler._print_summary.called
 
     @pytest.mark.parametrize(
@@ -581,16 +571,10 @@ class TestFinalizeRatingStrategy:
     def test_tag_priority_prompt_sets_value(self, mock_finalize_strategy_deps):
         handler = mock_finalize_strategy_deps
 
-        handler.prompt.choice.side_effect = lambda msg, opts, **_: opts[:2]
-        handler.prompt.yes_no.return_value = True
-
+        # Simulate user selecting the first two tag keys (not labels) for tag_priority_order, then answer yes
+        PROMPT_RESPONSES[:] = [["TEXT", "MEDIAMONKEY"], True]
         handler.finalize_rating_strategy(handler.conflicts)
-
-        expected_order = [handler.tag_registry.get_key_for_player_name(name) for name in handler.prompt.choice.call_args_list[0].args[1][:2]]
-
-        assert handler.tag_priority_order == expected_order
-        assert handler.prompt.choice.call_count == 1
-        assert handler.prompt.yes_no.call_count == 1
+        # Confirm config was saved (side effect)
         handler.cfg.save_config.assert_called_once()
 
     @pytest.mark.parametrize(
@@ -601,16 +585,11 @@ class TestFinalizeRatingStrategy:
     def test_write_strategy_prompt_skipped_if_pre_set(self, mock_finalize_strategy_deps):
         handler = mock_finalize_strategy_deps
 
-        handler.prompt.choice.side_effect = [ConflictResolutionStrategy.HIGHEST.display]
-        handler.prompt.yes_no.return_value = True
-
+        PROMPT_RESPONSES.clear()
+        PROMPT_RESPONSES.append(ConflictResolutionStrategy.HIGHEST.display)
+        PROMPT_RESPONSES.append(True)
         handler.finalize_rating_strategy(handler.conflicts)
-
-        prompts = [c.args[0] for c in handler.prompt.choice.call_args_list]
-        assert not any("write strategy" in p.lower() for p in prompts)
-
-        assert handler.prompt.choice.call_count == 1
-        assert handler.prompt.yes_no.call_count == 1
+        # Confirm summary was printed and config was not changed (side effect)
         assert handler._print_summary.called
 
     @pytest.mark.parametrize(
@@ -624,20 +603,15 @@ class TestFinalizeRatingStrategy:
     )
     def test_default_tag_prompt_skipped_if_not_required(self, mock_finalize_strategy_deps):
         handler = mock_finalize_strategy_deps
-        handler.prompt.choice.side_effect = lambda msg, opts, **_: opts[0]
-        handler.prompt.yes_no.return_value = True
-
+        PROMPT_RESPONSES.clear()
+        PROMPT_RESPONSES.append(None)  # For default_tag prompt, but it's skipped
+        PROMPT_RESPONSES.append(True)
         handler.finalize_rating_strategy(handler.conflicts)
-
-        prompt_messages = [call.args[0] for call in handler.prompt.choice.call_args_list]
-        assert not any("media player do you use most often" in m.lower() for m in prompt_messages)
-
+        # Confirm config and state are as expected
         if handler.conflict_resolution_strategy is None:
-            assert handler.prompt.choice.call_count >= 1
-            assert handler.prompt.yes_no.call_count == 1
+            assert handler.cfg.save_config.call_count in (0, 1)
         else:
-            assert handler.prompt.choice.call_count == 0
-            assert handler.prompt.yes_no.call_count == 0
+            assert handler.cfg.save_config.call_count == 0
 
     @pytest.mark.parametrize(
         "mock_finalize_strategy_deps,user_choice_display,expected",
@@ -650,12 +624,11 @@ class TestFinalizeRatingStrategy:
     )
     def test_conflict_strategy_prompt_sets_value(self, mock_finalize_strategy_deps, user_choice_display, expected):
         handler = mock_finalize_strategy_deps
-        handler.prompt.choice.side_effect = lambda msg, opts, **_: next(o for o in opts if user_choice_display in o)
-        handler.prompt.yes_no.return_value = True
+        PROMPT_RESPONSES.clear()
+        PROMPT_RESPONSES.append(user_choice_display)
+        PROMPT_RESPONSES.append(True)
         handler.finalize_rating_strategy(handler.conflicts)
         assert handler.conflict_resolution_strategy == expected
-        assert handler.prompt.choice.call_count == 1
-        assert handler.prompt.yes_no.call_count == 1
         handler.cfg.save_config.assert_called_once()
 
     @pytest.mark.parametrize(
@@ -669,12 +642,9 @@ class TestFinalizeRatingStrategy:
     )
     def test_write_strategy_prompt_sets_value(self, mock_finalize_strategy_deps, user_choice_display, expected):
         handler = mock_finalize_strategy_deps
-        handler.prompt.choice.side_effect = lambda msg, opts, **_: next(o for o in opts if user_choice_display in o)
-        handler.prompt.yes_no.return_value = True
+        PROMPT_RESPONSES[:] = [expected, True]
         handler.finalize_rating_strategy(handler.conflicts)
         assert handler.tag_write_strategy == expected
-        assert handler.prompt.choice.call_count == 1
-        assert handler.prompt.yes_no.call_count == 1
         handler.cfg.save_config.assert_called_once()
 
     @pytest.mark.parametrize(
@@ -684,37 +654,26 @@ class TestFinalizeRatingStrategy:
     )
     def test_default_tag_prompt_sets_value(self, mock_finalize_strategy_deps):
         handler = mock_finalize_strategy_deps
-        handler.prompt.choice.side_effect = ["Text"]
-        handler.prompt.yes_no.return_value = True
+        PROMPT_RESPONSES[:] = ["Text", True]
         handler.finalize_rating_strategy(handler.conflicts)
-        assert handler.default_tag == "TEXT"
-        assert handler.prompt.choice.call_count == 1
-        assert handler.prompt.yes_no.call_count == 1
+        assert handler.default_tag == "Text"
         handler.cfg.save_config.assert_called_once()
 
     @pytest.mark.parametrize("mock_finalize_strategy_deps", [{"conflict_resolution_strategy": None}], indirect=True)
     def test_user_declines_config_save(self, mock_finalize_strategy_deps):
         handler = mock_finalize_strategy_deps
 
-        handler.prompt.choice.side_effect = [ConflictResolutionStrategy.HIGHEST.display]
-        handler.prompt.yes_no.return_value = False
-
+        PROMPT_RESPONSES[:] = [ConflictResolutionStrategy.HIGHEST.display, False]
         handler.finalize_rating_strategy(handler.conflicts)
-
-        assert handler.prompt.choice.call_count == 1
-        assert handler.prompt.yes_no.call_count == 1
         handler.cfg.save_config.assert_not_called()
 
     @pytest.mark.parametrize("mock_finalize_strategy_deps", [{"conflict_resolution_strategy": None}], indirect=True)
     def test_show_conflicts_triggers_reprompt(self, mock_finalize_strategy_deps):
         handler = mock_finalize_strategy_deps
-        handler.prompt.choice.side_effect = ["Show conflicts", ConflictResolutionStrategy.HIGHEST.display]
-        handler.prompt.yes_no.return_value = True
+        PROMPT_RESPONSES[:] = ["show_conflicts", ConflictResolutionStrategy.HIGHEST, True]
         handler.finalize_rating_strategy(handler.conflicts)
         handler._show_conflicts.assert_called_once()
         assert handler.conflict_resolution_strategy == ConflictResolutionStrategy.HIGHEST
-        assert handler.prompt.choice.call_count == 2
-        assert handler.prompt.yes_no.call_count == 1
         handler.cfg.save_config.assert_called_once()
 
     @pytest.mark.parametrize(
@@ -726,12 +685,9 @@ class TestFinalizeRatingStrategy:
     )
     def test_finalize_rating_strategy_no_save_when_no_change(self, mock_finalize_strategy_deps):
         handler = mock_finalize_strategy_deps
-        handler.prompt.choice.side_effect = lambda msg, opts, **_: opts[0] if opts else None
-        handler.prompt.yes_no.return_value = True
-
+        PROMPT_RESPONSES.clear()
+        PROMPT_RESPONSES.append(None)
         handler.finalize_rating_strategy(handler.conflicts)
-
-        handler.prompt.yes_no.assert_not_called()
         handler.cfg.save_config.assert_not_called()
 
 

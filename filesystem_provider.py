@@ -236,15 +236,15 @@ class AudioTagHandler(abc.ABC):
     def _resolve_choice(self, ratings_by_tag: Dict[str, Rating], track: AudioTag) -> Rating | None:
         """Default interactive chooser: list each tag and rating, let user pick or skip."""
         items = list(ratings_by_tag.items())
-        options = [f"{self.tag_registry.get_player_name_for_key(key):<30} : {rating.to_display()}" for key, rating in items]
-        options.append("Skip (no rating)")
-        choice = self.prompt.choice(
-            f"Conflicting ratings for {track.artist} - {track.album} - {track.title}:", options, help_text="Select the rating to use for this track, or skip to leave unrated."
+
+        menu_options = [UserPrompt.MenuOption(key=key, label=f"{self.tag_registry.get_player_name_for_key(key):<30} : {rating.to_display()}") for key, rating in items]
+        menu_options.append(UserPrompt.MenuOption(key=None, label="Skip (no rating)"))
+        selected_key = self.prompt.choice(
+            f"Conflicting ratings for {track.artist} - {track.album} - {track.title}:", menu_options, help_text="Select the rating to use for this track, or skip to leave unrated."
         )
-        idx = options.index(choice)
-        if idx == len(items):
+        if selected_key is None:
             return None
-        return items[idx][1]
+        return ratings_by_tag[selected_key]
 
     def is_strategy_supported(self, strategy: ConflictResolutionStrategy) -> bool:
         """Override if a strategy isn't valid for this format."""
@@ -515,57 +515,54 @@ class ID3Handler(AudioTagHandler):
 
         # Conflict resolution strategy prompt
         if self.conflict_resolution_strategy is None and has_conflicts:
-            options = [strat.display for strat in ConflictResolutionStrategy] + ["Show conflicts"]
-            choice = self.prompt.choice(
+            menu_options = [UserPrompt.MenuOption(key=strat, label=strat.display) for strat in ConflictResolutionStrategy]
+            menu_options.append(UserPrompt.MenuOption(key="show_conflicts", label="Show conflicts"))
+            selected_key = self.prompt.choice(
                 "\nHow should rating conflicts be resolved when different media players have stored different ratings for the same track?\n \
                     Choose a strategy below. This affects how those ratings are interpreted:",
-                options,
+                menu_options,
                 help_text=ShowHelp.ConflictResolution,
             )
-            if choice == "Show conflicts":
+            if selected_key == "show_conflicts":
                 self._show_conflicts(conflicts)
                 # re-prompt
                 return self.finalize_rating_strategy(conflicts)
             else:
-                idx = options.index(choice)
-                self.conflict_resolution_strategy = list(ConflictResolutionStrategy)[idx]
+                self.conflict_resolution_strategy = selected_key
 
         # Tag priority order prompt
         if self.conflict_resolution_strategy == ConflictResolutionStrategy.PRIORITIZED_ORDER and has_multiple and not self.tag_priority_order:
             player_name_to_key = {self.tag_registry.get_player_name_for_key(k): k for k in tag_counts}
-            options = list(player_name_to_key.keys())
-
-            order = self.prompt.choice(
+            menu_options = [UserPrompt.MenuOption(key=key, label=player_name) for player_name, key in player_name_to_key.items()]
+            order_keys = self.prompt.choice(
                 "\nMultiple media players have written ratings to this file. Please choose the order of preference (highest first).\n\
                     This determines which player's rating takes priority when they conflict.",
-                options,
+                menu_options,
                 allow_multiple=True,
                 help_text=ShowHelp.TagPriority,
             )
-
-            self.tag_priority_order = [player_name_to_key[player] for player in order]
+            self.tag_priority_order = order_keys
 
         # Write strategy prompt
         if has_multiple and not self.tag_write_strategy:
-            options = [strat.display for strat in TagWriteStrategy]
-            choice = self.prompt.choice(
-                "\nHow should ratings be written back to your files?\nChoose a write strategy. This controls which tags are updated:", options, help_text=ShowHelp.WriteStrategy
+            menu_options = [UserPrompt.MenuOption(key=strat, label=strat.display) for strat in TagWriteStrategy]
+            selected_key = self.prompt.choice(
+                "\nHow should ratings be written back to your files?\nChoose a write strategy. This controls which tags are updated:",
+                menu_options,
+                help_text=ShowHelp.WriteStrategy,
             )
-            idx = options.index(choice)
-            self.tag_write_strategy = list(TagWriteStrategy)[idx]
+            self.tag_write_strategy = selected_key
 
         # Preferred player tag prompt
         if self.tag_write_strategy and self.tag_write_strategy.requires_default_tag() and not self.default_tag:
             player_name_to_key = {self.tag_registry.get_player_name_for_key(k): k for k in tag_counts}
-            options = list(player_name_to_key.keys())
-
-            choice = self.prompt.choice(
+            menu_options = [UserPrompt.MenuOption(key=key, label=player_name) for player_name, key in player_name_to_key.items()]
+            selected_key = self.prompt.choice(
                 "Which media player do you use most often to view or manage ratings?\nSelect the one whose format should be used to store ratings in your files:",
-                options,
+                menu_options,
                 help_text=ShowHelp.PreferredPlayerTag,
             )
-
-            self.default_tag = player_name_to_key[choice]
+            self.default_tag = selected_key
 
         # if this point is reached, need to prompt to save settings
         cfg = get_manager().get_config_manager()
@@ -671,8 +668,6 @@ class ID3Handler(AudioTagHandler):
 
 
 class FileSystemProvider:
-    """Adapter class for handling filesystem operations for audio files and playlists."""
-
     AUDIO_EXT = {".mp3", ".flac", ".ogg", ".m4a", ".wav", ".aac", ".opus", ".wma", ".aiff", ".aif"}
     PLAYLIST_EXT = {".m3u", ".m3u8", ".pls"}
 
