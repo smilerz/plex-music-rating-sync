@@ -387,35 +387,6 @@ class PlexSync:
 
         return resolved
 
-    # 7. Display & Summary Helpers
-    def _get_match_display_options(self, scope: str) -> tuple[list[str], dict[str, Callable[[TrackPair], bool]]]:
-        def in_scope(p: TrackPair) -> bool:
-            if scope == "all":
-                return True
-            if scope == "unrated":
-                return p.sync_state == SyncState.NEEDS_UPDATE
-            if scope == "conflicting":
-                return p.sync_state == SyncState.CONFLICTING
-            return False
-
-        label_filters = {
-            "Perfect Matches": lambda p: in_scope(p) and p.quality == MatchThreshold.PERFECT_MATCH,
-            "Good Matches": lambda p: in_scope(p) and p.quality == MatchThreshold.GOOD_MATCH,
-            "Poor Matches": lambda p: in_scope(p) and p.quality == MatchThreshold.POOR_MATCH,
-        }
-
-        if scope == "all":
-            label_filters["Unmatched"] = lambda p: p.is_unmatched
-
-        # Generate option strings with counts
-        options = []
-        for label, fn in label_filters.items():
-            count = sum(1 for p in self.sync_pairs if fn(p))
-            if count > 0:
-                options.append(f"{label} ({count})")
-
-        return options, label_filters
-
     def _prompt_detailed_view(self) -> None:
         scope_options = {
             "all": "All discovered tracks",
@@ -455,6 +426,35 @@ class PlexSync:
             filtered_pairs = [p for p in self.sync_pairs if filter_fn(p)]
 
             self._display_trackpair_list(filtered_pairs, f"{label} — {scope_label}")
+
+    # 7. Display & Summary Helpers
+    def _get_match_display_options(self, scope: str) -> tuple[list[str], dict[str, Callable[[TrackPair], bool]]]:
+        def in_scope(p: TrackPair) -> bool:
+            if scope == "all":
+                return True
+            if scope == "unrated":
+                return p.sync_state == SyncState.NEEDS_UPDATE
+            if scope == "conflicting":
+                return p.sync_state == SyncState.CONFLICTING
+            return False
+
+        label_filters = {
+            "Perfect Matches": lambda p: in_scope(p) and p.quality == MatchThreshold.PERFECT_MATCH,
+            "Good Matches": lambda p: in_scope(p) and p.quality == MatchThreshold.GOOD_MATCH,
+            "Poor Matches": lambda p: in_scope(p) and p.quality == MatchThreshold.POOR_MATCH,
+        }
+
+        if scope == "all":
+            label_filters["Unmatched"] = lambda p: p.is_unmatched
+
+        # Generate option strings with counts
+        options = []
+        for label, fn in label_filters.items():
+            count = sum(1 for p in self.sync_pairs if fn(p))
+            if count > 0:
+                options.append(f"{label} ({count})")
+
+        return options, label_filters
 
     def _display_trackpair_list(self, track_pairs: list[TrackPair], label: str) -> None:  # pragma: no cover
         if not track_pairs:

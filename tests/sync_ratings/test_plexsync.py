@@ -6,28 +6,51 @@ from manager.config_manager import SyncItem
 from sync_items import AudioTag, Playlist
 from sync_pair import MatchThreshold, PlaylistPair, SyncState, TrackPair
 
+PROMPT_RESPONSES = []
+
 
 @pytest.fixture
 def plexsync(monkeypatch):
     """
     Provides a fully-initialized PlexSync instance with all external dependencies mocked.
     All mocks are attached as attributes for test-side configuration.
+    Adds DummyPrompt to patch all user prompts to pop from prompt_return list.
     """
     # Mock player classes
-    monkeypatch.setattr("sync_ratings.Plex", lambda *a, **kw: MagicMock(name="PlexPlayer"))
-    monkeypatch.setattr("sync_ratings.FileSystem", lambda *a, **kw: MagicMock(name="FileSystemPlayer"))
-    monkeypatch.setattr("sync_ratings.MediaMonkey", lambda *a, **kw: MagicMock(name="MediaMonkeyPlayer"))
+    plex_player = MagicMock(name="PlexPlayer")
+    plex_player.name.return_value = "PlexPlayer"
+    fs_player = MagicMock(name="FileSystemPlayer")
+    fs_player.name.return_value = "FileSystemPlayer"
+    mm_player = MagicMock(name="MediaMonkeyPlayer")
+    mm_player.name.return_value = "MediaMonkeyPlayer"
+    monkeypatch.setattr("sync_ratings.Plex", lambda *a, **kw: plex_player)
+    monkeypatch.setattr("sync_ratings.FileSystem", lambda *a, **kw: fs_player)
+    monkeypatch.setattr("sync_ratings.MediaMonkey", lambda *a, **kw: mm_player)
 
     # # Mock logger
     mock_logger = MagicMock()
     monkeypatch.setattr("sync_ratings.logging.getLogger", lambda *a, **kw: mock_logger)
 
-    # Mock UserPrompt
-    monkeypatch.setattr("sync_ratings.UserPrompt", lambda *a, **kw: MagicMock())
+    class DummyPrompt:
+        def choice(self, *a, **k):
+            return PROMPT_RESPONSES.pop(0) if PROMPT_RESPONSES else None
+
+        def yes_no(self, *a, **k):
+            return PROMPT_RESPONSES.pop(0) if PROMPT_RESPONSES else None
+
+        def text(self, *a, **k):
+            return PROMPT_RESPONSES.pop(0) if PROMPT_RESPONSES else None
+
+        def confirm_continue(self, *a, **k):
+            return PROMPT_RESPONSES.pop(0) if PROMPT_RESPONSES else None
+
+    monkeypatch.setattr("sync_ratings.UserPrompt", DummyPrompt)
 
     from sync_ratings import PlexSync
 
     instance = PlexSync()
+    instance._user_prompt_templates = {k: k for k in instance._user_prompt_templates}
+    instance.prompt_return = []
     instance.mock_logger = mock_logger
     return instance
 
@@ -55,8 +78,10 @@ def trackpair_factory(audio_tag_factory):
             destination_track = audio_tag_factory(title="Dest", artist="Artist")
         if source_player is None:
             source_player = MagicMock(name="SourcePlayer")
+            source_player.name.return_value = "SourcePlayer"
         if destination_player is None:
             destination_player = MagicMock(name="DestPlayer")
+            destination_player.name.return_value = "DestPlayer"
         pair = TrackPair(source_player, destination_player, source_track)
         pair.destination = destination_track
         pair.sync_state = sync_state
@@ -332,65 +357,46 @@ class TestPlaylistSync:
 
 
 class TestUserPrompt:
-    def test_user_prompt_builds_menu(self, plexsync):
-        assert 1 == 0
+    def test_user_prompt_sync_returns_pairs(self, plexsync, trackpairs):
+        plexsync.sync_pairs = trackpairs
+        plexsync._user_prompt_templates = {k: k for k in plexsync._user_prompt_templates}
+        PROMPT_RESPONSES.clear()
+        PROMPT_RESPONSES.extend(["sync"])
+        result = plexsync._prompt_user_action()
+        expected = [p for p in trackpairs if p.sync_state in (SyncState.NEEDS_UPDATE, SyncState.CONFLICTING)]
+        assert result == expected, f"Expected {expected}, got {result}"
 
-    def test_user_prompt_sync_returns_pairs(self, plexsync):
-        assert 1 == 0
+    def test_user_prompt_filter_cancel_returns_none(self, plexsync, trackpairs):
+        plexsync.sync_pairs = trackpairs
+        plexsync._user_prompt_templates = {k: k for k in plexsync._user_prompt_templates}
+        PROMPT_RESPONSES.clear()
+        PROMPT_RESPONSES.extend(["filter", "cancel"])
+        result = plexsync._prompt_user_action()
+        assert result is None
 
-    def test_user_prompt_filter_loops(self, plexsync):
-        assert 1 == 0
+    def test_user_prompt_manual_cancel_returns_none(self, plexsync, trackpairs):
+        plexsync.sync_pairs = trackpairs
+        plexsync._user_prompt_templates = {k: k for k in plexsync._user_prompt_templates}
+        PROMPT_RESPONSES.clear()
+        PROMPT_RESPONSES.extend(["manual", "cancel"])
+        result = plexsync._prompt_user_action()
+        assert result is None
 
-    def test_user_prompt_cancel_returns_none(self, plexsync):
-        assert 1 == 0
+    def test_user_prompt_details_cancel_returns_none(self, plexsync, trackpairs):
+        plexsync.sync_pairs = trackpairs
+        plexsync._user_prompt_templates = {k: k for k in plexsync._user_prompt_templates}
+        PROMPT_RESPONSES.clear()
+        PROMPT_RESPONSES.extend(["details", "cancel"])
+        result = plexsync._prompt_user_action()
+        assert result is None
 
-    def test_user_prompt_manual_resolution(self, plexsync):
-        assert 1 == 0
-
-    def test_user_prompt_details_loops(self, plexsync):
-        assert 1 == 0
-
-    def test_user_prompt_sync_option(self, plexsync):
-        assert 1 == 0
-
-    def test_user_prompt_manual_option(self, plexsync):
-        assert 1 == 0
-
-    def test_user_prompt_details_option(self, plexsync):
-        assert 1 == 0
-
-    def test_user_prompt_filter_cancel_option(self, plexsync):
-        assert 1 == 0
-
-    def test_user_prompt_toggle_reverse(self, plexsync):
-        assert 1 == 0
-
-    def test_user_prompt_toggle_conflicts(self, plexsync):
-        assert 1 == 0
-
-    def test_user_prompt_toggle_unrated(self, plexsync):
-        assert 1 == 0
-
-    def test_user_prompt_select_quality(self, plexsync):
-        assert 1 == 0
-
-    def test_user_prompt_filter_cancel_logs(self, plexsync):
-        assert 1 == 0
-
-    def test_user_prompt_quality_counts(self, plexsync):
-        assert 1 == 0
-
-    def test_user_prompt_quality_selection(self, plexsync):
-        assert 1 == 0
-
-    def test_user_prompt_detailed_scope(self, plexsync):
-        assert 1 == 0
-
-    def test_user_prompt_detailed_category(self, plexsync):
-        assert 1 == 0
-
-    def test_user_prompt_detailed_cancel(self, plexsync):
-        assert 1 == 0
+    def test_user_prompt_cancel_returns_none(self, plexsync, trackpairs):
+        plexsync.sync_pairs = trackpairs
+        plexsync._user_prompt_templates = {k: k for k in plexsync._user_prompt_templates}
+        PROMPT_RESPONSES.clear()
+        PROMPT_RESPONSES.extend(["cancel"])
+        result = plexsync._prompt_user_action()
+        assert result is None
 
 
 class TestConflictResolution:
