@@ -131,7 +131,7 @@ class TestConnect:
     )
     def test_connect_phases(self, filesystem_player, filesystem_api, sync_items, expect_tracks_phase, expect_playlists_phase):
         """Test connect executes correct phases based on sync_items configuration."""
-        filesystem_player.config_mgr.sync_items = sync_items
+        filesystem_player.config_mgr.sync = sync_items
 
         if expect_tracks_phase:
             filesystem_api.test_tracks = [Path("track1.mp3"), Path("track2.mp3")]
@@ -150,7 +150,7 @@ class TestConnect:
 
     def test_connect_empty_tracks(self, filesystem_player, filesystem_api):
         """Test connect with empty tracks skips progress tracking."""
-        filesystem_player.config_mgr.sync_items = ["tracks"]
+        filesystem_player.config_mgr.sync = ["tracks"]
         filesystem_api.test_tracks = []
 
         filesystem_player.connect()
@@ -159,7 +159,7 @@ class TestConnect:
 
     def test_connect_deferred_tracks(self, filesystem_player, filesystem_api):
         """Test connect processes deferred tracks through finalization."""
-        filesystem_player.config_mgr.sync_items = ["tracks"]
+        filesystem_player.config_mgr.sync = ["tracks"]
         deferred_track = AudioTag(ID="deferred1", title="Deferred Track", artist="Artist", album="Album", track=1)
         filesystem_api.test_deferred_tracks = [deferred_track]
 

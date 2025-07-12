@@ -737,7 +737,7 @@ class FileSystem(MediaPlayer):
         self.fsp.scan_media_files()
 
         # ── Phase 1: heavy track-tag load (only if TRACKS are being synced) ─────────
-        if SyncItem.TRACKS in self.config_mgr.sync_items:
+        if SyncItem.TRACKS in self.config_mgr.sync:
             tracks = self.fsp.get_tracks()
             bar = self.status_mgr.start_phase(
                 f"Reading track metadata from {self.name()}",
@@ -750,7 +750,7 @@ class FileSystem(MediaPlayer):
 
         # ── Phase 2: light playlist-header load (only if PLAYLISTS are being synced) ─
         # TODO: playlist metadata isn't retained - this should be switched to simple registration of the playlist map
-        if SyncItem.PLAYLISTS in self.config_mgr.sync_items:
+        if SyncItem.PLAYLISTS in self.config_mgr.sync:
             for pl_path in self.fsp._get_playlist_paths():
                 self.fsp.read_playlist_metadata(pl_path)
 

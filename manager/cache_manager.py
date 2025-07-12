@@ -56,6 +56,7 @@ class Cache:
                 if age_hours > self.max_age_hours:
                     self.logger.warning(f"Cache file {self.filepath} is {age_hours:.1f} hours old — exceeding max age of {self.max_age_hours} hours.")
                     self.logger.warning("Discarding cache and reinitializing.")
+                    self.delete()
                     self.cache = self._initialize_cache()
                     return
 

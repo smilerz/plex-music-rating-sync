@@ -190,6 +190,18 @@ class TestMatchMethod:
         with pytest.raises(RuntimeError):
             pair.match([])
 
+    def test_match_with_none_rating_success(self, source_player, destination_player, src_track):
+        """Test match() handles track with None rating gracefully."""
+        dst_track_none_rating = AudioTag(ID="4", title="abc", artist="xyz", album="def", track=1, rating=None, file_path="/music/a.flac")
+        destination_player.search_tracks.return_value = [dst_track_none_rating]
+
+        pair = TrackPair(source_player=source_player, destination_player=destination_player, source_track=src_track)
+        result = pair.match()
+
+        assert result is True
+        assert pair.rating_destination.is_unrated
+        assert pair.sync_state == SyncState.NEEDS_UPDATE
+
 
 class TestSimilarityMethod:
     @pytest.mark.parametrize(

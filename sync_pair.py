@@ -246,8 +246,8 @@ class TrackPair(SyncPair):
 
         self.destination = best_match
 
-        src = self.rating_source = self.source.rating
-        dst = self.rating_destination = self.destination.rating
+        src = self.rating_source = self.source.rating or Rating.unrated()
+        dst = self.rating_destination = self.destination.rating or Rating.unrated()
 
         if src == dst:
             self.sync_state = SyncState.UP_TO_DATE
