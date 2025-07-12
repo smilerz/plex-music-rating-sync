@@ -39,7 +39,7 @@ def patch_paths(tmp_path_factory):
 
 @pytest.fixture(scope="session")
 def config_args():
-    return ["test_runner.py", "--source", "plex", "--destination", "plex", "--sync", "tracks"]
+    return ["test_runner.py", "--source", "plex", "--destination", "mediamonkey", "--sync", "tracks"]
 
 
 @pytest.fixture(scope="function", autouse=True)

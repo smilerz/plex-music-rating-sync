@@ -24,6 +24,7 @@ class PlexSync:
         self.status_mgr = mgr.get_status_manager()
 
         self.sync_pairs: list[TrackPair] = []
+        self.prompt = UserPrompt()
 
         self._user_prompt_templates = {
             "sync": "Sync now: {desc} from {source} to {destination}",
@@ -173,8 +174,7 @@ class PlexSync:
                 bar = self.status_mgr.start_phase("Matching playlists", total=len(playlist_pairs))
             pair.match()
             bar.update()
-        if bar is not None:
-            bar.close()
+        bar.close() if bar else None
 
         # Start playlist sync phase
         bar = None
@@ -183,8 +183,7 @@ class PlexSync:
                 bar = self.status_mgr.start_phase("Syncing playlists", total=len(playlist_pairs))
             pair.sync()
             bar.update()
-        if bar is not None:
-            bar.close()
+        bar.close() if bar else None
 
     def _describe_sync(self, track_filter: dict) -> str:
         include_unrated = track_filter.get("include_unrated", True)
@@ -203,14 +202,10 @@ class PlexSync:
         return " and ".join(parts) + " tracks" if parts else "no tracks"
 
     def _prompt_user_action(self) -> List[TrackPair] | None:
-        prompt = UserPrompt()
-
         while True:
             self._build_user_prompt()
-            from ui.prompt import UserPrompt as _UserPrompt
-
-            menu_options = [_UserPrompt.MenuOption(key=k, label=v) for k, v in self.user_prompt_options.items()]
-            selected_key = prompt.choice("How would you like to proceed?", menu_options, help_text=ShowHelp.SyncOptions)
+            menu_options = [UserPrompt.MenuOption(key=k, label=v) for k, v in self.user_prompt_options.items()]
+            selected_key = self.prompt.choice("How would you like to proceed?", menu_options, help_text=ShowHelp.SyncOptions)
 
             match selected_key:
                 case "sync":
@@ -227,7 +222,7 @@ class PlexSync:
                 case "manual":
                     return self._resolve_conflicts_manually()
 
-                case "details":
+                case "details":  # pragma: no branch
                     self._prompt_detailed_view()
                     continue
 
@@ -253,8 +248,6 @@ class PlexSync:
         self.user_prompt_options["cancel"] = self._user_prompt_templates["cancel"]
 
     def _prompt_filter_sync(self) -> None:
-        prompt = UserPrompt()
-
         while True:
             reverse = self.track_filter.get("reverse", False)
             include_unrated = self.track_filter.get("include_unrated", True)
@@ -271,14 +264,12 @@ class PlexSync:
                 "cancel": "Cancel and return to the previous menu",
             }
 
-            from ui.prompt import UserPrompt as _UserPrompt
-
-            menu_options = [_UserPrompt.MenuOption(key=k, label=v) for k, v in options.items()]
+            menu_options = [UserPrompt.MenuOption(key=k, label=v) for k, v in options.items()]
 
             filtered_count = len(self._filter_sync_pairs())
             summary = self._describe_sync(self.track_filter)
             prompt_label = f"Adjust sync filter settings.\nCurrently syncing: {summary} ({filtered_count} track{'s' if filtered_count != 1 else ''})."
-            selected_key = prompt.choice(prompt_label, menu_options, help_text=ShowHelp.SyncFilter)
+            selected_key = self.prompt.choice(prompt_label, menu_options, help_text=ShowHelp.SyncFilter)
 
             if selected_key == "reverse":
                 self.track_filter["reverse"] = not reverse
@@ -291,10 +282,9 @@ class PlexSync:
 
             elif selected_key == "quality":
                 selected = self._prompt_select_quality_threshold()
-                if selected is not None:
-                    self.track_filter["quality"] = selected
+                self.track_filter["quality"] = selected
 
-            elif selected_key == "cancel":
+            elif selected_key == "cancel":  # pragma: no branch
                 self.logger.info(f"Updated track filter: {self.track_filter}")
                 return
 
@@ -309,8 +299,6 @@ class PlexSync:
         current = self.track_filter.get("quality")
         current_label = current.name if current else "All"
 
-        from ui.prompt import UserPrompt as _UserPrompt
-
         menu_options = []
         key_to_threshold = {}
         for label, threshold in thresholds:
@@ -322,21 +310,18 @@ class PlexSync:
             )
             count = sum(1 for p in self.sync_pairs if filter_fn(p))
             key = label.lower()
-            menu_options.append(_UserPrompt.MenuOption(key=key, label=f"{label} ({count})"))
+            menu_options.append(UserPrompt.MenuOption(key=key, label=f"{label} ({count})"))
             key_to_threshold[key] = threshold
 
-        selected_key = UserPrompt().choice(f"Select minimum match quality (currently {current_label}):", menu_options, help_text=ShowHelp.MatchQuality)
+        selected_key = self.prompt.choice(f"Select minimum match quality (currently {current_label}):", menu_options, help_text=ShowHelp.MatchQuality)
         return key_to_threshold[selected_key]
 
     def _resolve_conflicts_manually(self) -> list[TrackPair]:
-        prompt = UserPrompt()
         resolved: list[TrackPair] = []
 
         for i, pair in enumerate(self.conflicts, 1):
             src_desc = f"{pair.source_player.name():<20}: ({pair.source.title}) - Rating: {pair.rating_source.to_display()}"
             dst_desc = f"{pair.destination_player.name():<20}: ({pair.destination.title}) - Rating: {pair.rating_destination.to_display()}"
-
-            from ui.prompt import UserPrompt as _UserPrompt
 
             manual_options = {
                 "src_to_dst": src_desc,
@@ -345,10 +330,10 @@ class PlexSync:
                 "skip": "Skip this track",
                 "cancel": "Cancel conflict resolution",
             }
-            menu_options = [_UserPrompt.MenuOption(key=k, label=v) for k, v in manual_options.items()]
+            menu_options = [UserPrompt.MenuOption(key=k, label=v) for k, v in manual_options.items()]
 
             print(f"Resolving conflict {i} of {len(self.conflicts)}:")
-            selected_key = prompt.choice("Choose how to resolve this conflict:", menu_options, help_text=ShowHelp.ManualConflictResolution)
+            selected_key = self.prompt.choice("Choose how to resolve this conflict:", menu_options, help_text=ShowHelp.ManualConflictResolution)
 
             if selected_key == "src_to_dst":
                 resolved.append(pair)
@@ -357,7 +342,7 @@ class PlexSync:
                 resolved.append(pair.reversed())
 
             elif selected_key == "manual":
-                rating_input = prompt.text(
+                rating_input = self.prompt.text(
                     "Enter a new rating (0-5, half-star increments):",
                     validator=lambda val: Rating.validate(val, scale=RatingScale.ZERO_TO_FIVE) is not None,
                     help_text="Allowed values: 0, 0.5, 1, 1.5, ..., 5",
@@ -376,7 +361,7 @@ class PlexSync:
             elif selected_key == "skip":
                 continue
 
-            elif selected_key == "cancel":
+            elif selected_key == "cancel":  # pragma: no branch
                 print("Manual resolution canceled.")
                 break
 
@@ -393,36 +378,37 @@ class PlexSync:
         while True:
             scope_label = scope_options[current_scope]
             prompt_label = f"View details: {scope_label}"
-            back_label = "Cancel and return to the previous menu"
+            cancel_option = UserPrompt.MenuOption(key="cancel", label="Cancel and return to the previous menu")
 
-            # Scope switch options first
             menu_options = []
+            # Add scope switch options
             for key, desc in scope_options.items():
                 if key != current_scope:
-                    menu_options.append(f"Switch to: {desc}")
+                    menu_options.append(UserPrompt.MenuOption(key=f"switch_{key}", label=f"Switch to: {desc}"))
 
             # Get scoped categories
             category_options, filters = self._get_match_display_options(current_scope)
-            menu_options += category_options
-            menu_options.append(back_label)
+            menu_options.extend(category_options)
+            menu_options.append(cancel_option)
 
-            selection = UserPrompt().choice(prompt_label, menu_options)
+            selection = self.prompt.choice(prompt_label, menu_options)
 
-            if selection == back_label:
+            if selection == "cancel":
                 return
 
-            elif selection.startswith("Switch to:"):
-                new_scope = next(k for k, v in scope_options.items() if v in selection)
-                current_scope = new_scope
+            elif selection.startswith("switch_"):
+                new_scope = selection.replace("switch_", "")
+                if new_scope in scope_options:
+                    current_scope = new_scope
                 continue
 
-            label = selection.split(" (")[0]
+            label = selection
             filter_fn = filters[label]
             filtered_pairs = [p for p in self.sync_pairs if filter_fn(p)]
 
             self._display_trackpair_list(filtered_pairs, f"{label} — {scope_label}")
 
-    def _get_match_display_options(self, scope: str) -> tuple[list[str], dict[str, Callable[[TrackPair], bool]]]:
+    def _get_match_display_options(self, scope: str) -> tuple[list, dict[str, Callable[[TrackPair], bool]]]:
         def in_scope(p: TrackPair) -> bool:
             if scope == "all":
                 return True
@@ -441,12 +427,11 @@ class PlexSync:
         if scope == "all":
             label_filters["Unmatched"] = lambda p: p.is_unmatched
 
-        # Generate option strings with counts
         options = []
         for label, fn in label_filters.items():
             count = sum(1 for p in self.sync_pairs if fn(p))
             if count > 0:
-                options.append(f"{label} ({count})")
+                options.append(UserPrompt.MenuOption(key=label, label=f"{label} ({count})"))
 
         return options, label_filters
 
@@ -472,7 +457,7 @@ class PlexSync:
             print("-" * 137)
 
             if i % 100 == 0 and i != len(track_pairs):
-                cont = UserPrompt().confirm_continue(f"[{i}/{len(track_pairs)}] — Press Enter to continue or 'q' to quit: ")
+                cont = self.prompt.confirm_continue(f"[{i}/{len(track_pairs)}] — Press Enter to continue or 'q' to quit: ")
                 if not cont:
                     break
 
