@@ -114,7 +114,7 @@ class Cache:
 
     def is_empty(self) -> bool:
         """Check if the cache DataFrame is empty or all rows are all-NA. Always returns a native Python bool."""
-        result = self.cache.empty or self.cache.isna().all(axis=1).all()
+        result = self.cache is None or self.cache.empty or self.cache.isna().all(axis=1).all()
         return bool(result)
 
     def _find_row_by_columns(self, criteria: dict) -> pd.DataFrame:
@@ -202,15 +202,15 @@ class CacheManager:
         self.logger.trace(f"is_metadata_cache_enabled called: mode={self.mode}, returning {enabled}")
         return enabled
 
-    def _initialize_caches(self) -> None:
+    def _initialize_caches(self, force_metadata: bool = False) -> None:
         """Initialize both caches based on current mode."""
-        self.logger.debug(f"Initializing caches for mode: {self.mode}")
+        self.logger.debug(f"Initializing caches for mode: {self.mode}, force_metadata={force_metadata}")
         if self.is_match_cache_enabled():
             self.logger.debug("Initializing match cache")
             self.match_cache = Cache(filepath=self.MATCH_CACHE_FILE, columns=self._get_match_cache_columns(), dtype="object", save_threshold=self.SAVE_THRESHOLD, name="match")
             self.match_cache.load()
 
-        if self.is_metadata_cache_enabled():
+        if force_metadata or self.is_metadata_cache_enabled():
             self.logger.debug("Initializing metadata cache")
             self.metadata_cache = Cache(
                 filepath=self.METADATA_CACHE_FILE, columns=self._get_metadata_cache_columns(), dtype=object, save_threshold=self.SAVE_THRESHOLD, max_age_hours=24, name="metadata"
@@ -313,7 +313,7 @@ class CacheManager:
         track_id = str(track_id).strip().lower()
 
         if self.metadata_cache is None:
-            self._initialize_caches()
+            self._initialize_caches(force_metadata=force_enable)
 
         criteria = {"player_name": player_name, "ID": str(track_id)}
         metadata_dict = metadata.to_dict()
