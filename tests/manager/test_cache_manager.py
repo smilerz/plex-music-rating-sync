@@ -20,15 +20,7 @@ def dummy_audio_tag():
 
 @pytest.fixture
 def cache_factory(request, monkeypatch):
-    """Factory fixture returning a callable that creates a real Cache instance for tests.
-
-    This factory creates its own temporary directory and patches `pickle.dump` with a MagicMock
-    so the Cache.save implementation runs but doesn't perform real IO. The mock is attached
-    to the returned Cache as `._dump_mock` so tests can assert calls.
-
-    New: accepts parameters to control filesystem side-effects for Cache.load tests such as
-    `file_exists`, `file_old`, and `unpickle_error` so tests can avoid manually writing files.
-    """
+    """Factory fixture returning a callable that creates a real Cache instance for tests."""
 
     def _make(columns=None, dtype=None, save_threshold=2, max_age_hours=None, *, file_exists=True, file_old=False, unpickle_error=False, file_df=None):
         cols = columns or ["ID", "foo"]
@@ -519,16 +511,16 @@ class TestMetadataCache:
         """When caching is disabled and not forced, set_metadata does nothing."""
         cache_manager.mode = CacheMode.DISABLED
         cache_manager.metadata_cache = None
-        cache_manager.set_metadata("plex", "id", dummy_audio_tag, force_enable=False)
+        cache_manager.set_metadata("plex", dummy_audio_tag.ID, dummy_audio_tag, force_enable=False)
         assert cache_manager.metadata_cache is None
 
     def test_set_metadata_creates_cache_and_upserts_when_forced(self, cache_manager, dummy_audio_tag):
         """Force-enabling should create a metadata cache and upsert the provided tag."""
         cache_manager.mode = CacheMode.DISABLED
         cache_manager.metadata_cache = None
-        cache_manager.set_metadata("plex", "id", dummy_audio_tag, force_enable=True)
+        cache_manager.set_metadata("plex", dummy_audio_tag.ID, dummy_audio_tag, force_enable=True)
         assert cache_manager.metadata_cache is not None
-        found = cache_manager.metadata_cache._find_row_by_columns({"player_name": "plex", "ID": "id"})
+        found = cache_manager.metadata_cache._find_row_by_columns({"player_name": "plex", "ID": dummy_audio_tag.ID})
         assert not found.empty
 
     def test_set_metadata_upserts_into_existing_cache_when_enabled(self, cache_manager, dummy_audio_tag, cache_factory):
@@ -542,8 +534,8 @@ class TestMetadataCache:
         c._ensure_columns()
         c._insert_row(0, {"player_name": "other", "ID": "other"})
         cache_manager.metadata_cache = c
-        cache_manager.set_metadata("plex", "id", dummy_audio_tag, force_enable=False)
-        found = cache_manager.metadata_cache._find_row_by_columns({"player_name": "plex", "ID": "id"})
+        cache_manager.set_metadata("plex", dummy_audio_tag.ID, dummy_audio_tag, force_enable=False)
+        found = cache_manager.metadata_cache._find_row_by_columns({"player_name": "plex", "ID": dummy_audio_tag.ID})
         assert not found.empty
 
     def test_set_metadata_noop_when_disabled_with_existing_cache_and_not_forced(self, cache_manager, dummy_audio_tag, cache_factory):
