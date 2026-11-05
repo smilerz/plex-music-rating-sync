@@ -549,7 +549,12 @@ class Plex(MediaPlayer):
             if playlist.playlistType != "audio":
                 continue
             title = playlist.title
-            self._register_playlist_title(title, playlist.key)
+            try:
+                self._register_playlist_title(title, playlist.key)
+            except ValueError as e:
+                # Plex allows duplicate playlist titles, but sync matches playlists by title.
+                self.logger.warning(f"Skipping playlist '{title}' ({playlist.key}): {e}")
+                continue
             results.append((playlist, title))
         return results
 
